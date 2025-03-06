@@ -1,0 +1,913 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE Rank2Types #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE UndecidableInstances #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE MultiParamTypeClasses #-}</span><span>
+</span><span id="line-6"></span><span class="hs-pragma">{-# LANGUAGE Safe #-}</span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- Module      :  Control.Monad.Free.Church</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- Copyright   :  (C) 2011-2015 Edward Kmett</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- License     :  BSD-style (see the file LICENSE)</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- Maintainer  :  Edward Kmett &lt;ekmett@gmail.com&gt;</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- Stability   :  provisional</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- Portability :  non-portable (rank-2 polymorphism)</span><span>
+</span><span id="line-17"></span><span class="hs-comment">--</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- \&quot;Free Monads for Less\&quot;</span><span>
+</span><span id="line-19"></span><span class="hs-comment">--</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- The most straightforward way of implementing free monads is as a recursive</span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- datatype that allows for arbitrarily deep nesting of the base functor. This is</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- akin to a tree, with the leaves containing the values, and the nodes being a</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- level of 'Functor' over subtrees.</span><span>
+</span><span id="line-24"></span><span class="hs-comment">--</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- For each time that the `fmap` or `&gt;&gt;=` operations is used, the old tree is</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- traversed up to the leaves, a new set of nodes is allocated, and</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- the old ones are garbage collected. Even if the Haskell runtime</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- optimizes some of the overhead through laziness and generational garbage</span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- collection, the asymptotic runtime is still quadratic.</span><span>
+</span><span id="line-30"></span><span class="hs-comment">--</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- On the other hand, if the Church encoding is used, the tree only needs to be</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- constructed once, because:</span><span>
+</span><span id="line-33"></span><span class="hs-comment">--</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- * All uses of `fmap` are collapsed into a single one, so that the values on the</span><span>
+</span><span id="line-35"></span><span class="hs-comment">--   _leaves_ are transformed in one pass.</span><span>
+</span><span id="line-36"></span><span class="hs-comment">--</span><span>
+</span><span id="line-37"></span><span class="hs-comment">--   prop&gt; fmap f . fmap g == fmap (f . g)</span><span>
+</span><span id="line-38"></span><span class="hs-comment">--</span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- * All uses of `&gt;&gt;=` are right associated, so that every new subtree created</span><span>
+</span><span id="line-40"></span><span class="hs-comment">--   is final.</span><span>
+</span><span id="line-41"></span><span class="hs-comment">--</span><span>
+</span><span id="line-42"></span><span class="hs-comment">--   prop&gt; (m &gt;&gt;= f) &gt;&gt;= g == m &gt;&gt;= (\x -&gt; f x &gt;&gt;= g)</span><span>
+</span><span id="line-43"></span><span class="hs-comment">--</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- Asymptotically, the Church encoding supports the monadic operations more</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- efficiently than the na&#239;ve 'Free'.</span><span>
+</span><span id="line-46"></span><span class="hs-comment">--</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- This is based on the \&quot;Free Monads for Less\&quot; series of articles by Edward Kmett:</span><span>
+</span><span id="line-48"></span><span class="hs-comment">--</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- * &lt;https://ekmett.github.io/reader/2011/free-monads-for-less/   Free monads for less &#8212; Part 1&gt;</span><span>
+</span><span id="line-50"></span><span class="hs-comment">--</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- * &lt;https://ekmett.github.io/reader/2011/free-monads-for-less-2/ Free monads for less &#8212; Part 2&gt;</span><span>
+</span><span id="line-52"></span><span class="hs-comment">----------------------------------------------------------------------------</span><span>
+</span><span id="line-53"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Control.Monad.Free.Church</span><span>
+</span><span id="line-54"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier">F</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-55"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#improve"><span class="hs-identifier">improve</span></a></span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#fromF"><span class="hs-identifier">fromF</span></a></span><span>
+</span><span id="line-57"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#iter"><span class="hs-identifier">iter</span></a></span><span>
+</span><span id="line-58"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#iterM"><span class="hs-identifier">iterM</span></a></span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#toF"><span class="hs-identifier">toF</span></a></span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#retract"><span class="hs-identifier">retract</span></a></span><span>
+</span><span id="line-61"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#hoistF"><span class="hs-identifier">hoistF</span></a></span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#foldF"><span class="hs-identifier">foldF</span></a></span><span>
+</span><span id="line-63"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Class.html#MonadFree"><span class="hs-identifier">MonadFree</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Class.html#liftF"><span class="hs-identifier">liftF</span></a></span><span>
+</span><span id="line-65"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#cutoff"><span class="hs-identifier">cutoff</span></a></span><span>
+</span><span id="line-66"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Applicative</span></span><span>
+</span><span id="line-69"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Monad</span></span><span>
+</span><span id="line-70"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Fix</span></span><span>
+</span><span id="line-71"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Monad.Free.html"><span class="hs-identifier">Control.Monad.Free</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.html#retract"><span class="hs-identifier">retract</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.html#iter"><span class="hs-identifier">iter</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.html#iterM"><span class="hs-identifier">iterM</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Free.html#cutoff"><span class="hs-identifier">cutoff</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-72"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader.Class</span></span><span>
+</span><span id="line-73"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Writer.Class</span></span><span>
+</span><span id="line-74"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Cont.Class</span></span><span>
+</span><span id="line-75"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.Class</span></span><span>
+</span><span id="line-76"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.State.Class</span></span><span>
+</span><span id="line-77"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Foldable</span></span><span>
+</span><span id="line-78"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Traversable</span></span><span>
+</span><span id="line-79"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Functor.Bind</span></span><span>
+</span><span id="line-80"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Semigroup.Foldable</span></span><span>
+</span><span id="line-81"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Semigroup.Traversable</span></span><span>
+</span><span id="line-82"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">foldr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- | The Church-encoded free monad for a functor @f@.</span><span>
+</span><span id="line-85"></span><span class="hs-comment">--</span><span>
+</span><span id="line-86"></span><span class="hs-comment">-- It is /asymptotically/ more efficient to use ('&gt;&gt;=') for 'F' than it is to ('&gt;&gt;=') with 'Free'.</span><span>
+</span><span id="line-87"></span><span class="hs-comment">--</span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- &lt;https://ekmett.github.io/reader/2011/free-monads-for-less-2/&gt;</span><span>
+</span><span id="line-89"></span><span class="hs-keyword">newtype</span><span> </span><span id="F"><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span></span><span> </span><span id="local-6989586621679146111"><span class="annot"><a href="#local-6989586621679146111"><span class="hs-identifier hs-type">f</span></a></span></span><span> </span><span id="local-6989586621679146112"><span class="annot"><a href="#local-6989586621679146112"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="F"><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span></span><span> </span><span class="hs-special">{</span><span> </span><span id="runF"><span class="annot"><span class="annottext">forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var hs-var">runF</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679146114"><span class="annot"><a href="#local-6989586621679146114"><span class="hs-identifier hs-type">r</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679146112"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146114"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679146111"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146114"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146114"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146114"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span class="annot"><span class="hs-comment">-- | Tear down a 'Free' 'Monad' using iteration.</span></span><span>
+</span><span id="line-92"></span><span id="local-6989586621679146118"><span id="local-6989586621679146119"><span class="annot"><a href="Control.Monad.Free.Church.html#iter"><span class="hs-identifier hs-type">iter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679146118"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146119"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146119"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146118"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146119"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146119"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-93"></span><span id="iter"><span class="annot"><span class="annottext">iter :: forall (f :: * -&gt; *) a. (f a -&gt; a) -&gt; F f a -&gt; a
+</span><a href="Control.Monad.Free.Church.html#iter"><span class="hs-identifier hs-var hs-var">iter</span></a></span></span><span> </span><span id="local-6989586621679146457"><span class="annot"><span class="annottext">f a -&gt; a
+</span><a href="#local-6989586621679146457"><span class="hs-identifier hs-var">phi</span></a></span></span><span> </span><span id="local-6989586621679146458"><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146458"><span class="hs-identifier hs-var">xs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var">runF</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146458"><span class="hs-identifier hs-var">xs</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="annot"><span class="annottext">f a -&gt; a
+</span><a href="#local-6989586621679146457"><span class="hs-identifier hs-var">phi</span></a></span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="annot"><span class="hs-comment">-- | Like iter for monadic values.</span></span><span>
+</span><span id="line-96"></span><span id="local-6989586621679146123"><span id="local-6989586621679146124"><span id="local-6989586621679146125"><span class="annot"><a href="Control.Monad.Free.Church.html#iterM"><span class="hs-identifier hs-type">iterM</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679146123"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679146124"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679146123"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146125"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146123"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146125"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146124"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146125"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146123"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146125"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-97"></span><span id="iterM"><span class="annot"><span class="annottext">iterM :: forall (m :: * -&gt; *) (f :: * -&gt; *) a.
+Monad m =&gt;
+(f (m a) -&gt; m a) -&gt; F f a -&gt; m a
+</span><a href="Control.Monad.Free.Church.html#iterM"><span class="hs-identifier hs-var hs-var">iterM</span></a></span></span><span> </span><span id="local-6989586621679146462"><span class="annot"><span class="annottext">f (m a) -&gt; m a
+</span><a href="#local-6989586621679146462"><span class="hs-identifier hs-var">phi</span></a></span></span><span> </span><span id="local-6989586621679146463"><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146463"><span class="hs-identifier hs-var">xs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var">runF</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146463"><span class="hs-identifier hs-var">xs</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; m a
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">f (m a) -&gt; m a
+</span><a href="#local-6989586621679146462"><span class="hs-identifier hs-var">phi</span></a></span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146137"><span id="local-6989586621679146466"><span class="annot"><span class="hs-identifier hs-type">Functor</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146137"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-100"></span><span>  </span><span id="local-6989586621679146470"><span class="annot"><span class="annottext">fmap :: forall a b. (a -&gt; b) -&gt; F f a -&gt; F f b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">fmap</span></span></span><span> </span><span id="local-6989586621679146471"><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621679146471"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146472"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146472"><span class="hs-identifier hs-var">g</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (b -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f b
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146473"><span class="annot"><span class="annottext">b -&gt; r
+</span><a href="#local-6989586621679146473"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146472"><span class="hs-identifier hs-var">g</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">b -&gt; r
+</span><a href="#local-6989586621679146473"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">(b -&gt; r) -&gt; (a -&gt; b) -&gt; a -&gt; r
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621679146471"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146156"><span id="local-6989586621679146479"><span id="local-6989586621679146483"><span id="local-6989586621679146486"><span class="annot"><span class="hs-identifier hs-type">Apply</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146156"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-103"></span><span>  </span><span id="local-6989586621679146491"><span class="annot"><span class="annottext">&lt;.&gt; :: forall a b. F f (a -&gt; b) -&gt; F f a -&gt; F f b
+</span><a href="#local-6989586621679146491"><span class="hs-operator hs-var hs-var hs-var hs-var">(&lt;.&gt;)</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f (a -&gt; b) -&gt; F f a -&gt; F f b
+forall a b. F f (a -&gt; b) -&gt; F f a -&gt; F f b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">(&lt;*&gt;)</span></span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146157"><span id="local-6989586621679146498"><span id="local-6989586621679146501"><span id="local-6989586621679146504"><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146157"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-106"></span><span>  </span><span id="local-6989586621679146507"><span class="annot"><span class="annottext">pure :: forall a. a -&gt; F f a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">pure</span></span></span><span> </span><span id="local-6989586621679146508"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679146508"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146509"><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146509"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146509"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679146508"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>  </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146510"><span class="annot"><span class="annottext">forall r. ((a -&gt; b) -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146510"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679146511"><span class="annot"><span class="annottext">&lt;*&gt; :: forall a b. F f (a -&gt; b) -&gt; F f a -&gt; F f b
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;*&gt;</span></span></span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146512"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146512"><span class="hs-identifier hs-var">g</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (b -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f b
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146513"><span class="annot"><span class="annottext">b -&gt; r
+</span><a href="#local-6989586621679146513"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679146514"><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146514"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">((a -&gt; b) -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. ((a -&gt; b) -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146510"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146515"><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621679146515"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146512"><span class="hs-identifier hs-var">g</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">b -&gt; r
+</span><a href="#local-6989586621679146513"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">(b -&gt; r) -&gt; (a -&gt; b) -&gt; a -&gt; r
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621679146515"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146514"><span class="hs-identifier hs-var">kf</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146514"><span class="hs-identifier hs-var">kf</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-108"></span><span>
+</span><span id="line-109"></span><span class="annot"><span class="hs-comment">-- | This violates the Alternative laws, handle with care.</span></span><span>
+</span><span id="line-110"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146183"><span id="local-6989586621679146522"><span id="local-6989586621679146526"><span class="annot"><span class="hs-identifier hs-type">Alternative</span></span><span> </span><span class="annot"><a href="#local-6989586621679146183"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Alternative</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146183"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-111"></span><span>  </span><span id="local-6989586621679146531"><span class="annot"><span class="annottext">empty :: forall a. F f a
+</span><a href="#local-6989586621679146531"><span class="hs-identifier hs-var hs-var hs-var hs-var">empty</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">a -&gt; r
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679146534"><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146534"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146534"><span class="hs-identifier hs-var">kf</span></a></span><span> </span><span class="annot"><span class="annottext">f r
+forall a. f a
+forall (f :: * -&gt; *) a. Alternative f =&gt; f a
+</span><span class="hs-identifier hs-var">empty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span>  </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146535"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146535"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679146536"><span class="annot"><span class="annottext">&lt;|&gt; :: forall a. F f a -&gt; F f a -&gt; F f a
+</span><a href="#local-6989586621679146536"><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;|&gt;</span></a></span></span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146538"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146538"><span class="hs-identifier hs-var">g</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146542"><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146542"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679146543"><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146543"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146543"><span class="hs-identifier hs-var">kf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">r -&gt; f r
+forall a. a -&gt; f a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146535"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146542"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146543"><span class="hs-identifier hs-var">kf</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">f r -&gt; f r -&gt; f r
+forall a. f a -&gt; f a -&gt; f a
+forall (f :: * -&gt; *) a. Alternative f =&gt; f a -&gt; f a -&gt; f a
+</span><span class="hs-operator hs-var">&lt;|&gt;</span></span><span> </span><span class="annot"><span class="annottext">r -&gt; f r
+forall a. a -&gt; f a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146538"><span class="hs-identifier hs-var">g</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146542"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146543"><span class="hs-identifier hs-var">kf</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146194"><span id="local-6989586621679146548"><span class="annot"><span class="hs-identifier hs-type">Bind</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146194"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-115"></span><span>  </span><span id="local-6989586621679146554"><span class="annot"><span class="annottext">&gt;&gt;- :: forall a b. F f a -&gt; (a -&gt; F f b) -&gt; F f b
+</span><a href="#local-6989586621679146554"><span class="hs-operator hs-var hs-var hs-var hs-var">(&gt;&gt;-)</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; (a -&gt; F f b) -&gt; F f b
+forall a b. F f a -&gt; (a -&gt; F f b) -&gt; F f b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">(&gt;&gt;=)</span></span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146195"><span id="local-6989586621679146560"><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146195"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-118"></span><span>  </span><span id="local-6989586621679146565"><span class="annot"><span class="annottext">return :: forall a. a -&gt; F f a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">return</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; F f a
+forall a. a -&gt; F f a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span>
+</span><span id="line-119"></span><span>  </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146566"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146566"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span id="local-6989586621679146567"><span class="annot"><span class="annottext">&gt;&gt;= :: forall a b. F f a -&gt; (a -&gt; F f b) -&gt; F f b
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&gt;&gt;=</span></span></span><span> </span><span id="local-6989586621679146568"><span class="annot"><span class="annottext">a -&gt; F f b
+</span><a href="#local-6989586621679146568"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (b -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f b
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146569"><span class="annot"><span class="annottext">b -&gt; r
+</span><a href="#local-6989586621679146569"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679146570"><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146570"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146566"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146571"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679146571"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">F f b -&gt; forall r. (b -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var">runF</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; F f b
+</span><a href="#local-6989586621679146568"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679146571"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">b -&gt; r
+</span><a href="#local-6989586621679146569"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146570"><span class="hs-identifier hs-var">kf</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146570"><span class="hs-identifier hs-var">kf</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146210"><span class="annot"><span class="hs-identifier hs-type">MonadFix</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146210"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-122"></span><span>  </span><span id="local-6989586621679146577"><span class="annot"><span class="annottext">mfix :: forall a. (a -&gt; F f a) -&gt; F f a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">mfix</span></span></span><span> </span><span id="local-6989586621679146578"><span class="annot"><span class="annottext">a -&gt; F f a
+</span><a href="#local-6989586621679146578"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146579"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-123"></span><span>    </span><span id="local-6989586621679146579"><span class="annot"><span class="annottext">a :: F f a
+</span><a href="#local-6989586621679146579"><span class="hs-identifier hs-var hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; F f a
+</span><a href="#local-6989586621679146578"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">F f a -&gt; a
+forall {f :: * -&gt; *} {r}. F f r -&gt; r
+</span><a href="#local-6989586621679146580"><span class="hs-identifier hs-var">impure</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146579"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-124"></span><span>    </span><span id="local-6989586621679146580"><span class="annot"><span class="annottext">impure :: F f r -&gt; r
+</span><a href="#local-6989586621679146580"><span class="hs-identifier hs-var hs-var">impure</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146583"><span class="annot"><span class="annottext">forall r. (r -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146583"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(r -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (r -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146583"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">r -&gt; r
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char] -&gt; f r -&gt; r
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;MonadFix (F f): wrap&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-125"></span><span>
+</span><span id="line-126"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146240"><span id="local-6989586621679146587"><span id="local-6989586621679146594"><span id="local-6989586621679146600"><span id="local-6989586621679146603"><span id="local-6989586621679146607"><span id="local-6989586621679146610"><span id="local-6989586621679146613"><span id="local-6989586621679146616"><span id="local-6989586621679146619"><span id="local-6989586621679146622"><span id="local-6989586621679146627"><span id="local-6989586621679146632"><span id="local-6989586621679146637"><span id="local-6989586621679146642"><span class="annot"><span class="hs-identifier hs-type">Foldable</span></span><span> </span><span class="annot"><a href="#local-6989586621679146240"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Foldable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146240"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-127"></span><span>    </span><span id="local-6989586621679146650"><span class="annot"><span class="annottext">foldMap :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; F f a -&gt; m
+</span><a href="#local-6989586621679146650"><span class="hs-identifier hs-var hs-var hs-var hs-var">foldMap</span></a></span></span><span> </span><span id="local-6989586621679146652"><span class="annot"><span class="annottext">a -&gt; m
+</span><a href="#local-6989586621679146652"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679146653"><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146653"><span class="hs-identifier hs-var">xs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var">runF</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146653"><span class="hs-identifier hs-var">xs</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; m
+</span><a href="#local-6989586621679146652"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">f m -&gt; m
+forall m. Monoid m =&gt; f m -&gt; m
+forall (t :: * -&gt; *) m. (Foldable t, Monoid m) =&gt; t m -&gt; m
+</span><span class="hs-identifier hs-var">fold</span></span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><span class="hs-pragma hs-type">foldMap</span></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span>    </span><span id="local-6989586621679146656"><span class="annot"><span class="annottext">foldr :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; F f a -&gt; b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">foldr</span></span></span><span> </span><span id="local-6989586621679146657"><span class="annot"><span class="annottext">a -&gt; b -&gt; b
+</span><a href="#local-6989586621679146657"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679146658"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679146658"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621679146659"><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146659"><span class="hs-identifier hs-var">xs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var">runF</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146659"><span class="hs-identifier hs-var">xs</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; b -&gt; b
+</span><a href="#local-6989586621679146657"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((b -&gt; b) -&gt; (b -&gt; b) -&gt; b -&gt; b)
+-&gt; (b -&gt; b) -&gt; f (b -&gt; b) -&gt; b -&gt; b
+forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; f a -&gt; b
+forall (t :: * -&gt; *) a b.
+Foldable t =&gt;
+(a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldr</span></span><span> </span><span class="annot"><span class="annottext">(b -&gt; b) -&gt; (b -&gt; b) -&gt; b -&gt; b
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">(.)</span></span><span> </span><span class="annot"><span class="annottext">b -&gt; b
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679146658"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-131"></span><span>    </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><span class="hs-pragma hs-type">foldr</span></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span>    </span><span id="local-6989586621679146661"><span class="annot"><span class="annottext">foldl' :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; F f a -&gt; b
+</span><a href="#local-6989586621679146661"><span class="hs-identifier hs-var hs-var hs-var hs-var">foldl'</span></a></span></span><span> </span><span id="local-6989586621679146663"><span class="annot"><span class="annottext">b -&gt; a -&gt; b
+</span><a href="#local-6989586621679146663"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679146664"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679146664"><span class="hs-identifier hs-var">z</span></a></span></span><span> </span><span id="local-6989586621679146665"><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146665"><span class="hs-identifier hs-var">xs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var">runF</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146665"><span class="hs-identifier hs-var">xs</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146666"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679146666"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679146667"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679146667"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">b -&gt; a -&gt; b
+</span><a href="#local-6989586621679146663"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679146667"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679146666"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(b -&gt; f (b -&gt; b) -&gt; b) -&gt; f (b -&gt; b) -&gt; b -&gt; b
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">((b -&gt; f (b -&gt; b) -&gt; b) -&gt; f (b -&gt; b) -&gt; b -&gt; b)
+-&gt; (b -&gt; f (b -&gt; b) -&gt; b) -&gt; f (b -&gt; b) -&gt; b -&gt; b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(b -&gt; (b -&gt; b) -&gt; b) -&gt; b -&gt; f (b -&gt; b) -&gt; b
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; f a -&gt; b
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl'</span></span><span> </span><span class="annot"><span class="annottext">((b -&gt; (b -&gt; b) -&gt; b) -&gt; b -&gt; f (b -&gt; b) -&gt; b)
+-&gt; (b -&gt; (b -&gt; b) -&gt; b) -&gt; b -&gt; f (b -&gt; b) -&gt; b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679146669"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679146669"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621679146670"><span class="annot"><span class="annottext">b -&gt; b
+</span><a href="#local-6989586621679146670"><span class="hs-identifier hs-var">g</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">b -&gt; b
+</span><a href="#local-6989586621679146670"><span class="hs-identifier hs-var">g</span></a></span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679146669"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679146664"><span class="hs-identifier hs-var">z</span></a></span><span>
+</span><span id="line-134"></span><span>    </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><span class="hs-pragma hs-type">foldl'</span></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146270"><span id="local-6989586621679146679"><span id="local-6989586621679146685"><span id="local-6989586621679146690"><span class="annot"><span class="hs-identifier hs-type">Traversable</span></span><span> </span><span class="annot"><a href="#local-6989586621679146270"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Traversable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146270"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-137"></span><span>    </span><span id="local-6989586621679146708"><span class="annot"><span class="annottext">traverse :: forall (f :: * -&gt; *) a b.
+Applicative f =&gt;
+(a -&gt; f b) -&gt; F f a -&gt; f (F f b)
+</span><a href="#local-6989586621679146708"><span class="hs-identifier hs-var hs-var hs-var hs-var">traverse</span></a></span></span><span> </span><span id="local-6989586621679146710"><span class="annot"><span class="annottext">a -&gt; f b
+</span><a href="#local-6989586621679146710"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679146711"><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146711"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var">runF</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146711"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(b -&gt; F f b) -&gt; f b -&gt; f (F f b)
+forall a b. (a -&gt; b) -&gt; f a -&gt; f b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">b -&gt; F f b
+forall a. a -&gt; F f a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(f b -&gt; f (F f b)) -&gt; (a -&gt; f b) -&gt; a -&gt; f (F f b)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; f b
+</span><a href="#local-6989586621679146710"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(f (F f b) -&gt; F f b) -&gt; f (f (F f b)) -&gt; f (F f b)
+forall a b. (a -&gt; b) -&gt; f a -&gt; f b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">f (F f b) -&gt; F f b
+forall a. f (F f a) -&gt; F f a
+forall (f :: * -&gt; *) (m :: * -&gt; *) a.
+MonadFree f m =&gt;
+f (m a) -&gt; m a
+</span><a href="Control.Monad.Free.Class.html#wrap"><span class="hs-identifier hs-var">wrap</span></a></span><span> </span><span class="annot"><span class="annottext">(f (f (F f b)) -&gt; f (F f b))
+-&gt; (f (f (F f b)) -&gt; f (f (F f b))) -&gt; f (f (F f b)) -&gt; f (F f b)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">f (f (F f b)) -&gt; f (f (F f b))
+forall (t :: * -&gt; *) (f :: * -&gt; *) a.
+(Traversable t, Applicative f) =&gt;
+t (f a) -&gt; f (t a)
+forall (f :: * -&gt; *) a. Applicative f =&gt; f (f a) -&gt; f (f a)
+</span><span class="hs-identifier hs-var">sequenceA</span></span><span class="hs-special">)</span><span>
+</span><span id="line-138"></span><span>    </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><span class="hs-pragma hs-type">traverse</span></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-139"></span><span>
+</span><span id="line-140"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146296"><span id="local-6989586621679146719"><span id="local-6989586621679146726"><span id="local-6989586621679146731"><span id="local-6989586621679146734"><span id="local-6989586621679146739"><span id="local-6989586621679146744"><span id="local-6989586621679146747"><span id="local-6989586621679146750"><span id="local-6989586621679146753"><span id="local-6989586621679146756"><span id="local-6989586621679146759"><span class="annot"><span class="hs-identifier hs-type">Foldable1</span></span><span> </span><span class="annot"><a href="#local-6989586621679146296"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Foldable1</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146296"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span></span></span></span></span></span></span></span></span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-141"></span><span>    </span><span id="local-6989586621679146766"><span class="annot"><span class="annottext">foldMap1 :: forall m a. Semigroup m =&gt; (a -&gt; m) -&gt; F f a -&gt; m
+</span><a href="#local-6989586621679146766"><span class="hs-identifier hs-var hs-var hs-var hs-var">foldMap1</span></a></span></span><span> </span><span id="local-6989586621679146768"><span class="annot"><span class="annottext">a -&gt; m
+</span><a href="#local-6989586621679146768"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679146769"><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146769"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var">runF</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146769"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; m
+</span><a href="#local-6989586621679146768"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">f m -&gt; m
+forall m. Semigroup m =&gt; f m -&gt; m
+forall (t :: * -&gt; *) m. (Foldable1 t, Semigroup m) =&gt; t m -&gt; m
+</span><span class="hs-identifier hs-var">fold1</span></span><span>
+</span><span id="line-142"></span><span>
+</span><span id="line-143"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146308"><span id="local-6989586621679146780"><span class="annot"><span class="hs-identifier hs-type">Traversable1</span></span><span> </span><span class="annot"><a href="#local-6989586621679146308"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Traversable1</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146308"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-144"></span><span>    </span><span id="local-6989586621679146798"><span class="annot"><span class="annottext">traverse1 :: forall (f :: * -&gt; *) a b.
+Apply f =&gt;
+(a -&gt; f b) -&gt; F f a -&gt; f (F f b)
+</span><a href="#local-6989586621679146798"><span class="hs-identifier hs-var hs-var hs-var hs-var">traverse1</span></a></span></span><span> </span><span id="local-6989586621679146800"><span class="annot"><span class="annottext">a -&gt; f b
+</span><a href="#local-6989586621679146800"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679146801"><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146801"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var">runF</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679146801"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(b -&gt; F f b) -&gt; f b -&gt; f (F f b)
+forall a b. (a -&gt; b) -&gt; f a -&gt; f b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">b -&gt; F f b
+forall a. a -&gt; F f a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(f b -&gt; f (F f b)) -&gt; (a -&gt; f b) -&gt; a -&gt; f (F f b)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; f b
+</span><a href="#local-6989586621679146800"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(f (F f b) -&gt; F f b) -&gt; f (f (F f b)) -&gt; f (F f b)
+forall a b. (a -&gt; b) -&gt; f a -&gt; f b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">f (F f b) -&gt; F f b
+forall a. f (F f a) -&gt; F f a
+forall (f :: * -&gt; *) (m :: * -&gt; *) a.
+MonadFree f m =&gt;
+f (m a) -&gt; m a
+</span><a href="Control.Monad.Free.Class.html#wrap"><span class="hs-identifier hs-var">wrap</span></a></span><span> </span><span class="annot"><span class="annottext">(f (f (F f b)) -&gt; f (F f b))
+-&gt; (f (f (F f b)) -&gt; f (f (F f b))) -&gt; f (f (F f b)) -&gt; f (F f b)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">f (f (F f b)) -&gt; f (f (F f b))
+forall (t :: * -&gt; *) (f :: * -&gt; *) b.
+(Traversable1 t, Apply f) =&gt;
+t (f b) -&gt; f (t b)
+forall (f :: * -&gt; *) b. Apply f =&gt; f (f b) -&gt; f (f b)
+</span><span class="hs-identifier hs-var">sequence1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-145"></span><span>
+</span><span id="line-146"></span><span class="annot"><span class="hs-comment">-- | This violates the MonadPlus laws, handle with care.</span></span><span>
+</span><span id="line-147"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146317"><span class="annot"><span class="hs-identifier hs-type">MonadPlus</span></span><span> </span><span class="annot"><a href="#local-6989586621679146317"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadPlus</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146317"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-148"></span><span>  </span><span id="local-6989586621679146816"><span class="annot"><span class="annottext">mzero :: forall a. F f a
+</span><a href="#local-6989586621679146816"><span class="hs-identifier hs-var hs-var hs-var hs-var">mzero</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">a -&gt; r
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679146819"><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146819"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146819"><span class="hs-identifier hs-var">kf</span></a></span><span> </span><span class="annot"><span class="annottext">f r
+forall a. f a
+forall (m :: * -&gt; *) a. MonadPlus m =&gt; m a
+</span><span class="hs-identifier hs-var">mzero</span></span><span class="hs-special">)</span><span>
+</span><span id="line-149"></span><span>  </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146820"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146820"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679146821"><span class="annot"><span class="annottext">mplus :: forall a. F f a -&gt; F f a -&gt; F f a
+</span><a href="#local-6989586621679146821"><span class="hs-operator hs-var hs-var hs-var hs-var">`mplus`</span></a></span></span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146823"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146823"><span class="hs-identifier hs-var">g</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146827"><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146827"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679146828"><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146828"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146828"><span class="hs-identifier hs-var">kf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">r -&gt; f r
+forall a. a -&gt; f a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146820"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146827"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146828"><span class="hs-identifier hs-var">kf</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">f r -&gt; f r -&gt; f r
+forall a. f a -&gt; f a -&gt; f a
+forall (m :: * -&gt; *) a. MonadPlus m =&gt; m a -&gt; m a -&gt; m a
+</span><span class="hs-operator hs-var">`mplus`</span></span><span> </span><span class="annot"><span class="annottext">r -&gt; f r
+forall a. a -&gt; f a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146823"><span class="hs-identifier hs-var">g</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146827"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146828"><span class="hs-identifier hs-var">kf</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-150"></span><span>
+</span><span id="line-151"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadTrans</span></span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-152"></span><span>  </span><span id="local-6989586621679146835"><span class="annot"><span class="annottext">lift :: forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; F m a
+</span><a href="#local-6989586621679146835"><span class="hs-identifier hs-var hs-var hs-var hs-var">lift</span></a></span></span><span> </span><span id="local-6989586621679146837"><span class="annot"><span class="annottext">m a
+</span><a href="#local-6989586621679146837"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (a -&gt; r) -&gt; (m r -&gt; r) -&gt; r) -&gt; F m a
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146839"><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146839"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679146840"><span class="annot"><span class="annottext">m r -&gt; r
+</span><a href="#local-6989586621679146840"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">m r -&gt; r
+</span><a href="#local-6989586621679146840"><span class="hs-identifier hs-var">kf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; m a -&gt; m r
+forall (m :: * -&gt; *) a1 r. Monad m =&gt; (a1 -&gt; r) -&gt; m a1 -&gt; m r
+</span><span class="hs-identifier hs-var">liftM</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146839"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">m a
+</span><a href="#local-6989586621679146837"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-153"></span><span>
+</span><span id="line-154"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146273"><span class="annot"><span class="hs-identifier hs-type">Functor</span></span><span> </span><span class="annot"><a href="#local-6989586621679146273"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Class.html#MonadFree"><span class="hs-identifier hs-type">MonadFree</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146273"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146273"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-155"></span><span>  </span><span id="local-6989586621679146847"><span class="annot"><span class="annottext">wrap :: forall a. f (F f a) -&gt; F f a
+</span><a href="Control.Monad.Free.Class.html#wrap"><span class="hs-identifier hs-var hs-var hs-var hs-var">wrap</span></a></span></span><span> </span><span id="local-6989586621679146848"><span class="annot"><span class="annottext">f (F f a)
+</span><a href="#local-6989586621679146848"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146850"><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146850"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679146851"><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146851"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146851"><span class="hs-identifier hs-var">kf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(F f a -&gt; r) -&gt; f (F f a) -&gt; f r
+forall a b. (a -&gt; b) -&gt; f a -&gt; f b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146852"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146852"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146852"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146850"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146851"><span class="hs-identifier hs-var">kf</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">f (F f a)
+</span><a href="#local-6989586621679146848"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-156"></span><span>
+</span><span id="line-157"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146342"><span id="local-6989586621679146343"><span id="local-6989586621679146859"><span class="annot"><span class="hs-identifier hs-type">MonadState</span></span><span> </span><span class="annot"><a href="#local-6989586621679146342"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146343"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadState</span></span><span> </span><span class="annot"><a href="#local-6989586621679146342"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146343"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-158"></span><span>  </span><span id="local-6989586621679146868"><span class="annot"><span class="annottext">get :: F m s
+</span><a href="#local-6989586621679146868"><span class="hs-identifier hs-var hs-var hs-var hs-var">get</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m s -&gt; F m s
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; F m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">m s
+forall s (m :: * -&gt; *). MonadState s m =&gt; m s
+</span><span class="hs-identifier hs-var">get</span></span><span>
+</span><span id="line-159"></span><span>  </span><span id="local-6989586621679146873"><span class="annot"><span class="annottext">put :: s -&gt; F m ()
+</span><a href="#local-6989586621679146873"><span class="hs-identifier hs-var hs-var hs-var hs-var">put</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m () -&gt; F m ()
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; F m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m () -&gt; F m ()) -&gt; (s -&gt; m ()) -&gt; s -&gt; F m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">s -&gt; m ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; s -&gt; m ()
+</span><span class="hs-identifier hs-var">put</span></span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146351"><span id="local-6989586621679146352"><span id="local-6989586621679146881"><span class="annot"><span class="hs-identifier hs-type">MonadReader</span></span><span> </span><span class="annot"><a href="#local-6989586621679146351"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146352"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadReader</span></span><span> </span><span class="annot"><a href="#local-6989586621679146351"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146352"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-162"></span><span>  </span><span id="local-6989586621679146890"><span class="annot"><span class="annottext">ask :: F m e
+</span><a href="#local-6989586621679146890"><span class="hs-identifier hs-var hs-var hs-var hs-var">ask</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m e -&gt; F m e
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; F m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">m e
+forall r (m :: * -&gt; *). MonadReader r m =&gt; m r
+</span><span class="hs-identifier hs-var">ask</span></span><span>
+</span><span id="line-163"></span><span>  </span><span id="local-6989586621679146896"><span class="annot"><span class="annottext">local :: forall a. (e -&gt; e) -&gt; F m a -&gt; F m a
+</span><a href="#local-6989586621679146896"><span class="hs-identifier hs-var hs-var hs-var hs-var">local</span></a></span></span><span> </span><span id="local-6989586621679146898"><span class="annot"><span class="annottext">e -&gt; e
+</span><a href="#local-6989586621679146898"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m a -&gt; F m a
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; F m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m a -&gt; F m a) -&gt; (F m a -&gt; m a) -&gt; F m a -&gt; F m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(e -&gt; e) -&gt; m a -&gt; m a
+forall a. (e -&gt; e) -&gt; m a -&gt; m a
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; r) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">local</span></span><span> </span><span class="annot"><span class="annottext">e -&gt; e
+</span><a href="#local-6989586621679146898"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(m a -&gt; m a) -&gt; (F m a -&gt; m a) -&gt; F m a -&gt; m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">F m a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; F m a -&gt; m a
+</span><a href="Control.Monad.Free.Church.html#retract"><span class="hs-identifier hs-var">retract</span></a></span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146364"><span id="local-6989586621679146365"><span id="local-6989586621679146906"><span class="annot"><span class="hs-identifier hs-type">MonadWriter</span></span><span> </span><span class="annot"><a href="#local-6989586621679146364"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146365"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadWriter</span></span><span> </span><span class="annot"><a href="#local-6989586621679146364"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146365"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-166"></span><span>  </span><span id="local-6989586621679146919"><span class="annot"><span class="annottext">tell :: w -&gt; F m ()
+</span><a href="#local-6989586621679146919"><span class="hs-identifier hs-var hs-var hs-var hs-var">tell</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m () -&gt; F m ()
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; F m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m () -&gt; F m ()) -&gt; (w -&gt; m ()) -&gt; w -&gt; F m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">w -&gt; m ()
+forall w (m :: * -&gt; *). MonadWriter w m =&gt; w -&gt; m ()
+</span><span class="hs-identifier hs-var">tell</span></span><span>
+</span><span id="line-167"></span><span>  </span><span id="local-6989586621679146925"><span class="annot"><span class="annottext">pass :: forall a. F m (a, w -&gt; w) -&gt; F m a
+</span><a href="#local-6989586621679146925"><span class="hs-identifier hs-var hs-var hs-var hs-var">pass</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m a -&gt; F m a
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; F m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m a -&gt; F m a)
+-&gt; (F m (a, w -&gt; w) -&gt; m a) -&gt; F m (a, w -&gt; w) -&gt; F m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">m (a, w -&gt; w) -&gt; m a
+forall a. m (a, w -&gt; w) -&gt; m a
+forall w (m :: * -&gt; *) a. MonadWriter w m =&gt; m (a, w -&gt; w) -&gt; m a
+</span><span class="hs-identifier hs-var">pass</span></span><span> </span><span class="annot"><span class="annottext">(m (a, w -&gt; w) -&gt; m a)
+-&gt; (F m (a, w -&gt; w) -&gt; m (a, w -&gt; w)) -&gt; F m (a, w -&gt; w) -&gt; m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">F m (a, w -&gt; w) -&gt; m (a, w -&gt; w)
+forall (m :: * -&gt; *) a. Monad m =&gt; F m a -&gt; m a
+</span><a href="Control.Monad.Free.Church.html#retract"><span class="hs-identifier hs-var">retract</span></a></span><span>
+</span><span id="line-168"></span><span>  </span><span id="local-6989586621679146931"><span class="annot"><span class="annottext">listen :: forall a. F m a -&gt; F m (a, w)
+</span><a href="#local-6989586621679146931"><span class="hs-identifier hs-var hs-var hs-var hs-var">listen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m (a, w) -&gt; F m (a, w)
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; F m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m (a, w) -&gt; F m (a, w))
+-&gt; (F m a -&gt; m (a, w)) -&gt; F m a -&gt; F m (a, w)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">m a -&gt; m (a, w)
+forall a. m a -&gt; m (a, w)
+forall w (m :: * -&gt; *) a. MonadWriter w m =&gt; m a -&gt; m (a, w)
+</span><span class="hs-identifier hs-var">listen</span></span><span> </span><span class="annot"><span class="annottext">(m a -&gt; m (a, w)) -&gt; (F m a -&gt; m a) -&gt; F m a -&gt; m (a, w)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">F m a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; F m a -&gt; m a
+</span><a href="Control.Monad.Free.Church.html#retract"><span class="hs-identifier hs-var">retract</span></a></span><span>
+</span><span id="line-169"></span><span>
+</span><span id="line-170"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679146373"><span class="annot"><span class="hs-identifier hs-type">MonadCont</span></span><span> </span><span class="annot"><a href="#local-6989586621679146373"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadCont</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146373"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-171"></span><span>  </span><span id="local-6989586621679146949"><span class="annot"><span class="annottext">callCC :: forall a b. ((a -&gt; F m b) -&gt; F m a) -&gt; F m a
+</span><a href="#local-6989586621679146949"><span class="hs-identifier hs-var hs-var hs-var hs-var">callCC</span></a></span></span><span> </span><span id="local-6989586621679146951"><span class="annot"><span class="annottext">(a -&gt; F m b) -&gt; F m a
+</span><a href="#local-6989586621679146951"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m a -&gt; F m a
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; F m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m a -&gt; F m a) -&gt; m a -&gt; F m a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">((a -&gt; m b) -&gt; m a) -&gt; m a
+forall a b. ((a -&gt; m b) -&gt; m a) -&gt; m a
+forall (m :: * -&gt; *) a b. MonadCont m =&gt; ((a -&gt; m b) -&gt; m a) -&gt; m a
+</span><span class="hs-identifier hs-var">callCC</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">F m a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; F m a -&gt; m a
+</span><a href="Control.Monad.Free.Church.html#retract"><span class="hs-identifier hs-var">retract</span></a></span><span> </span><span class="annot"><span class="annottext">(F m a -&gt; m a) -&gt; ((a -&gt; m b) -&gt; F m a) -&gt; (a -&gt; m b) -&gt; m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; F m b) -&gt; F m a
+</span><a href="#local-6989586621679146951"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">((a -&gt; F m b) -&gt; F m a)
+-&gt; ((a -&gt; m b) -&gt; a -&gt; F m b) -&gt; (a -&gt; m b) -&gt; F m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(m b -&gt; F m b) -&gt; (a -&gt; m b) -&gt; a -&gt; F m b
+forall a b. (a -&gt; b) -&gt; (a -&gt; a) -&gt; a -&gt; b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">m b -&gt; F m b
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; F m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span class="hs-special">)</span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-174"></span><span class="hs-comment">-- 'retract' is the left inverse of 'lift' and 'liftF'</span><span>
+</span><span id="line-175"></span><span class="hs-comment">--</span><span>
+</span><span id="line-176"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-177"></span><span class="hs-comment">-- 'retract' . 'lift' = 'id'</span><span>
+</span><span id="line-178"></span><span class="hs-comment">-- 'retract' . 'liftF' = 'id'</span><span>
+</span><span id="line-179"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-180"></span><span id="local-6989586621679146354"><span id="local-6989586621679146355"><span class="annot"><a href="Control.Monad.Free.Church.html#retract"><span class="hs-identifier hs-type">retract</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679146354"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146354"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146355"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146354"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146355"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-181"></span><span id="retract"><span class="annot"><span class="annottext">retract :: forall (m :: * -&gt; *) a. Monad m =&gt; F m a -&gt; m a
+</span><a href="Control.Monad.Free.Church.html#retract"><span class="hs-identifier hs-var hs-var">retract</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146955"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (m r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146955"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(a -&gt; m a) -&gt; (m (m a) -&gt; m a) -&gt; m a
+forall r. (a -&gt; r) -&gt; (m r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146955"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; m a
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">m (m a) -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; m (m a) -&gt; m a
+</span><span class="hs-identifier hs-var">Monad.join</span></span><span>
+</span><span id="line-182"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#retract"><span class="hs-pragma hs-type">retract</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-183"></span><span>
+</span><span id="line-184"></span><span class="annot"><span class="hs-comment">-- | Lift a natural transformation from @f@ to @g@ into a natural transformation from @F f@ to @F g@.</span></span><span>
+</span><span id="line-185"></span><span id="local-6989586621679146381"><span id="local-6989586621679146383"><span id="local-6989586621679146384"><span class="annot"><a href="Control.Monad.Free.Church.html#hoistF"><span class="hs-identifier hs-type">hoistF</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679146382"><span class="annot"><a href="#local-6989586621679146382"><span class="hs-identifier hs-type">x</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679146381"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146382"><span class="hs-identifier hs-type">x</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146383"><span class="hs-identifier hs-type">g</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146382"><span class="hs-identifier hs-type">x</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146381"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146384"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146383"><span class="hs-identifier hs-type">g</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146384"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-186"></span><span id="hoistF"><span class="annot"><span class="annottext">hoistF :: forall (f :: * -&gt; *) (g :: * -&gt; *) a.
+(forall x. f x -&gt; g x) -&gt; F f a -&gt; F g a
+</span><a href="Control.Monad.Free.Church.html#hoistF"><span class="hs-identifier hs-var hs-var">hoistF</span></a></span></span><span> </span><span id="local-6989586621679146956"><span class="annot"><span class="annottext">forall x. f x -&gt; g x
+</span><a href="#local-6989586621679146956"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146957"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146957"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (a -&gt; r) -&gt; (g r -&gt; r) -&gt; r) -&gt; F g a
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146958"><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146958"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621679146959"><span class="annot"><span class="annottext">g r -&gt; r
+</span><a href="#local-6989586621679146959"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146957"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146958"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">g r -&gt; r
+</span><a href="#local-6989586621679146959"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(g r -&gt; r) -&gt; (f r -&gt; g r) -&gt; f r -&gt; r
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">f r -&gt; g r
+forall x. f x -&gt; g x
+</span><a href="#local-6989586621679146956"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span class="annot"><span class="hs-comment">-- | The very definition of a free monad is that given a natural transformation you get a monad homomorphism.</span></span><span>
+</span><span id="line-189"></span><span id="local-6989586621679146389"><span id="local-6989586621679146390"><span id="local-6989586621679146392"><span class="annot"><a href="Control.Monad.Free.Church.html#foldF"><span class="hs-identifier hs-type">foldF</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679146389"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679146391"><span class="annot"><a href="#local-6989586621679146391"><span class="hs-identifier hs-type">x</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679146390"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146391"><span class="hs-identifier hs-type">x</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146389"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146391"><span class="hs-identifier hs-type">x</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146390"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146392"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146389"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146392"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-190"></span><span id="foldF"><span class="annot"><span class="annottext">foldF :: forall (m :: * -&gt; *) (f :: * -&gt; *) a.
+Monad m =&gt;
+(forall x. f x -&gt; m x) -&gt; F f a -&gt; m a
+</span><a href="Control.Monad.Free.Church.html#foldF"><span class="hs-identifier hs-var hs-var">foldF</span></a></span></span><span> </span><span id="local-6989586621679146963"><span class="annot"><span class="annottext">forall x. f x -&gt; m x
+</span><a href="#local-6989586621679146963"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146964"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146964"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(a -&gt; m a) -&gt; (f (m a) -&gt; m a) -&gt; m a
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146964"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; m a
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m (m a) -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; m (m a) -&gt; m a
+</span><span class="hs-identifier hs-var">Monad.join</span></span><span> </span><span class="annot"><span class="annottext">(m (m a) -&gt; m a) -&gt; (f (m a) -&gt; m (m a)) -&gt; f (m a) -&gt; m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">f (m a) -&gt; m (m a)
+forall x. f x -&gt; m x
+</span><a href="#local-6989586621679146963"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-191"></span><span>
+</span><span id="line-192"></span><span class="annot"><span class="hs-comment">-- | Convert to another free monad representation.</span></span><span>
+</span><span id="line-193"></span><span id="local-6989586621679146396"><span id="local-6989586621679146397"><span id="local-6989586621679146398"><span class="annot"><a href="Control.Monad.Free.Church.html#fromF"><span class="hs-identifier hs-type">fromF</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Monad.Free.Class.html#MonadFree"><span class="hs-identifier hs-type">MonadFree</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146396"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146397"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146396"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146398"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146397"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146398"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-194"></span><span id="fromF"><span class="annot"><span class="annottext">fromF :: forall (f :: * -&gt; *) (m :: * -&gt; *) a. MonadFree f m =&gt; F f a -&gt; m a
+</span><a href="Control.Monad.Free.Church.html#fromF"><span class="hs-identifier hs-var hs-var">fromF</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span id="local-6989586621679146970"><span class="annot"><span class="annottext">forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146970"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(a -&gt; m a) -&gt; (f (m a) -&gt; m a) -&gt; m a
+forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679146970"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; m a
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">f (m a) -&gt; m a
+forall a. f (m a) -&gt; m a
+forall (f :: * -&gt; *) (m :: * -&gt; *) a.
+MonadFree f m =&gt;
+f (m a) -&gt; m a
+</span><a href="Control.Monad.Free.Class.html#wrap"><span class="hs-identifier hs-var">wrap</span></a></span><span>
+</span><span id="line-195"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#fromF"><span class="hs-pragma hs-type">fromF</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-196"></span><span>
+</span><span id="line-197"></span><span class="annot"><span class="hs-comment">-- | Generate a Church-encoded free monad from a 'Free' monad.</span></span><span>
+</span><span id="line-198"></span><span id="local-6989586621679146402"><span id="local-6989586621679146403"><span class="annot"><a href="Control.Monad.Free.Church.html#toF"><span class="hs-identifier hs-type">toF</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Functor</span></span><span> </span><span class="annot"><a href="#local-6989586621679146402"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.html#Free"><span class="hs-identifier hs-type">Free</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146402"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146403"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146402"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146403"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-199"></span><span id="toF"><span class="annot"><span class="annottext">toF :: forall (f :: * -&gt; *) a. Functor f =&gt; Free f a -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#toF"><span class="hs-identifier hs-var hs-var">toF</span></a></span></span><span> </span><span id="local-6989586621679146972"><span class="annot"><span class="annottext">Free f a
+</span><a href="#local-6989586621679146972"><span class="hs-identifier hs-var">xs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679146974"><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146974"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679146975"><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146975"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; (f r -&gt; r) -&gt; Free f a -&gt; r
+forall {f :: * -&gt; *} {t} {b}.
+Functor f =&gt;
+(t -&gt; b) -&gt; (f b -&gt; b) -&gt; Free f t -&gt; b
+</span><a href="#local-6989586621679146976"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; r
+</span><a href="#local-6989586621679146974"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">f r -&gt; r
+</span><a href="#local-6989586621679146975"><span class="hs-identifier hs-var">kf</span></a></span><span> </span><span class="annot"><span class="annottext">Free f a
+</span><a href="#local-6989586621679146972"><span class="hs-identifier hs-var">xs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-200"></span><span>  </span><span id="local-6989586621679146976"><span class="annot"><span class="annottext">go :: (t -&gt; b) -&gt; (f b -&gt; b) -&gt; Free f t -&gt; b
+</span><a href="#local-6989586621679146976"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679146979"><span class="annot"><span class="annottext">t -&gt; b
+</span><a href="#local-6989586621679146979"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span class="annot"><span class="annottext">f b -&gt; b
+</span><span class="hs-identifier">_</span></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.html#Pure"><span class="hs-identifier hs-type">Pure</span></a></span><span> </span><span id="local-6989586621679146981"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679146981"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">t -&gt; b
+</span><a href="#local-6989586621679146979"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679146981"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-201"></span><span>  </span><span class="annot"><a href="#local-6989586621679146976"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621679146982"><span class="annot"><span class="annottext">t -&gt; b
+</span><a href="#local-6989586621679146982"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679146983"><span class="annot"><span class="annottext">f b -&gt; b
+</span><a href="#local-6989586621679146983"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Free.html#Free"><span class="hs-identifier hs-type">Free</span></a></span><span> </span><span id="local-6989586621679146984"><span class="annot"><span class="annottext">f (Free f t)
+</span><a href="#local-6989586621679146984"><span class="hs-identifier hs-var">fma</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">f b -&gt; b
+</span><a href="#local-6989586621679146983"><span class="hs-identifier hs-var">kf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Free f t -&gt; b) -&gt; f (Free f t) -&gt; f b
+forall a b. (a -&gt; b) -&gt; f a -&gt; f b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(t -&gt; b) -&gt; (f b -&gt; b) -&gt; Free f t -&gt; b
+</span><a href="#local-6989586621679146976"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">t -&gt; b
+</span><a href="#local-6989586621679146982"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">f b -&gt; b
+</span><a href="#local-6989586621679146983"><span class="hs-identifier hs-var">kf</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">f (Free f t)
+</span><a href="#local-6989586621679146984"><span class="hs-identifier hs-var">fma</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-202"></span><span>
+</span><span id="line-203"></span><span class="hs-comment">-- | Improve the asymptotic performance of code that builds a free monad with only binds and returns by using 'F' behind the scenes.</span><span>
+</span><span id="line-204"></span><span class="hs-comment">--</span><span>
+</span><span id="line-205"></span><span class="hs-comment">-- This is based on the \&quot;Free Monads for Less\&quot; series of articles by Edward Kmett:</span><span>
+</span><span id="line-206"></span><span class="hs-comment">--</span><span>
+</span><span id="line-207"></span><span class="hs-comment">-- * &lt;https://ekmett.github.io/reader/2011/free-monads-for-less/   Free monads for less &#8212; Part 1&gt;</span><span>
+</span><span id="line-208"></span><span class="hs-comment">--</span><span>
+</span><span id="line-209"></span><span class="hs-comment">-- * &lt;https://ekmett.github.io/reader/2011/free-monads-for-less-2/ Free monads for less &#8212; Part 2&gt;</span><span>
+</span><span id="line-210"></span><span class="hs-comment">--</span><span>
+</span><span id="line-211"></span><span class="hs-comment">-- and &lt;http://www.iai.uni-bonn.de/~jv/mpc08.pdf \&quot;Asymptotic Improvement of Computations over Free Monads\&quot;&gt; by Janis Voightl&#228;nder.</span><span>
+</span><span id="line-212"></span><span id="local-6989586621679146411"><span id="local-6989586621679146413"><span class="annot"><a href="Control.Monad.Free.Church.html#improve"><span class="hs-identifier hs-type">improve</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Functor</span></span><span> </span><span class="annot"><a href="#local-6989586621679146411"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679146412"><span class="annot"><a href="#local-6989586621679146412"><span class="hs-identifier hs-type">m</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="Control.Monad.Free.Class.html#MonadFree"><span class="hs-identifier hs-type">MonadFree</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146411"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146412"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146412"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146413"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.html#Free"><span class="hs-identifier hs-type">Free</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146411"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146413"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-213"></span><span id="improve"><span class="annot"><span class="annottext">improve :: forall (f :: * -&gt; *) a.
+Functor f =&gt;
+(forall (m :: * -&gt; *). MonadFree f m =&gt; m a) -&gt; Free f a
+</span><a href="Control.Monad.Free.Church.html#improve"><span class="hs-identifier hs-var hs-var">improve</span></a></span></span><span> </span><span id="local-6989586621679146989"><span class="annot"><span class="annottext">forall (m :: * -&gt; *). MonadFree f m =&gt; m a
+</span><a href="#local-6989586621679146989"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; Free f a
+forall (f :: * -&gt; *) (m :: * -&gt; *) a. MonadFree f m =&gt; F f a -&gt; m a
+</span><a href="Control.Monad.Free.Church.html#fromF"><span class="hs-identifier hs-var">fromF</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+forall (m :: * -&gt; *). MonadFree f m =&gt; m a
+</span><a href="#local-6989586621679146989"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-214"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#improve"><span class="hs-pragma hs-type">improve</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-215"></span><span>
+</span><span id="line-216"></span><span>
+</span><span id="line-217"></span><span class="hs-comment">-- | Cuts off a tree of computations at a given depth.</span><span>
+</span><span id="line-218"></span><span class="hs-comment">-- If the depth is 0 or less, no computation nor</span><span>
+</span><span id="line-219"></span><span class="hs-comment">-- monadic effects will take place.</span><span>
+</span><span id="line-220"></span><span class="hs-comment">--</span><span>
+</span><span id="line-221"></span><span class="hs-comment">-- Some examples (@n &#8805; 0@):</span><span>
+</span><span id="line-222"></span><span class="hs-comment">--</span><span>
+</span><span id="line-223"></span><span class="hs-comment">-- prop&gt; cutoff 0     _        == return Nothing</span><span>
+</span><span id="line-224"></span><span class="hs-comment">-- prop&gt; cutoff (n+1) . return == return . Just</span><span>
+</span><span id="line-225"></span><span class="hs-comment">-- prop&gt; cutoff (n+1) . lift   == lift . liftM Just</span><span>
+</span><span id="line-226"></span><span class="hs-comment">-- prop&gt; cutoff (n+1) . wrap   == wrap . fmap (cutoff n)</span><span>
+</span><span id="line-227"></span><span class="hs-comment">--</span><span>
+</span><span id="line-228"></span><span class="hs-comment">-- Calling @'retract' . 'cutoff' n@ is always terminating, provided each of the</span><span>
+</span><span id="line-229"></span><span class="hs-comment">-- steps in the iteration is terminating.</span><span>
+</span><span id="line-230"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#cutoff"><span class="hs-pragma hs-type">cutoff</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-231"></span><span id="local-6989586621679146417"><span id="local-6989586621679146418"><span class="annot"><a href="Control.Monad.Free.Church.html#cutoff"><span class="hs-identifier hs-type">cutoff</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Functor</span></span><span> </span><span class="annot"><a href="#local-6989586621679146417"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146417"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146418"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146417"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="#local-6989586621679146418"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-232"></span><span id="cutoff"><span class="annot"><span class="annottext">cutoff :: forall (f :: * -&gt; *) a.
+Functor f =&gt;
+Integer -&gt; F f a -&gt; F f (Maybe a)
+</span><a href="Control.Monad.Free.Church.html#cutoff"><span class="hs-identifier hs-var hs-var">cutoff</span></a></span></span><span> </span><span id="local-6989586621679147008"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679147008"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621679147009"><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679147009"><span class="hs-identifier hs-var">m</span></a></span></span><span>
+</span><span id="line-233"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679147008"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe a -&gt; F f (Maybe a)
+forall a. a -&gt; F f a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-234"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679147008"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+forall a. Bounded a =&gt; a
+</span><span class="hs-identifier hs-var">maxBound</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; F f a -&gt; F f (Maybe a)
+forall (f :: * -&gt; *) n a.
+(Functor f, Integral n) =&gt;
+n -&gt; F f a -&gt; F f (Maybe a)
+</span><a href="Control.Monad.Free.Church.html#cutoffI"><span class="hs-identifier hs-var">cutoffI</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer -&gt; Int
+forall a. Num a =&gt; Integer -&gt; a
+</span><span class="hs-identifier hs-var">fromInteger</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679147008"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679147009"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-235"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; F f a -&gt; F f (Maybe a)
+forall (f :: * -&gt; *) n a.
+(Functor f, Integral n) =&gt;
+n -&gt; F f a -&gt; F f (Maybe a)
+</span><a href="Control.Monad.Free.Church.html#cutoffI"><span class="hs-identifier hs-var">cutoffI</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679147008"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679147009"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-236"></span><span>
+</span><span id="line-237"></span><span class="hs-pragma">{-# SPECIALIZE</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#cutoffI"><span class="hs-pragma hs-type">cutoffI</span></a></span><span> </span><span class="hs-pragma">::</span><span> </span><span id="local-6989586621679147013"><span id="local-6989586621679147014"><span class="hs-pragma">(</span><span class="annot"><span class="hs-pragma hs-type">Functor</span></span><span> </span><span class="annot"><a href="#local-6989586621679147013"><span class="hs-pragma hs-type">f</span></a></span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">=&gt;</span><span> </span><span class="annot"><span class="hs-pragma hs-type">Int</span></span><span> </span><span class="hs-pragma">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-pragma hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679147013"><span class="hs-pragma hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679147014"><span class="hs-pragma hs-type">a</span></a></span><span> </span><span class="hs-pragma">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-pragma hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679147013"><span class="hs-pragma hs-type">f</span></a></span><span> </span><span class="hs-pragma">(</span><span class="annot"><span class="hs-pragma hs-type">Maybe</span></span><span> </span><span class="annot"><a href="#local-6989586621679147014"><span class="hs-pragma hs-type">a</span></a></span><span class="hs-pragma">)</span></span></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-238"></span><span class="hs-pragma">{-# SPECIALIZE</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#cutoffI"><span class="hs-pragma hs-type">cutoffI</span></a></span><span> </span><span class="hs-pragma">::</span><span> </span><span id="local-6989586621679147015"><span id="local-6989586621679147016"><span class="hs-pragma">(</span><span class="annot"><span class="hs-pragma hs-type">Functor</span></span><span> </span><span class="annot"><a href="#local-6989586621679147015"><span class="hs-pragma hs-type">f</span></a></span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">=&gt;</span><span> </span><span class="annot"><span class="hs-pragma hs-type">Integer</span></span><span> </span><span class="hs-pragma">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-pragma hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679147015"><span class="hs-pragma hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679147016"><span class="hs-pragma hs-type">a</span></a></span><span> </span><span class="hs-pragma">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-pragma hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679147015"><span class="hs-pragma hs-type">f</span></a></span><span> </span><span class="hs-pragma">(</span><span class="annot"><span class="hs-pragma hs-type">Maybe</span></span><span> </span><span class="annot"><a href="#local-6989586621679147016"><span class="hs-pragma hs-type">a</span></a></span><span class="hs-pragma">)</span></span></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-239"></span><span id="local-6989586621679146425"><span id="local-6989586621679146426"><span id="local-6989586621679146427"><span class="annot"><a href="Control.Monad.Free.Church.html#cutoffI"><span class="hs-identifier hs-type">cutoffI</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Functor</span></span><span> </span><span class="annot"><a href="#local-6989586621679146425"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integral</span></span><span> </span><span class="annot"><a href="#local-6989586621679146426"><span class="hs-identifier hs-type">n</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679146426"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146425"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146427"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-type">F</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679146425"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="#local-6989586621679146427"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-240"></span><span id="cutoffI"><span class="annot"><span class="annottext">cutoffI :: forall (f :: * -&gt; *) n a.
+(Functor f, Integral n) =&gt;
+n -&gt; F f a -&gt; F f (Maybe a)
+</span><a href="Control.Monad.Free.Church.html#cutoffI"><span class="hs-identifier hs-var hs-var">cutoffI</span></a></span></span><span> </span><span id="local-6989586621679147027"><span class="annot"><span class="annottext">n
+</span><a href="#local-6989586621679147027"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621679147028"><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679147028"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall r. (Maybe a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f (Maybe a)
+forall (f :: * -&gt; *) a.
+(forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r) -&gt; F f a
+</span><a href="Control.Monad.Free.Church.html#F"><span class="hs-identifier hs-var">F</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall r. (Maybe a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="#local-6989586621679147029"><span class="hs-identifier hs-var">m'</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-241"></span><span>    </span><span id="local-6989586621679147029"><span class="annot"><span class="annottext">m' :: (Maybe a -&gt; t) -&gt; (f t -&gt; t) -&gt; t
+</span><a href="#local-6989586621679147029"><span class="hs-identifier hs-var hs-var">m'</span></a></span></span><span> </span><span id="local-6989586621679147035"><span class="annot"><span class="annottext">Maybe a -&gt; t
+</span><a href="#local-6989586621679147035"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679147036"><span class="annot"><span class="annottext">f t -&gt; t
+</span><a href="#local-6989586621679147036"><span class="hs-identifier hs-var">kf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><a href="Control.Monad.Free.Church.html#runF"><span class="hs-identifier hs-var">runF</span></a></span><span> </span><span class="annot"><span class="annottext">F f a
+</span><a href="#local-6989586621679147028"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; n -&gt; t
+forall {a}. (Ord a, Num a) =&gt; a -&gt; a -&gt; t
+</span><a href="#local-6989586621679147037"><span class="hs-identifier hs-var">kpn</span></a></span><span> </span><span class="annot"><span class="annottext">f (n -&gt; t) -&gt; n -&gt; t
+forall {a}. (Ord a, Num a) =&gt; f (a -&gt; t) -&gt; a -&gt; t
+</span><a href="#local-6989586621679147038"><span class="hs-identifier hs-var">kfn</span></a></span><span> </span><span class="annot"><span class="annottext">n
+</span><a href="#local-6989586621679147027"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-242"></span><span>        </span><span id="local-6989586621679147037"><span class="annot"><span class="annottext">kpn :: a -&gt; a -&gt; t
+</span><a href="#local-6989586621679147037"><span class="hs-identifier hs-var hs-var">kpn</span></a></span></span><span> </span><span id="local-6989586621679147045"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679147045"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621679147046"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679147046"><span class="hs-identifier hs-var">i</span></a></span></span><span>
+</span><span id="line-243"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679147046"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe a -&gt; t
+</span><a href="#local-6989586621679147035"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-244"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe a -&gt; t
+</span><a href="#local-6989586621679147035"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679147045"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-245"></span><span>        </span><span id="local-6989586621679147038"><span class="annot"><span class="annottext">kfn :: f (a -&gt; t) -&gt; a -&gt; t
+</span><a href="#local-6989586621679147038"><span class="hs-identifier hs-var hs-var">kfn</span></a></span></span><span> </span><span id="local-6989586621679147054"><span class="annot"><span class="annottext">f (a -&gt; t)
+</span><a href="#local-6989586621679147054"><span class="hs-identifier hs-var">fr</span></a></span></span><span> </span><span id="local-6989586621679147055"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679147055"><span class="hs-identifier hs-var">i</span></a></span></span><span>
+</span><span id="line-246"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679147055"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe a -&gt; t
+</span><a href="#local-6989586621679147035"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-247"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span>
+</span><span id="line-248"></span><span>                </span><span id="local-6989586621679147058"><span class="annot"><span class="annottext">i' :: a
+</span><a href="#local-6989586621679147058"><span class="hs-identifier hs-var hs-var">i'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679147055"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-249"></span><span>                </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679147058"><span class="hs-identifier hs-var">i'</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; t -&gt; t
+forall a b. a -&gt; b -&gt; b
+</span><span class="hs-operator hs-var">`seq`</span></span><span> </span><span class="annot"><span class="annottext">f t -&gt; t
+</span><a href="#local-6989586621679147036"><span class="hs-identifier hs-var">kf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((a -&gt; t) -&gt; t) -&gt; f (a -&gt; t) -&gt; f t
+forall a b. (a -&gt; b) -&gt; f a -&gt; f b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; t) -&gt; a -&gt; t
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679147058"><span class="hs-identifier hs-var">i'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">f (a -&gt; t)
+</span><a href="#local-6989586621679147054"><span class="hs-identifier hs-var">fr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-250"></span></pre></body></html>

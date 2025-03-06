@@ -1,0 +1,937 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module      : Crypto.ECC.Edwards25519</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Maintainer  : Olivier Ch&#233;ron &lt;olivier.cheron@gmail.com&gt;</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Stability   : experimental</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Portability : unknown</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Arithmetic primitives over curve edwards25519.</span><span>
+</span><span id="line-9"></span><span class="hs-comment">--</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- Twisted Edwards curves are a familly of elliptic curves allowing</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- complete addition formulas without any special case and no point at</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- infinity.  Curve edwards25519 is based on prime 2^255 - 19 for</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- efficient implementation.  Equation and parameters are given in</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- &lt;https://tools.ietf.org/html/rfc7748 RFC 7748&gt;.</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- This module provides types and primitive operations that are useful</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- to implement cryptographic schemes based on curve edwards25519:</span><span>
+</span><span id="line-18"></span><span class="hs-comment">--</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- - arithmetic functions for point addition, doubling, negation,</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- scalar multiplication with an arbitrary point, with the base point,</span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- etc.</span><span>
+</span><span id="line-22"></span><span class="hs-comment">--</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- - arithmetic functions dealing with scalars modulo the prime order</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- L of the base point</span><span>
+</span><span id="line-25"></span><span class="hs-comment">--</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- All functions run in constant time unless noted otherwise.</span><span>
+</span><span id="line-27"></span><span class="hs-comment">--</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- Warnings:</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- 1. Curve edwards25519 has a cofactor h = 8 so the base point does</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- not generate the entire curve and points with order 2, 4, 8 exist.</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- When implementing cryptographic algorithms, special care must be</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- taken using one of the following methods:</span><span>
+</span><span id="line-34"></span><span class="hs-comment">--</span><span>
+</span><span id="line-35"></span><span class="hs-comment">--     - points must be checked for membership in the prime-order</span><span>
+</span><span id="line-36"></span><span class="hs-comment">--     subgroup</span><span>
+</span><span id="line-37"></span><span class="hs-comment">--</span><span>
+</span><span id="line-38"></span><span class="hs-comment">--     - or cofactor must be cleared by multiplying points by 8</span><span>
+</span><span id="line-39"></span><span class="hs-comment">--</span><span>
+</span><span id="line-40"></span><span class="hs-comment">--     Utility functions are provided to implement this.  Testing</span><span>
+</span><span id="line-41"></span><span class="hs-comment">--     subgroup membership with 'pointHasPrimeOrder' is 50-time slower</span><span>
+</span><span id="line-42"></span><span class="hs-comment">--     than call 'pointMulByCofactor'.</span><span>
+</span><span id="line-43"></span><span class="hs-comment">--</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- 2. Scalar arithmetic is always reduced modulo L, allowing fixed</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- length and constant execution time, but this reduction is valid</span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- only when points are in the prime-order subgroup.</span><span>
+</span><span id="line-47"></span><span class="hs-comment">--</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- 3. Because of modular reduction in this implementation it is not</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- possible to multiply points directly by scalars like 8.s or L.</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- This has to be decomposed into several steps.</span><span>
+</span><span id="line-51"></span><span class="hs-comment">--</span><span>
+</span><span id="line-52"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-53"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Crypto.ECC.Edwards25519</span><span>
+</span><span id="line-54"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier">Scalar</span></a></span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier">Point</span></a></span><span>
+</span><span id="line-56"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Scalars</span></span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarGenerate"><span class="hs-identifier">scalarGenerate</span></a></span><span>
+</span><span id="line-58"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarDecodeLong"><span class="hs-identifier">scalarDecodeLong</span></a></span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarEncode"><span class="hs-identifier">scalarEncode</span></a></span><span>
+</span><span id="line-60"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Points</span></span><span>
+</span><span id="line-61"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointDecode"><span class="hs-identifier">pointDecode</span></a></span><span>
+</span><span id="line-62"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointEncode"><span class="hs-identifier">pointEncode</span></a></span><span>
+</span><span id="line-63"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointHasPrimeOrder"><span class="hs-identifier">pointHasPrimeOrder</span></a></span><span>
+</span><span id="line-64"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Arithmetic functions</span></span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#toPoint"><span class="hs-identifier">toPoint</span></a></span><span>
+</span><span id="line-66"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarAdd"><span class="hs-identifier">scalarAdd</span></a></span><span>
+</span><span id="line-67"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarMul"><span class="hs-identifier">scalarMul</span></a></span><span>
+</span><span id="line-68"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointNegate"><span class="hs-identifier">pointNegate</span></a></span><span>
+</span><span id="line-69"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointAdd"><span class="hs-identifier">pointAdd</span></a></span><span>
+</span><span id="line-70"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointDouble"><span class="hs-identifier">pointDouble</span></a></span><span>
+</span><span id="line-71"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointMul"><span class="hs-identifier">pointMul</span></a></span><span>
+</span><span id="line-72"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointMulByCofactor"><span class="hs-identifier">pointMulByCofactor</span></a></span><span>
+</span><span id="line-73"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointsMulVarTime"><span class="hs-identifier">pointsMulVarTime</span></a></span><span>
+</span><span id="line-74"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-75"></span><span>
+</span><span id="line-76"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span>
+</span><span id="line-77"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.C.Types</span></span><span>
+</span><span id="line-78"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Error.html"><span class="hs-identifier">Crypto.Error</span></a></span><span>
+</span><span id="line-81"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.ByteArray.html"><span class="hs-identifier">Crypto.Internal.ByteArray</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Bytes</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ScrubbedBytes</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">withByteArray</span></span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Crypto.Internal.ByteArray.html"><span class="hs-identifier">Crypto.Internal.ByteArray</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-83"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.Compat.html"><span class="hs-identifier">Crypto.Internal.Compat</span></a></span><span>
+</span><span id="line-84"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.Imports.html"><span class="hs-identifier">Crypto.Internal.Imports</span></a></span><span>
+</span><span id="line-85"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Random.html"><span class="hs-identifier">Crypto.Random</span></a></span><span>
+</span><span id="line-86"></span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarArraySize"><span class="hs-identifier hs-type">scalarArraySize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-89"></span><span id="scalarArraySize"><span class="annot"><span class="annottext">scalarArraySize :: Int
+</span><a href="Crypto.ECC.Edwards25519.html#scalarArraySize"><span class="hs-identifier hs-var hs-var">scalarArraySize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">40</span></span><span> </span><span class="hs-comment">-- maximum [9 * 4 {- 32 bits -}, 5 * 8 {- 64 bits -}]</span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span class="annot"><span class="hs-comment">-- | A scalar modulo prime order of curve edwards25519.</span></span><span>
+</span><span id="line-92"></span><span class="hs-keyword">newtype</span><span> </span><span id="Scalar"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-var">Scalar</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Scalar"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-var">Scalar</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span><span>
+</span><span id="line-93"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679242455"><span id="local-6989586621679242461"><span id="local-6989586621679242465"><span class="annot"><span class="annottext">Int -&gt; Scalar -&gt; ShowS
+[Scalar] -&gt; ShowS
+Scalar -&gt; String
+(Int -&gt; Scalar -&gt; ShowS)
+-&gt; (Scalar -&gt; String) -&gt; ([Scalar] -&gt; ShowS) -&gt; Show Scalar
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; Scalar -&gt; ShowS
+showsPrec :: Int -&gt; Scalar -&gt; ShowS
+$cshow :: Scalar -&gt; String
+show :: Scalar -&gt; String
+$cshowList :: [Scalar] -&gt; ShowS
+showList :: [Scalar] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">,</span><span id="local-6989586621679242469"><span class="annot"><span class="annottext">Scalar -&gt; ()
+(Scalar -&gt; ()) -&gt; NFData Scalar
+forall a. (a -&gt; ()) -&gt; NFData a
+$crnf :: Scalar -&gt; ()
+rnf :: Scalar -&gt; ()
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">NFData</span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679242477"><span class="annot"><span class="hs-identifier hs-type">Eq</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-96"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242486"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242486"><span class="hs-identifier hs-var">s1</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679242487"><span class="annot"><span class="annottext">== :: Scalar -&gt; Scalar -&gt; Bool
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">==</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242488"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242488"><span class="hs-identifier hs-var">s2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Bool -&gt; Bool
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO Bool -&gt; Bool) -&gt; IO Bool -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-97"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO Bool) -&gt; IO Bool
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242486"><span class="hs-identifier hs-var">s1</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO Bool) -&gt; IO Bool)
+-&gt; (Ptr Scalar -&gt; IO Bool) -&gt; IO Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242490"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242490"><span class="hs-identifier hs-var">ps1</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-98"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO Bool) -&gt; IO Bool
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242488"><span class="hs-identifier hs-var">s2</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO Bool) -&gt; IO Bool)
+-&gt; (Ptr Scalar -&gt; IO Bool) -&gt; IO Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242491"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242491"><span class="hs-identifier hs-var">ps2</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-99"></span><span>            </span><span class="annot"><span class="annottext">(CInt -&gt; Bool) -&gt; IO CInt -&gt; IO Bool
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CInt -&gt; CInt -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Scalar -&gt; Ptr Scalar -&gt; IO CInt
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_scalar_eq"><span class="hs-identifier hs-var">ed25519_scalar_eq</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242490"><span class="hs-identifier hs-var">ps1</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242491"><span class="hs-identifier hs-var">ps2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span>    </span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="hs-pragma">(</span><span class="hs-pragma">==</span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointArraySize"><span class="hs-identifier hs-type">pointArraySize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-103"></span><span id="pointArraySize"><span class="annot"><span class="annottext">pointArraySize :: Int
+</span><a href="Crypto.ECC.Edwards25519.html#pointArraySize"><span class="hs-identifier hs-var hs-var">pointArraySize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">160</span></span><span> </span><span class="hs-comment">-- maximum [4 * 10 * 4 {- 32 bits -}, 4 * 5 * 8 {- 64 bits -}]</span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="annot"><span class="hs-comment">-- | A point on curve edwards25519.</span></span><span>
+</span><span id="line-106"></span><span class="hs-keyword">newtype</span><span> </span><span id="Point"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-var">Point</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Point"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-var">Point</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-107"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679242497"><span class="annot"><span class="annottext">Point -&gt; ()
+(Point -&gt; ()) -&gt; NFData Point
+forall a. (a -&gt; ()) -&gt; NFData a
+$crnf :: Point -&gt; ()
+rnf :: Point -&gt; ()
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">NFData</span></span></span><span>
+</span><span id="line-108"></span><span>
+</span><span id="line-109"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679242504"><span id="local-6989586621679242508"><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-110"></span><span>    </span><span id="local-6989586621679242517"><span class="annot"><span class="annottext">showsPrec :: Int -&gt; Point -&gt; ShowS
+</span><a href="#local-6989586621679242517"><span class="hs-identifier hs-var hs-var hs-var hs-var">showsPrec</span></a></span></span><span> </span><span id="local-6989586621679242519"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242519"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span id="local-6989586621679242520"><span class="annot"><span class="annottext">Point
+</span><a href="#local-6989586621679242520"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-111"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679242522"><span class="annot"><span class="annottext">bs :: Bytes
+</span><a href="#local-6989586621679242522"><span class="hs-identifier hs-var hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Point -&gt; Bytes
+forall bs. ByteArray bs =&gt; Point -&gt; bs
+</span><a href="Crypto.ECC.Edwards25519.html#pointEncode"><span class="hs-identifier hs-var">pointEncode</span></a></span><span> </span><span class="annot"><span class="annottext">Point
+</span><a href="#local-6989586621679242520"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-112"></span><span>         </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; ShowS -&gt; ShowS
+</span><span class="hs-identifier hs-var">showParen</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242519"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ShowS -&gt; ShowS) -&gt; ShowS -&gt; ShowS
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; ShowS
+</span><span class="hs-identifier hs-var">showString</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Point &quot;</span></span><span>
+</span><span id="line-113"></span><span>                               </span><span class="annot"><span class="annottext">ShowS -&gt; ShowS -&gt; ShowS
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; ShowS
+forall a. Show a =&gt; a -&gt; ShowS
+</span><span class="hs-identifier hs-var">shows</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Base -&gt; Bytes -&gt; Bytes
+forall bin bout.
+(ByteArrayAccess bin, ByteArray bout) =&gt;
+Base -&gt; bin -&gt; bout
+</span><span class="hs-identifier hs-var">B.convertToBase</span></span><span> </span><span class="annot"><span class="annottext">Base
+</span><span class="hs-identifier hs-var">B.Base16</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242522"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>
+</span><span id="line-115"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679242532"><span class="annot"><span class="hs-identifier hs-type">Eq</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-116"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242540"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242540"><span class="hs-identifier hs-var">p1</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679242541"><span class="annot"><span class="annottext">== :: Point -&gt; Point -&gt; Bool
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">==</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242542"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242542"><span class="hs-identifier hs-var">p2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Bool -&gt; Bool
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO Bool -&gt; Bool) -&gt; IO Bool -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-117"></span><span>        </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO Bool) -&gt; IO Bool
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242540"><span class="hs-identifier hs-var">p1</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO Bool) -&gt; IO Bool)
+-&gt; (Ptr Point -&gt; IO Bool) -&gt; IO Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242543"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242543"><span class="hs-identifier hs-var">pp1</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-118"></span><span>        </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO Bool) -&gt; IO Bool
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242542"><span class="hs-identifier hs-var">p2</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO Bool) -&gt; IO Bool)
+-&gt; (Ptr Point -&gt; IO Bool) -&gt; IO Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242544"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242544"><span class="hs-identifier hs-var">pp2</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-119"></span><span>            </span><span class="annot"><span class="annottext">(CInt -&gt; Bool) -&gt; IO CInt -&gt; IO Bool
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CInt -&gt; CInt -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Point -&gt; Ptr Point -&gt; IO CInt
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_point_eq"><span class="hs-identifier hs-var">ed25519_point_eq</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242543"><span class="hs-identifier hs-var">pp1</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242544"><span class="hs-identifier hs-var">pp2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-120"></span><span>    </span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="hs-pragma">(</span><span class="hs-pragma">==</span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-121"></span><span>
+</span><span id="line-122"></span><span class="annot"><span class="hs-comment">-- | Generate a random scalar.</span></span><span>
+</span><span id="line-123"></span><span id="local-6989586621679242367"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarGenerate"><span class="hs-identifier hs-type">scalarGenerate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Random.Types.html#MonadRandom"><span class="hs-identifier hs-type">MonadRandom</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679242367"><span class="hs-identifier hs-type">randomly</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242367"><span class="hs-identifier hs-type">randomly</span></a></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span></span><span>
+</span><span id="line-124"></span><span id="scalarGenerate"><span class="annot"><span class="annottext">scalarGenerate :: forall (randomly :: * -&gt; *).
+MonadRandom randomly =&gt;
+randomly Scalar
+</span><a href="Crypto.ECC.Edwards25519.html#scalarGenerate"><span class="hs-identifier hs-var hs-var">scalarGenerate</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoFailable Scalar -&gt; Scalar
+forall a. CryptoFailable a -&gt; a
+</span><a href="Crypto.Error.Types.html#throwCryptoError"><span class="hs-identifier hs-var">throwCryptoError</span></a></span><span> </span><span class="annot"><span class="annottext">(CryptoFailable Scalar -&gt; Scalar)
+-&gt; (ScrubbedBytes -&gt; CryptoFailable Scalar)
+-&gt; ScrubbedBytes
+-&gt; Scalar
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; CryptoFailable Scalar
+forall bs. ByteArrayAccess bs =&gt; bs -&gt; CryptoFailable Scalar
+</span><a href="Crypto.ECC.Edwards25519.html#scalarDecodeLong"><span class="hs-identifier hs-var">scalarDecodeLong</span></a></span><span> </span><span class="annot"><span class="annottext">(ScrubbedBytes -&gt; Scalar)
+-&gt; randomly ScrubbedBytes -&gt; randomly Scalar
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">randomly ScrubbedBytes
+forall (randomly :: * -&gt; *).
+MonadRandom randomly =&gt;
+randomly ScrubbedBytes
+</span><a href="#local-6989586621679242558"><span class="hs-identifier hs-var">generate</span></a></span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-126"></span><span>    </span><span class="hs-comment">-- Scalar generation is based on a fixed number of bytes so that</span><span>
+</span><span id="line-127"></span><span>    </span><span class="hs-comment">-- there is no timing leak.  But because of modular reduction</span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-comment">-- distribution is not uniform.  We use many more bytes than</span><span>
+</span><span id="line-129"></span><span>    </span><span class="hs-comment">-- necessary so the probability bias is small.  With 512 bits we</span><span>
+</span><span id="line-130"></span><span>    </span><span class="hs-comment">-- get 22% of scalars with a higher frequency, but the relative</span><span>
+</span><span id="line-131"></span><span>    </span><span class="hs-comment">-- probability difference is only 2^(-260).</span><span>
+</span><span id="line-132"></span><span>    </span><span id="local-6989586621679242379"><span class="annot"><a href="#local-6989586621679242558"><span class="hs-identifier hs-type">generate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Random.Types.html#MonadRandom"><span class="hs-identifier hs-type">MonadRandom</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679242379"><span class="hs-identifier hs-type">randomly</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242379"><span class="hs-identifier hs-type">randomly</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span></span><span>
+</span><span id="line-133"></span><span>    </span><span id="local-6989586621679242558"><span class="annot"><span class="annottext">generate :: forall (randomly :: * -&gt; *).
+MonadRandom randomly =&gt;
+randomly ScrubbedBytes
+</span><a href="#local-6989586621679242558"><span class="hs-identifier hs-var hs-var">generate</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; randomly ScrubbedBytes
+forall byteArray. ByteArray byteArray =&gt; Int -&gt; randomly byteArray
+forall (m :: * -&gt; *) byteArray.
+(MonadRandom m, ByteArray byteArray) =&gt;
+Int -&gt; m byteArray
+</span><a href="Crypto.Random.Types.html#getRandomBytes"><span class="hs-identifier hs-var">getRandomBytes</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">64</span></span><span>
+</span><span id="line-134"></span><span>
+</span><span id="line-135"></span><span class="hs-comment">-- | Serialize a scalar to binary, i.e. a 32-byte little-endian</span><span>
+</span><span id="line-136"></span><span class="hs-comment">-- number.</span><span>
+</span><span id="line-137"></span><span id="local-6989586621679242382"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarEncode"><span class="hs-identifier hs-type">scalarEncode</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679242382"><span class="hs-identifier hs-type">bs</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242382"><span class="hs-identifier hs-type">bs</span></a></span></span><span>
+</span><span id="line-138"></span><span id="scalarEncode"><span class="annot"><span class="annottext">scalarEncode :: forall bs. ByteArray bs =&gt; Scalar -&gt; bs
+</span><a href="Crypto.ECC.Edwards25519.html#scalarEncode"><span class="hs-identifier hs-var hs-var">scalarEncode</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242566"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242566"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-139"></span><span>    </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; bs
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; bs) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; bs
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242568"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679242568"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-140"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242566"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242569"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242569"><span class="hs-identifier hs-var">ps</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Scalar -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_scalar_encode"><span class="hs-identifier hs-var">ed25519_scalar_encode</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679242568"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242569"><span class="hs-identifier hs-var">ps</span></a></span><span>
+</span><span id="line-141"></span><span>
+</span><span id="line-142"></span><span class="hs-comment">-- | Deserialize a little-endian number as a scalar.  Input array can</span><span>
+</span><span id="line-143"></span><span class="hs-comment">-- have any length from 0 to 64 bytes.</span><span>
+</span><span id="line-144"></span><span class="hs-comment">--</span><span>
+</span><span id="line-145"></span><span class="hs-comment">-- Note: it is not advised to put secret information in the 3 lowest</span><span>
+</span><span id="line-146"></span><span class="hs-comment">-- bits of a scalar if this scalar may be multiplied to untrusted</span><span>
+</span><span id="line-147"></span><span class="hs-comment">-- points outside the prime-order subgroup.</span><span>
+</span><span id="line-148"></span><span id="local-6989586621679242375"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarDecodeLong"><span class="hs-identifier hs-type">scalarDecodeLong</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679242375"><span class="hs-identifier hs-type">bs</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242375"><span class="hs-identifier hs-type">bs</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Error.Types.html#CryptoFailable"><span class="hs-identifier hs-type">CryptoFailable</span></a></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span></span><span>
+</span><span id="line-149"></span><span id="scalarDecodeLong"><span class="annot"><span class="annottext">scalarDecodeLong :: forall bs. ByteArrayAccess bs =&gt; bs -&gt; CryptoFailable Scalar
+</span><a href="Crypto.ECC.Edwards25519.html#scalarDecodeLong"><span class="hs-identifier hs-var hs-var">scalarDecodeLong</span></a></span></span><span> </span><span id="local-6989586621679242576"><span class="annot"><span class="annottext">bs
+</span><a href="#local-6989586621679242576"><span class="hs-identifier hs-var">bs</span></a></span></span><span>
+</span><span id="line-150"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">bs -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">bs
+</span><a href="#local-6989586621679242576"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">64</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoError -&gt; CryptoFailable Scalar
+forall a. CryptoError -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoFailed"><span class="hs-identifier hs-var">CryptoFailed</span></a></span><span> </span><span class="annot"><span class="annottext">CryptoError
+</span><a href="Crypto.Error.Types.html#CryptoError_EcScalarOutOfBounds"><span class="hs-identifier hs-var">CryptoError_EcScalarOutOfBounds</span></a></span><span>
+</span><span id="line-151"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (CryptoFailable Scalar) -&gt; CryptoFailable Scalar
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO (CryptoFailable Scalar) -&gt; CryptoFailable Scalar)
+-&gt; IO (CryptoFailable Scalar) -&gt; CryptoFailable Scalar
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">bs
+-&gt; (Ptr Word8 -&gt; IO (CryptoFailable Scalar))
+-&gt; IO (CryptoFailable Scalar)
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. bs -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">bs
+</span><a href="#local-6989586621679242576"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (CryptoFailable Scalar)
+</span><a href="#local-6989586621679242580"><span class="hs-identifier hs-var">initialize</span></a></span><span>
+</span><span id="line-152"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-153"></span><span>    </span><span id="local-6989586621679242586"><span class="annot"><span class="annottext">len :: CSize
+</span><a href="#local-6989586621679242586"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; CSize
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; CSize) -&gt; Int -&gt; CSize
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">bs -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">bs
+</span><a href="#local-6989586621679242576"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-154"></span><span>    </span><span id="local-6989586621679242580"><span class="annot"><span class="annottext">initialize :: Ptr Word8 -&gt; IO (CryptoFailable Scalar)
+</span><a href="#local-6989586621679242580"><span class="hs-identifier hs-var hs-var">initialize</span></a></span></span><span> </span><span id="local-6989586621679242591"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679242591"><span class="hs-identifier hs-var">inp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-155"></span><span>        </span><span id="local-6989586621679242592"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242592"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ScrubbedBytes
+forall ba p. ByteArray ba =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; IO ba
+</span><span class="hs-identifier hs-var">B.alloc</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#scalarArraySize"><span class="hs-identifier hs-var">scalarArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; IO ScrubbedBytes)
+-&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ScrubbedBytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242594"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242594"><span class="hs-identifier hs-var">ps</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-156"></span><span>                 </span><span class="annot"><span class="annottext">Ptr Scalar -&gt; Ptr Word8 -&gt; CSize -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_scalar_decode_long"><span class="hs-identifier hs-var">ed25519_scalar_decode_long</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242594"><span class="hs-identifier hs-var">ps</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679242591"><span class="hs-identifier hs-var">inp</span></a></span><span> </span><span class="annot"><span class="annottext">CSize
+</span><a href="#local-6989586621679242586"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-157"></span><span>        </span><span class="annot"><span class="annottext">CryptoFailable Scalar -&gt; IO (CryptoFailable Scalar)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(CryptoFailable Scalar -&gt; IO (CryptoFailable Scalar))
+-&gt; CryptoFailable Scalar -&gt; IO (CryptoFailable Scalar)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Scalar -&gt; CryptoFailable Scalar
+forall a. a -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoPassed"><span class="hs-identifier hs-var">CryptoPassed</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; Scalar
+</span><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-var">Scalar</span></a></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242592"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-158"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarDecodeLong"><span class="hs-pragma hs-type">scalarDecodeLong</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-159"></span><span>
+</span><span id="line-160"></span><span class="annot"><span class="hs-comment">-- | Add two scalars.</span></span><span>
+</span><span id="line-161"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarAdd"><span class="hs-identifier hs-type">scalarAdd</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span>
+</span><span id="line-162"></span><span id="scalarAdd"><span class="annot"><span class="annottext">scalarAdd :: Scalar -&gt; Scalar -&gt; Scalar
+</span><a href="Crypto.ECC.Edwards25519.html#scalarAdd"><span class="hs-identifier hs-var hs-var">scalarAdd</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242597"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242597"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242598"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242598"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-163"></span><span>    </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; Scalar
+</span><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-var">Scalar</span></a></span><span> </span><span class="annot"><span class="annottext">(ScrubbedBytes -&gt; Scalar) -&gt; ScrubbedBytes -&gt; Scalar
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Scalar -&gt; IO ()) -&gt; ScrubbedBytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#scalarArraySize"><span class="hs-identifier hs-var">scalarArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; ScrubbedBytes)
+-&gt; (Ptr Scalar -&gt; IO ()) -&gt; ScrubbedBytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242599"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242599"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-164"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242597"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242600"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242600"><span class="hs-identifier hs-var">pa</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-165"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242598"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242601"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242601"><span class="hs-identifier hs-var">pb</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-166"></span><span>             </span><span class="annot"><span class="annottext">Ptr Scalar -&gt; Ptr Scalar -&gt; Ptr Scalar -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_scalar_add"><span class="hs-identifier hs-var">ed25519_scalar_add</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242599"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242600"><span class="hs-identifier hs-var">pa</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242601"><span class="hs-identifier hs-var">pb</span></a></span><span>
+</span><span id="line-167"></span><span>
+</span><span id="line-168"></span><span class="annot"><span class="hs-comment">-- | Multiply two scalars.</span></span><span>
+</span><span id="line-169"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#scalarMul"><span class="hs-identifier hs-type">scalarMul</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span>
+</span><span id="line-170"></span><span id="scalarMul"><span class="annot"><span class="annottext">scalarMul :: Scalar -&gt; Scalar -&gt; Scalar
+</span><a href="Crypto.ECC.Edwards25519.html#scalarMul"><span class="hs-identifier hs-var hs-var">scalarMul</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242603"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242603"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242604"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242604"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-171"></span><span>    </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; Scalar
+</span><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-var">Scalar</span></a></span><span> </span><span class="annot"><span class="annottext">(ScrubbedBytes -&gt; Scalar) -&gt; ScrubbedBytes -&gt; Scalar
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Scalar -&gt; IO ()) -&gt; ScrubbedBytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#scalarArraySize"><span class="hs-identifier hs-var">scalarArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; ScrubbedBytes)
+-&gt; (Ptr Scalar -&gt; IO ()) -&gt; ScrubbedBytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242605"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242605"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-172"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242603"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242606"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242606"><span class="hs-identifier hs-var">pa</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-173"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242604"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242607"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242607"><span class="hs-identifier hs-var">pb</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-174"></span><span>             </span><span class="annot"><span class="annottext">Ptr Scalar -&gt; Ptr Scalar -&gt; Ptr Scalar -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_scalar_mul"><span class="hs-identifier hs-var">ed25519_scalar_mul</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242605"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242606"><span class="hs-identifier hs-var">pa</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242607"><span class="hs-identifier hs-var">pb</span></a></span><span>
+</span><span id="line-175"></span><span>
+</span><span id="line-176"></span><span class="annot"><span class="hs-comment">-- | Multiplies a scalar with the curve base point.</span></span><span>
+</span><span id="line-177"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#toPoint"><span class="hs-identifier hs-type">toPoint</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-178"></span><span id="toPoint"><span class="annot"><span class="annottext">toPoint :: Scalar -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#toPoint"><span class="hs-identifier hs-var hs-var">toPoint</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242609"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242609"><span class="hs-identifier hs-var">scalar</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-179"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-var">Point</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Point) -&gt; Bytes -&gt; Point
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#pointArraySize"><span class="hs-identifier hs-var">pointArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242610"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242610"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-180"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242609"><span class="hs-identifier hs-var">scalar</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242611"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242611"><span class="hs-identifier hs-var">pscalar</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-181"></span><span>            </span><span class="annot"><span class="annottext">Ptr Point -&gt; Ptr Scalar -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_point_base_scalarmul"><span class="hs-identifier hs-var">ed25519_point_base_scalarmul</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242610"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242611"><span class="hs-identifier hs-var">pscalar</span></a></span><span>
+</span><span id="line-182"></span><span>
+</span><span id="line-183"></span><span class="hs-comment">-- | Serialize a point to a 32-byte array.</span><span>
+</span><span id="line-184"></span><span class="hs-comment">--</span><span>
+</span><span id="line-185"></span><span class="hs-comment">-- Format is binary compatible with 'Crypto.PubKey.Ed25519.PublicKey'</span><span>
+</span><span id="line-186"></span><span class="hs-comment">-- from module &quot;Crypto.PubKey.Ed25519&quot;.</span><span>
+</span><span id="line-187"></span><span id="local-6989586621679242358"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointEncode"><span class="hs-identifier hs-type">pointEncode</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679242358"><span class="hs-identifier hs-type">bs</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242358"><span class="hs-identifier hs-type">bs</span></a></span></span><span>
+</span><span id="line-188"></span><span id="pointEncode"><span class="annot"><span class="annottext">pointEncode :: forall bs. ByteArray bs =&gt; Point -&gt; bs
+</span><a href="Crypto.ECC.Edwards25519.html#pointEncode"><span class="hs-identifier hs-var hs-var">pointEncode</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242616"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242616"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-189"></span><span>    </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; bs
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; bs) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; bs
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242617"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679242617"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-190"></span><span>        </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242616"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242618"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242618"><span class="hs-identifier hs-var">pp</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-191"></span><span>             </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Point -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_point_encode"><span class="hs-identifier hs-var">ed25519_point_encode</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679242617"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242618"><span class="hs-identifier hs-var">pp</span></a></span><span>
+</span><span id="line-192"></span><span>
+</span><span id="line-193"></span><span class="hs-comment">-- | Deserialize a 32-byte array as a point, ensuring the point is</span><span>
+</span><span id="line-194"></span><span class="hs-comment">-- valid on edwards25519.</span><span>
+</span><span id="line-195"></span><span class="hs-comment">--</span><span>
+</span><span id="line-196"></span><span class="hs-comment">-- /WARNING:/ variable time</span><span>
+</span><span id="line-197"></span><span id="local-6989586621679242396"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointDecode"><span class="hs-identifier hs-type">pointDecode</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679242396"><span class="hs-identifier hs-type">bs</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242396"><span class="hs-identifier hs-type">bs</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Error.Types.html#CryptoFailable"><span class="hs-identifier hs-type">CryptoFailable</span></a></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span></span><span>
+</span><span id="line-198"></span><span id="pointDecode"><span class="annot"><span class="annottext">pointDecode :: forall bs. ByteArrayAccess bs =&gt; bs -&gt; CryptoFailable Point
+</span><a href="Crypto.ECC.Edwards25519.html#pointDecode"><span class="hs-identifier hs-var hs-var">pointDecode</span></a></span></span><span> </span><span id="local-6989586621679242626"><span class="annot"><span class="annottext">bs
+</span><a href="#local-6989586621679242626"><span class="hs-identifier hs-var">bs</span></a></span></span><span>
+</span><span id="line-199"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">bs -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">bs
+</span><a href="#local-6989586621679242626"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (CryptoFailable Point) -&gt; CryptoFailable Point
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO (CryptoFailable Point) -&gt; CryptoFailable Point)
+-&gt; IO (CryptoFailable Point) -&gt; CryptoFailable Point
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">bs
+-&gt; (Ptr Word8 -&gt; IO (CryptoFailable Point))
+-&gt; IO (CryptoFailable Point)
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. bs -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">bs
+</span><a href="#local-6989586621679242626"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (CryptoFailable Point)
+</span><a href="#local-6989586621679242627"><span class="hs-identifier hs-var">initialize</span></a></span><span>
+</span><span id="line-200"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoError -&gt; CryptoFailable Point
+forall a. CryptoError -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoFailed"><span class="hs-identifier hs-var">CryptoFailed</span></a></span><span> </span><span class="annot"><span class="annottext">CryptoError
+</span><a href="Crypto.Error.Types.html#CryptoError_PointSizeInvalid"><span class="hs-identifier hs-var">CryptoError_PointSizeInvalid</span></a></span><span>
+</span><span id="line-201"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-202"></span><span>    </span><span id="local-6989586621679242627"><span class="annot"><span class="annottext">initialize :: Ptr Word8 -&gt; IO (CryptoFailable Point)
+</span><a href="#local-6989586621679242627"><span class="hs-identifier hs-var hs-var">initialize</span></a></span></span><span> </span><span id="local-6989586621679242635"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679242635"><span class="hs-identifier hs-var">inp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-203"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679242636"><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679242636"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679242637"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242637"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Point -&gt; IO CInt) -&gt; IO (CInt, Bytes)
+forall ba p a. ByteArray ba =&gt; Int -&gt; (Ptr p -&gt; IO a) -&gt; IO (a, ba)
+forall p a. Int -&gt; (Ptr p -&gt; IO a) -&gt; IO (a, Bytes)
+</span><span class="hs-identifier hs-var">B.allocRet</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#pointArraySize"><span class="hs-identifier hs-var">pointArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO CInt) -&gt; IO (CInt, Bytes))
+-&gt; (Ptr Point -&gt; IO CInt) -&gt; IO (CInt, Bytes)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242639"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242639"><span class="hs-identifier hs-var">pp</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-204"></span><span>                        </span><span class="annot"><span class="annottext">Ptr Point -&gt; Ptr Word8 -&gt; IO CInt
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_point_decode_vartime"><span class="hs-identifier hs-var">ed25519_point_decode_vartime</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242639"><span class="hs-identifier hs-var">pp</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679242635"><span class="hs-identifier hs-var">inp</span></a></span><span>
+</span><span id="line-205"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679242636"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="annot"><span class="annottext">CInt -&gt; CInt -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">CryptoFailable Point -&gt; IO (CryptoFailable Point)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(CryptoFailable Point -&gt; IO (CryptoFailable Point))
+-&gt; CryptoFailable Point -&gt; IO (CryptoFailable Point)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">CryptoError -&gt; CryptoFailable Point
+forall a. CryptoError -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoFailed"><span class="hs-identifier hs-var">CryptoFailed</span></a></span><span> </span><span class="annot"><span class="annottext">CryptoError
+</span><a href="Crypto.Error.Types.html#CryptoError_PointCoordinatesInvalid"><span class="hs-identifier hs-var">CryptoError_PointCoordinatesInvalid</span></a></span><span>
+</span><span id="line-206"></span><span>                    </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">CryptoFailable Point -&gt; IO (CryptoFailable Point)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(CryptoFailable Point -&gt; IO (CryptoFailable Point))
+-&gt; CryptoFailable Point -&gt; IO (CryptoFailable Point)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Point -&gt; CryptoFailable Point
+forall a. a -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoPassed"><span class="hs-identifier hs-var">CryptoPassed</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bytes -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-var">Point</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242637"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-207"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointDecode"><span class="hs-pragma hs-type">pointDecode</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-208"></span><span>
+</span><span id="line-209"></span><span class="hs-comment">-- | Test whether a point belongs to the prime-order subgroup</span><span>
+</span><span id="line-210"></span><span class="hs-comment">-- generated by the base point.  Result is 'True' for the identity</span><span>
+</span><span id="line-211"></span><span class="hs-comment">-- point.</span><span>
+</span><span id="line-212"></span><span class="hs-comment">--</span><span>
+</span><span id="line-213"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-214"></span><span class="hs-comment">-- pointHasPrimeOrder p = 'pointNegate' p == 'pointMul' l_minus_one p</span><span>
+</span><span id="line-215"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-216"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointHasPrimeOrder"><span class="hs-identifier hs-type">pointHasPrimeOrder</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-217"></span><span id="pointHasPrimeOrder"><span class="annot"><span class="annottext">pointHasPrimeOrder :: Point -&gt; Bool
+</span><a href="Crypto.ECC.Edwards25519.html#pointHasPrimeOrder"><span class="hs-identifier hs-var hs-var">pointHasPrimeOrder</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242642"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242642"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Bool -&gt; Bool
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO Bool -&gt; Bool) -&gt; IO Bool -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-218"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO Bool) -&gt; IO Bool
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242642"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO Bool) -&gt; IO Bool)
+-&gt; (Ptr Point -&gt; IO Bool) -&gt; IO Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242643"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242643"><span class="hs-identifier hs-var">pp</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-219"></span><span>        </span><span class="annot"><span class="annottext">(CInt -&gt; Bool) -&gt; IO CInt -&gt; IO Bool
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CInt -&gt; CInt -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Point -&gt; IO CInt
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_point_has_prime_order"><span class="hs-identifier hs-var">ed25519_point_has_prime_order</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242643"><span class="hs-identifier hs-var">pp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-220"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointHasPrimeOrder"><span class="hs-pragma hs-type">pointHasPrimeOrder</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-221"></span><span>
+</span><span id="line-222"></span><span class="annot"><span class="hs-comment">-- | Negate a point.</span></span><span>
+</span><span id="line-223"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointNegate"><span class="hs-identifier hs-type">pointNegate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-224"></span><span id="pointNegate"><span class="annot"><span class="annottext">pointNegate :: Point -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#pointNegate"><span class="hs-identifier hs-var hs-var">pointNegate</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242645"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242645"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-225"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-var">Point</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Point) -&gt; Bytes -&gt; Point
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#pointArraySize"><span class="hs-identifier hs-var">pointArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242646"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242646"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-226"></span><span>        </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242645"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242647"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242647"><span class="hs-identifier hs-var">pa</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-227"></span><span>             </span><span class="annot"><span class="annottext">Ptr Point -&gt; Ptr Point -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_point_negate"><span class="hs-identifier hs-var">ed25519_point_negate</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242646"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242647"><span class="hs-identifier hs-var">pa</span></a></span><span>
+</span><span id="line-228"></span><span>
+</span><span id="line-229"></span><span class="annot"><span class="hs-comment">-- | Add two points.</span></span><span>
+</span><span id="line-230"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointAdd"><span class="hs-identifier hs-type">pointAdd</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-231"></span><span id="pointAdd"><span class="annot"><span class="annottext">pointAdd :: Point -&gt; Point -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#pointAdd"><span class="hs-identifier hs-var hs-var">pointAdd</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242649"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242649"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242650"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242650"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-232"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-var">Point</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Point) -&gt; Bytes -&gt; Point
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#pointArraySize"><span class="hs-identifier hs-var">pointArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242651"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242651"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-233"></span><span>        </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242649"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242652"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242652"><span class="hs-identifier hs-var">pa</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-234"></span><span>        </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242650"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242653"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242653"><span class="hs-identifier hs-var">pb</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-235"></span><span>             </span><span class="annot"><span class="annottext">Ptr Point -&gt; Ptr Point -&gt; Ptr Point -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_point_add"><span class="hs-identifier hs-var">ed25519_point_add</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242651"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242652"><span class="hs-identifier hs-var">pa</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242653"><span class="hs-identifier hs-var">pb</span></a></span><span>
+</span><span id="line-236"></span><span>
+</span><span id="line-237"></span><span class="hs-comment">-- | Add a point to itself.</span><span>
+</span><span id="line-238"></span><span class="hs-comment">--</span><span>
+</span><span id="line-239"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-240"></span><span class="hs-comment">-- pointDouble p = 'pointAdd' p p</span><span>
+</span><span id="line-241"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-242"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointDouble"><span class="hs-identifier hs-type">pointDouble</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-243"></span><span id="pointDouble"><span class="annot"><span class="annottext">pointDouble :: Point -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#pointDouble"><span class="hs-identifier hs-var hs-var">pointDouble</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242655"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242655"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-244"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-var">Point</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Point) -&gt; Bytes -&gt; Point
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#pointArraySize"><span class="hs-identifier hs-var">pointArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242656"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242656"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-245"></span><span>        </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242655"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242657"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242657"><span class="hs-identifier hs-var">pa</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-246"></span><span>             </span><span class="annot"><span class="annottext">Ptr Point -&gt; Ptr Point -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_point_double"><span class="hs-identifier hs-var">ed25519_point_double</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242656"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242657"><span class="hs-identifier hs-var">pa</span></a></span><span>
+</span><span id="line-247"></span><span>
+</span><span id="line-248"></span><span class="hs-comment">-- | Multiply a point by h = 8.</span><span>
+</span><span id="line-249"></span><span class="hs-comment">--</span><span>
+</span><span id="line-250"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-251"></span><span class="hs-comment">-- pointMulByCofactor p = 'pointMul' scalar_8 p</span><span>
+</span><span id="line-252"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-253"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointMulByCofactor"><span class="hs-identifier hs-type">pointMulByCofactor</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-254"></span><span id="pointMulByCofactor"><span class="annot"><span class="annottext">pointMulByCofactor :: Point -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#pointMulByCofactor"><span class="hs-identifier hs-var hs-var">pointMulByCofactor</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242659"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242659"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-255"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-var">Point</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Point) -&gt; Bytes -&gt; Point
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#pointArraySize"><span class="hs-identifier hs-var">pointArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242660"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242660"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-256"></span><span>        </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242659"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242661"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242661"><span class="hs-identifier hs-var">pa</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-257"></span><span>             </span><span class="annot"><span class="annottext">Ptr Point -&gt; Ptr Point -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_point_mul_by_cofactor"><span class="hs-identifier hs-var">ed25519_point_mul_by_cofactor</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242660"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242661"><span class="hs-identifier hs-var">pa</span></a></span><span>
+</span><span id="line-258"></span><span>
+</span><span id="line-259"></span><span class="hs-comment">-- | Scalar multiplication over curve edwards25519.</span><span>
+</span><span id="line-260"></span><span class="hs-comment">--</span><span>
+</span><span id="line-261"></span><span class="hs-comment">-- Note: when the scalar had reduction modulo L and the input point</span><span>
+</span><span id="line-262"></span><span class="hs-comment">-- has a torsion component, the output point may not be in the</span><span>
+</span><span id="line-263"></span><span class="hs-comment">-- expected subgroup.</span><span>
+</span><span id="line-264"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointMul"><span class="hs-identifier hs-type">pointMul</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-265"></span><span id="pointMul"><span class="annot"><span class="annottext">pointMul :: Scalar -&gt; Point -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#pointMul"><span class="hs-identifier hs-var hs-var">pointMul</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242663"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242663"><span class="hs-identifier hs-var">scalar</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242664"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242664"><span class="hs-identifier hs-var">base</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-266"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-var">Point</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Point) -&gt; Bytes -&gt; Point
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#pointArraySize"><span class="hs-identifier hs-var">pointArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242665"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242665"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-267"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242663"><span class="hs-identifier hs-var">scalar</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242666"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242666"><span class="hs-identifier hs-var">pscalar</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-268"></span><span>        </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242664"><span class="hs-identifier hs-var">base</span></a></span><span>   </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242667"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242667"><span class="hs-identifier hs-var">pbase</span></a></span></span><span>   </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-269"></span><span>             </span><span class="annot"><span class="annottext">Ptr Point -&gt; Ptr Point -&gt; Ptr Scalar -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_point_scalarmul"><span class="hs-identifier hs-var">ed25519_point_scalarmul</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242665"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242667"><span class="hs-identifier hs-var">pbase</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242666"><span class="hs-identifier hs-var">pscalar</span></a></span><span>
+</span><span id="line-270"></span><span>
+</span><span id="line-271"></span><span class="hs-comment">-- | Multiply the point @p@ with @s2@ and add a lifted to curve value @s1@.</span><span>
+</span><span id="line-272"></span><span class="hs-comment">--</span><span>
+</span><span id="line-273"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-274"></span><span class="hs-comment">-- pointsMulVarTime s1 s2 p = 'pointAdd' ('toPoint' s1) ('pointMul' s2 p)</span><span>
+</span><span id="line-275"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-276"></span><span class="hs-comment">--</span><span>
+</span><span id="line-277"></span><span class="hs-comment">-- /WARNING:/ variable time</span><span>
+</span><span id="line-278"></span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#pointsMulVarTime"><span class="hs-identifier hs-type">pointsMulVarTime</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-279"></span><span id="pointsMulVarTime"><span class="annot"><span class="annottext">pointsMulVarTime :: Scalar -&gt; Scalar -&gt; Point -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#pointsMulVarTime"><span class="hs-identifier hs-var hs-var">pointsMulVarTime</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242669"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242669"><span class="hs-identifier hs-var">s1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span id="local-6989586621679242670"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242670"><span class="hs-identifier hs-var">s2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span id="local-6989586621679242671"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242671"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-280"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; Point
+</span><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-var">Point</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Point) -&gt; Bytes -&gt; Point
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.ECC.Edwards25519.html#pointArraySize"><span class="hs-identifier hs-var">pointArraySize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Point -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242672"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242672"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-281"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242669"><span class="hs-identifier hs-var">s1</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242673"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242673"><span class="hs-identifier hs-var">ps1</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-282"></span><span>        </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242670"><span class="hs-identifier hs-var">s2</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Scalar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Scalar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242674"><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242674"><span class="hs-identifier hs-var">ps2</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-283"></span><span>        </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242671"><span class="hs-identifier hs-var">p</span></a></span><span>  </span><span class="annot"><span class="annottext">((Ptr Point -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Point -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242675"><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242675"><span class="hs-identifier hs-var">pp</span></a></span></span><span>  </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-284"></span><span>             </span><span class="annot"><span class="annottext">Ptr Point -&gt; Ptr Scalar -&gt; Ptr Point -&gt; Ptr Scalar -&gt; IO ()
+</span><a href="Crypto.ECC.Edwards25519.html#ed25519_base_double_scalarmul_vartime"><span class="hs-identifier hs-var">ed25519_base_double_scalarmul_vartime</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242672"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242673"><span class="hs-identifier hs-var">ps1</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Point
+</span><a href="#local-6989586621679242675"><span class="hs-identifier hs-var">pp</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Scalar
+</span><a href="#local-6989586621679242674"><span class="hs-identifier hs-var">ps2</span></a></span><span>
+</span><span id="line-285"></span><span>
+</span><span id="line-286"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_scalar_eq&quot;</span></span><span>
+</span><span id="line-287"></span><span>    </span><span id="ed25519_scalar_eq"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_scalar_eq"><span class="hs-identifier hs-var">ed25519_scalar_eq</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span>
+</span><span id="line-288"></span><span>                      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span>
+</span><span id="line-289"></span><span>                      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">CInt</span></span><span>
+</span><span id="line-290"></span><span>
+</span><span id="line-291"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_scalar_encode&quot;</span></span><span>
+</span><span id="line-292"></span><span>    </span><span id="ed25519_scalar_encode"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_scalar_encode"><span class="hs-identifier hs-var">ed25519_scalar_encode</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>
+</span><span id="line-293"></span><span>                          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span>
+</span><span id="line-294"></span><span>                          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-295"></span><span>
+</span><span id="line-296"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_scalar_decode_long&quot;</span></span><span>
+</span><span id="line-297"></span><span>    </span><span id="ed25519_scalar_decode_long"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_scalar_decode_long"><span class="hs-identifier hs-var">ed25519_scalar_decode_long</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span>
+</span><span id="line-298"></span><span>                               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>
+</span><span id="line-299"></span><span>                               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">CSize</span></span><span>
+</span><span id="line-300"></span><span>                               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-301"></span><span>
+</span><span id="line-302"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_scalar_add&quot;</span></span><span>
+</span><span id="line-303"></span><span>    </span><span id="ed25519_scalar_add"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_scalar_add"><span class="hs-identifier hs-var">ed25519_scalar_add</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-comment">-- sum</span><span>
+</span><span id="line-304"></span><span>                       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-comment">-- a</span><span>
+</span><span id="line-305"></span><span>                       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-comment">-- b</span><span>
+</span><span id="line-306"></span><span>                       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-307"></span><span>
+</span><span id="line-308"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_scalar_mul&quot;</span></span><span>
+</span><span id="line-309"></span><span>    </span><span id="ed25519_scalar_mul"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_scalar_mul"><span class="hs-identifier hs-var">ed25519_scalar_mul</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-comment">-- out</span><span>
+</span><span id="line-310"></span><span>                       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-comment">-- a</span><span>
+</span><span id="line-311"></span><span>                       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-comment">-- b</span><span>
+</span><span id="line-312"></span><span>                       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-313"></span><span>
+</span><span id="line-314"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_point_encode&quot;</span></span><span>
+</span><span id="line-315"></span><span>    </span><span id="ed25519_point_encode"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_point_encode"><span class="hs-identifier hs-var">ed25519_point_encode</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>
+</span><span id="line-316"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-317"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-318"></span><span>
+</span><span id="line-319"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_point_decode_vartime&quot;</span></span><span>
+</span><span id="line-320"></span><span>    </span><span id="ed25519_point_decode_vartime"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_point_decode_vartime"><span class="hs-identifier hs-var">ed25519_point_decode_vartime</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-321"></span><span>                                 </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>
+</span><span id="line-322"></span><span>                                 </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">CInt</span></span><span>
+</span><span id="line-323"></span><span>
+</span><span id="line-324"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_point_eq&quot;</span></span><span>
+</span><span id="line-325"></span><span>    </span><span id="ed25519_point_eq"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_point_eq"><span class="hs-identifier hs-var">ed25519_point_eq</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-326"></span><span>                     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-327"></span><span>                     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">CInt</span></span><span>
+</span><span id="line-328"></span><span>
+</span><span id="line-329"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_point_has_prime_order&quot;</span></span><span>
+</span><span id="line-330"></span><span>    </span><span id="ed25519_point_has_prime_order"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_point_has_prime_order"><span class="hs-identifier hs-var">ed25519_point_has_prime_order</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>
+</span><span id="line-331"></span><span>                                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">CInt</span></span><span>
+</span><span id="line-332"></span><span>
+</span><span id="line-333"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_point_negate&quot;</span></span><span>
+</span><span id="line-334"></span><span>    </span><span id="ed25519_point_negate"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_point_negate"><span class="hs-identifier hs-var">ed25519_point_negate</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-comment">-- minus_a</span><span>
+</span><span id="line-335"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-comment">-- a</span><span>
+</span><span id="line-336"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-337"></span><span>
+</span><span id="line-338"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_point_add&quot;</span></span><span>
+</span><span id="line-339"></span><span>    </span><span id="ed25519_point_add"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_point_add"><span class="hs-identifier hs-var">ed25519_point_add</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-comment">-- sum</span><span>
+</span><span id="line-340"></span><span>                      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-comment">-- a</span><span>
+</span><span id="line-341"></span><span>                      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-comment">-- b</span><span>
+</span><span id="line-342"></span><span>                      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-343"></span><span>
+</span><span id="line-344"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_point_double&quot;</span></span><span>
+</span><span id="line-345"></span><span>    </span><span id="ed25519_point_double"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_point_double"><span class="hs-identifier hs-var">ed25519_point_double</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-comment">-- two_a</span><span>
+</span><span id="line-346"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-comment">-- a</span><span>
+</span><span id="line-347"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-348"></span><span>
+</span><span id="line-349"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_point_mul_by_cofactor&quot;</span></span><span>
+</span><span id="line-350"></span><span>    </span><span id="ed25519_point_mul_by_cofactor"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_point_mul_by_cofactor"><span class="hs-identifier hs-var">ed25519_point_mul_by_cofactor</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-comment">-- eight_a</span><span>
+</span><span id="line-351"></span><span>                                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span> </span><span class="hs-comment">-- a</span><span>
+</span><span id="line-352"></span><span>                                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-353"></span><span>
+</span><span id="line-354"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_point_base_scalarmul&quot;</span></span><span>
+</span><span id="line-355"></span><span>    </span><span id="ed25519_point_base_scalarmul"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_point_base_scalarmul"><span class="hs-identifier hs-var">ed25519_point_base_scalarmul</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>  </span><span class="hs-comment">-- scaled</span><span>
+</span><span id="line-356"></span><span>                                 </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-comment">-- scalar</span><span>
+</span><span id="line-357"></span><span>                                 </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-358"></span><span>
+</span><span id="line-359"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_point_scalarmul&quot;</span></span><span>
+</span><span id="line-360"></span><span>    </span><span id="ed25519_point_scalarmul"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_point_scalarmul"><span class="hs-identifier hs-var">ed25519_point_scalarmul</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>  </span><span class="hs-comment">-- scaled</span><span>
+</span><span id="line-361"></span><span>                            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>  </span><span class="hs-comment">-- base</span><span>
+</span><span id="line-362"></span><span>                            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-comment">-- scalar</span><span>
+</span><span id="line-363"></span><span>                            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-364"></span><span>
+</span><span id="line-365"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_ed25519_base_double_scalarmul_vartime&quot;</span></span><span>
+</span><span id="line-366"></span><span>    </span><span id="ed25519_base_double_scalarmul_vartime"><span class="annot"><a href="Crypto.ECC.Edwards25519.html#ed25519_base_double_scalarmul_vartime"><span class="hs-identifier hs-var">ed25519_base_double_scalarmul_vartime</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>  </span><span class="hs-comment">-- combo</span><span>
+</span><span id="line-367"></span><span>                                          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-comment">-- scalar1</span><span>
+</span><span id="line-368"></span><span>                                          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Point"><span class="hs-identifier hs-type">Point</span></a></span><span>  </span><span class="hs-comment">-- base2</span><span>
+</span><span id="line-369"></span><span>                                          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.ECC.Edwards25519.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-comment">-- scalar2</span><span>
+</span><span id="line-370"></span><span>                                          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-371"></span></pre></body></html>

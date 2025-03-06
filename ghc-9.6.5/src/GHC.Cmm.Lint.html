@@ -1,0 +1,1178 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-2"></span><span class="hs-comment">--</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- (c) The University of Glasgow 2011</span><span>
+</span><span id="line-4"></span><span class="hs-comment">--</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- CmmLint: checking the correctness of Cmm statements and expressions</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-8"></span><span class="hs-pragma">{-# LANGUAGE DeriveFunctor #-}</span><span>
+</span><span id="line-9"></span><span class="hs-pragma">{-# LANGUAGE DerivingVia #-}</span><span>
+</span><span id="line-10"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-11"></span><span class="hs-pragma">{-# LANGUAGE GADTs #-}</span><span>
+</span><span id="line-12"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Cmm.Lint</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="GHC.Cmm.Lint.html#cmmLint"><span class="hs-identifier">cmmLint</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#cmmLintGraph"><span class="hs-identifier">cmmLintGraph</span></a></span><span>
+</span><span id="line-14"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Platform.html"><span class="hs-identifier">GHC.Platform</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Platform.Regs.html"><span class="hs-identifier">GHC.Platform.Regs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Platform.Regs.html#callerSaves"><span class="hs-identifier">callerSaves</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Block.html"><span class="hs-identifier">GHC.Cmm.Dataflow.Block</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Collections.html"><span class="hs-identifier">GHC.Cmm.Dataflow.Collections</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Graph.html"><span class="hs-identifier">GHC.Cmm.Dataflow.Graph</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Label.html"><span class="hs-identifier">GHC.Cmm.Dataflow.Label</span></a></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.html"><span class="hs-identifier">GHC.Cmm</span></a></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.Liveness.html"><span class="hs-identifier">GHC.Cmm.Liveness</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.Switch.html"><span class="hs-identifier">GHC.Cmm.Switch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Switch.html#switchTargetsToList"><span class="hs-identifier">switchTargetsToList</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.CLabel.html"><span class="hs-identifier">GHC.Cmm.CLabel</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.CLabel.html#pprDebugCLabel"><span class="hs-identifier">pprDebugCLabel</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html"><span class="hs-identifier">GHC.Utils.Outputable</span></a></span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.html#/Control.Monad.html"><span class="hs-identifier">Control.Monad</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.html#unless/Control.Monad.html#unless"><span class="hs-identifier">unless</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Except.html#/Control.Monad.Trans.Except.html"><span class="hs-identifier">Control.Monad.Trans.Except</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Except.html#ExceptT/Control.Monad.Trans.Except.html#ExceptT"><span class="hs-identifier">ExceptT</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Except.html#Except/Control.Monad.Trans.Except.html#Except"><span class="hs-identifier">Except</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Reader.html#/Control.Monad.Trans.Reader.html"><span class="hs-identifier">Control.Monad.Trans.Reader</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Reader.html#ReaderT/Control.Monad.Trans.Reader.html#ReaderT"><span class="hs-identifier">ReaderT</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Functor.Identity.html#/Data.Functor.Identity.html"><span class="hs-identifier">Data.Functor.Identity</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Functor.Identity.html#Identity/Data.Functor.Identity.html#Identity"><span class="hs-identifier">Identity</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- Things to check:</span><span>
+</span><span id="line-36"></span><span class="hs-comment">--     - invariant on CmmBlock in GHC.Cmm.Expr (see comment there)</span><span>
+</span><span id="line-37"></span><span class="hs-comment">--     - check for branches to blocks that don't exist</span><span>
+</span><span id="line-38"></span><span class="hs-comment">--     - check types</span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- -----------------------------------------------------------------------------</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- Exported entry points:</span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span id="local-6989586621681853038"><span id="local-6989586621681853039"><span class="annot"><a href="GHC.Cmm.Lint.html#cmmLint"><span class="hs-identifier hs-type">cmmLint</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.Outputable.html#OutputableP"><span class="hs-identifier hs-type">OutputableP</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853038"><span class="hs-identifier hs-type">d</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#OutputableP"><span class="hs-identifier hs-type">OutputableP</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853039"><span class="hs-identifier hs-type">h</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.html#GenCmmGroup"><span class="hs-identifier hs-type">GenCmmGroup</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853038"><span class="hs-identifier hs-type">d</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853039"><span class="hs-identifier hs-type">h</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.html#CmmGraph"><span class="hs-identifier hs-type">CmmGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#SDoc"><span class="hs-identifier hs-type">SDoc</span></a></span></span></span><span>
+</span><span id="line-45"></span><span id="cmmLint"><span class="annot"><span class="annottext">cmmLint :: forall d h.
+(OutputableP Platform d, OutputableP Platform h) =&gt;
+Platform -&gt; GenCmmGroup d h CmmGraph -&gt; Maybe SDoc
+</span><a href="GHC.Cmm.Lint.html#cmmLint"><span class="hs-identifier hs-var hs-var">cmmLint</span></a></span></span><span> </span><span id="local-6989586621681853292"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853292"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681853293"><span class="annot"><span class="annottext">[GenCmmDecl d h CmmGraph]
+</span><a href="#local-6989586621681853293"><span class="hs-identifier hs-var">tops</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Platform
+-&gt; ([GenCmmDecl d h CmmGraph] -&gt; CmmLint ())
+-&gt; [GenCmmDecl d h CmmGraph]
+-&gt; Maybe SDoc
+forall a b.
+OutputableP Platform a =&gt;
+Platform -&gt; (a -&gt; CmmLint b) -&gt; a -&gt; Maybe SDoc
+</span><a href="GHC.Cmm.Lint.html#runCmmLint"><span class="hs-identifier hs-var">runCmmLint</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853292"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(GenCmmDecl d h CmmGraph -&gt; CmmLint ())
+-&gt; [GenCmmDecl d h CmmGraph] -&gt; CmmLint ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#mapM_/Data.Foldable.html#mapM_"><span class="hs-identifier hs-var">mapM_</span></a></span><span> </span><span class="annot"><span class="annottext">GenCmmDecl d h CmmGraph -&gt; CmmLint ()
+forall h i. GenCmmDecl h i CmmGraph -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmDecl"><span class="hs-identifier hs-var">lintCmmDecl</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[GenCmmDecl d h CmmGraph]
+</span><a href="#local-6989586621681853293"><span class="hs-identifier hs-var">tops</span></a></span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="annot"><a href="GHC.Cmm.Lint.html#cmmLintGraph"><span class="hs-identifier hs-type">cmmLintGraph</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.html#CmmGraph"><span class="hs-identifier hs-type">CmmGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#SDoc"><span class="hs-identifier hs-type">SDoc</span></a></span><span>
+</span><span id="line-48"></span><span id="cmmLintGraph"><span class="annot"><span class="annottext">cmmLintGraph :: Platform -&gt; CmmGraph -&gt; Maybe SDoc
+</span><a href="GHC.Cmm.Lint.html#cmmLintGraph"><span class="hs-identifier hs-var hs-var">cmmLintGraph</span></a></span></span><span> </span><span id="local-6989586621681853297"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853297"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681853298"><span class="annot"><span class="annottext">CmmGraph
+</span><a href="#local-6989586621681853298"><span class="hs-identifier hs-var">g</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Platform -&gt; (CmmGraph -&gt; CmmLint ()) -&gt; CmmGraph -&gt; Maybe SDoc
+forall a b.
+OutputableP Platform a =&gt;
+Platform -&gt; (a -&gt; CmmLint b) -&gt; a -&gt; Maybe SDoc
+</span><a href="GHC.Cmm.Lint.html#runCmmLint"><span class="hs-identifier hs-var">runCmmLint</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853297"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmGraph -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmGraph"><span class="hs-identifier hs-var">lintCmmGraph</span></a></span><span> </span><span class="annot"><span class="annottext">CmmGraph
+</span><a href="#local-6989586621681853298"><span class="hs-identifier hs-var">g</span></a></span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span id="local-6989586621681853049"><span id="local-6989586621681853050"><span class="annot"><a href="GHC.Cmm.Lint.html#runCmmLint"><span class="hs-identifier hs-type">runCmmLint</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#OutputableP"><span class="hs-identifier hs-type">OutputableP</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853049"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681853049"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853050"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621681853049"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#SDoc"><span class="hs-identifier hs-type">SDoc</span></a></span></span></span><span>
+</span><span id="line-51"></span><span id="runCmmLint"><span class="annot"><span class="annottext">runCmmLint :: forall a b.
+OutputableP Platform a =&gt;
+Platform -&gt; (a -&gt; CmmLint b) -&gt; a -&gt; Maybe SDoc
+</span><a href="GHC.Cmm.Lint.html#runCmmLint"><span class="hs-identifier hs-var hs-var">runCmmLint</span></a></span></span><span> </span><span id="local-6989586621681853306"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853306"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681853307"><span class="annot"><span class="annottext">a -&gt; CmmLint b
+</span><a href="#local-6989586621681853307"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span id="local-6989586621681853308"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681853308"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-52"></span><span>   </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">CmmLint b -&gt; Platform -&gt; Either SDoc b
+forall a. CmmLint a -&gt; Platform -&gt; Either SDoc a
+</span><a href="GHC.Cmm.Lint.html#unCL"><span class="hs-identifier hs-var">unCL</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; CmmLint b
+</span><a href="#local-6989586621681853307"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681853308"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853306"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-53"></span><span>     </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#Left/Data.Either.html#Left"><span class="hs-identifier hs-type">Left</span></a></span><span> </span><span id="local-6989586621681853310"><span class="annot"><span class="annottext">SDoc
+</span><a href="#local-6989586621681853310"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; Maybe SDoc
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PprStyle -&gt; SDoc -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#withPprStyle"><span class="hs-identifier hs-var">withPprStyle</span></a></span><span> </span><span class="annot"><span class="annottext">PprStyle
+</span><a href="GHC.Utils.Outputable.html#defaultDumpStyle"><span class="hs-identifier hs-var">defaultDumpStyle</span></a></span><span> </span><span class="annot"><span class="annottext">(SDoc -&gt; SDoc) -&gt; SDoc -&gt; SDoc
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[SDoc] -&gt; SDoc
+forall doc. IsDoc doc =&gt; [doc] -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#vcat"><span class="hs-identifier hs-var">vcat</span></a></span><span>
+</span><span id="line-54"></span><span>                            </span><span class="hs-special">[</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Cmm lint error:&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-55"></span><span>                             </span><span class="annot"><span class="annottext">Int -&gt; SDoc -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#nest"><span class="hs-identifier hs-var">nest</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="annot"><span class="annottext">SDoc
+</span><a href="#local-6989586621681853310"><span class="hs-identifier hs-var">err</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-56"></span><span>                             </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Program was:&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-57"></span><span>                             </span><span class="annot"><span class="annottext">Int -&gt; SDoc -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#nest"><span class="hs-identifier hs-var">nest</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform -&gt; a -&gt; SDoc
+forall env a. OutputableP env a =&gt; env -&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#pdoc"><span class="hs-identifier hs-var">pdoc</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853306"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681853308"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-58"></span><span>     </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#Right/Data.Either.html#Right"><span class="hs-identifier hs-type">Right</span></a></span><span> </span><span class="annot"><span class="annottext">b
+</span><span class="hs-identifier">_</span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe SDoc
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-59"></span><span>
+</span><span id="line-60"></span><span id="local-6989586621681853055"><span id="local-6989586621681853056"><span class="annot"><a href="GHC.Cmm.Lint.html#lintCmmDecl"><span class="hs-identifier hs-type">lintCmmDecl</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.html#GenCmmDecl"><span class="hs-identifier hs-type">GenCmmDecl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853055"><span class="hs-identifier hs-type">h</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853056"><span class="hs-identifier hs-type">i</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.html#CmmGraph"><span class="hs-identifier hs-type">CmmGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-61"></span><span id="lintCmmDecl"><span class="annot"><span class="annottext">lintCmmDecl :: forall h i. GenCmmDecl h i CmmGraph -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmDecl"><span class="hs-identifier hs-var hs-var">lintCmmDecl</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.html#CmmProc"><span class="hs-identifier hs-type">CmmProc</span></a></span><span> </span><span class="annot"><span class="annottext">i
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681853322"><span class="annot"><span class="annottext">CLabel
+</span><a href="#local-6989586621681853322"><span class="hs-identifier hs-var">lbl</span></a></span></span><span> </span><span class="annot"><span class="annottext">[GlobalReg]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681853323"><span class="annot"><span class="annottext">CmmGraph
+</span><a href="#local-6989586621681853323"><span class="hs-identifier hs-var">g</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-63"></span><span>    </span><span id="local-6989586621681853324"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853324"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-64"></span><span>    </span><span class="annot"><span class="annottext">SDoc -&gt; CmmLint () -&gt; CmmLint ()
+forall a. SDoc -&gt; CmmLint a -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#addLintInfo"><span class="hs-identifier hs-var">addLintInfo</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;in proc &quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%3E"><span class="hs-operator hs-var">&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Platform -&gt; CLabel -&gt; SDoc
+</span><a href="GHC.Cmm.CLabel.html#pprDebugCLabel"><span class="hs-identifier hs-var">pprDebugCLabel</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853324"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CLabel
+</span><a href="#local-6989586621681853322"><span class="hs-identifier hs-var">lbl</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(CmmLint () -&gt; CmmLint ()) -&gt; CmmLint () -&gt; CmmLint ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">CmmGraph -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmGraph"><span class="hs-identifier hs-var">lintCmmGraph</span></a></span><span> </span><span class="annot"><span class="annottext">CmmGraph
+</span><a href="#local-6989586621681853323"><span class="hs-identifier hs-var">g</span></a></span><span>
+</span><span id="line-65"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintCmmDecl"><span class="hs-identifier hs-var">lintCmmDecl</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.html#CmmData"><span class="hs-identifier hs-type">CmmData</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintCmmGraph"><span class="hs-identifier hs-type">lintCmmGraph</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.html#CmmGraph"><span class="hs-identifier hs-type">CmmGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-70"></span><span id="lintCmmGraph"><span class="annot"><span class="annottext">lintCmmGraph :: CmmGraph -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmGraph"><span class="hs-identifier hs-var hs-var">lintCmmGraph</span></a></span></span><span> </span><span id="local-6989586621681853329"><span class="annot"><span class="annottext">CmmGraph
+</span><a href="#local-6989586621681853329"><span class="hs-identifier hs-var">g</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-71"></span><span>   </span><span id="local-6989586621681853330"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853330"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-72"></span><span>   </span><span class="hs-keyword">let</span><span>
+</span><span id="line-73"></span><span>      </span><span id="local-6989586621681853331"><span class="annot"><span class="annottext">blocks :: [CmmBlock]
+</span><a href="#local-6989586621681853331"><span class="hs-identifier hs-var hs-var">blocks</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CmmGraph -&gt; [CmmBlock]
+</span><a href="GHC.Cmm.html#toBlockList"><span class="hs-identifier hs-var">toBlockList</span></a></span><span> </span><span class="annot"><span class="annottext">CmmGraph
+</span><a href="#local-6989586621681853329"><span class="hs-identifier hs-var">g</span></a></span><span>
+</span><span id="line-74"></span><span>      </span><span id="local-6989586621681853333"><span class="annot"><span class="annottext">labels :: LabelSet
+</span><a href="#local-6989586621681853333"><span class="hs-identifier hs-var hs-var">labels</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ElemOf LabelSet] -&gt; LabelSet
+forall set. IsSet set =&gt; [ElemOf set] -&gt; set
+</span><a href="GHC.Cmm.Dataflow.Collections.html#setFromList"><span class="hs-identifier hs-var">setFromList</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(CmmBlock -&gt; Label) -&gt; [CmmBlock] -&gt; [Label]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">CmmBlock -&gt; Label
+forall (x :: Extensibility). Block CmmNode C x -&gt; Label
+forall (thing :: Extensibility -&gt; Extensibility -&gt; *)
+       (x :: Extensibility).
+NonLocal thing =&gt;
+thing C x -&gt; Label
+</span><a href="GHC.Cmm.Dataflow.Graph.html#entryLabel"><span class="hs-identifier hs-var">entryLabel</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmBlock]
+</span><a href="#local-6989586621681853331"><span class="hs-identifier hs-var">blocks</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-75"></span><span>   </span><span class="annot"><span class="annottext">Platform -&gt; CmmGraph -&gt; BlockEntryLiveness LocalReg
+</span><a href="GHC.Cmm.Liveness.html#cmmLocalLiveness"><span class="hs-identifier hs-var">cmmLocalLiveness</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853330"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmGraph
+</span><a href="#local-6989586621681853329"><span class="hs-identifier hs-var">g</span></a></span><span> </span><span class="annot"><span class="annottext">BlockEntryLiveness LocalReg -&gt; CmmLint () -&gt; CmmLint ()
+forall a b. a -&gt; b -&gt; b
+</span><span class="hs-operator hs-var">`seq`</span></span><span> </span><span class="annot"><span class="annottext">(CmmBlock -&gt; CmmLint ()) -&gt; [CmmBlock] -&gt; CmmLint ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#mapM_/Data.Foldable.html#mapM_"><span class="hs-identifier hs-var">mapM_</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LabelSet -&gt; CmmBlock -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmBlock"><span class="hs-identifier hs-var">lintCmmBlock</span></a></span><span> </span><span class="annot"><span class="annottext">LabelSet
+</span><a href="#local-6989586621681853333"><span class="hs-identifier hs-var">labels</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[CmmBlock]
+</span><a href="#local-6989586621681853331"><span class="hs-identifier hs-var">blocks</span></a></span><span>
+</span><span id="line-76"></span><span>   </span><span class="hs-comment">-- cmmLiveness throws an error if there are registers</span><span>
+</span><span id="line-77"></span><span>   </span><span class="hs-comment">-- live on entry to the graph (i.e. undefined</span><span>
+</span><span id="line-78"></span><span>   </span><span class="hs-comment">-- variables)</span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintCmmBlock"><span class="hs-identifier hs-type">lintCmmBlock</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Label.html#LabelSet"><span class="hs-identifier hs-type">LabelSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.html#CmmBlock"><span class="hs-identifier hs-type">CmmBlock</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span id="lintCmmBlock"><span class="annot"><span class="annottext">lintCmmBlock :: LabelSet -&gt; CmmBlock -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmBlock"><span class="hs-identifier hs-var hs-var">lintCmmBlock</span></a></span></span><span> </span><span id="local-6989586621681853338"><span class="annot"><span class="annottext">LabelSet
+</span><a href="#local-6989586621681853338"><span class="hs-identifier hs-var">labels</span></a></span></span><span> </span><span id="local-6989586621681853339"><span class="annot"><span class="annottext">CmmBlock
+</span><a href="#local-6989586621681853339"><span class="hs-identifier hs-var">block</span></a></span></span><span>
+</span><span id="line-83"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; CmmLint () -&gt; CmmLint ()
+forall a. SDoc -&gt; CmmLint a -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#addLintInfo"><span class="hs-identifier hs-var">addLintInfo</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;in basic block &quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%3E"><span class="hs-operator hs-var">&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Label -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmBlock -&gt; Label
+forall (x :: Extensibility). Block CmmNode C x -&gt; Label
+forall (thing :: Extensibility -&gt; Extensibility -&gt; *)
+       (x :: Extensibility).
+NonLocal thing =&gt;
+thing C x -&gt; Label
+</span><a href="GHC.Cmm.Dataflow.Graph.html#entryLabel"><span class="hs-identifier hs-var">entryLabel</span></a></span><span> </span><span class="annot"><span class="annottext">CmmBlock
+</span><a href="#local-6989586621681853339"><span class="hs-identifier hs-var">block</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(CmmLint () -&gt; CmmLint ()) -&gt; CmmLint () -&gt; CmmLint ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-84"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmNode C O
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681853341"><span class="annot"><span class="annottext">Block CmmNode O O
+</span><a href="#local-6989586621681853341"><span class="hs-identifier hs-var">middle</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681853342"><span class="annot"><span class="annottext">CmmNode O C
+</span><a href="#local-6989586621681853342"><span class="hs-identifier hs-var">last</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CmmBlock -&gt; (CmmNode C O, Block CmmNode O O, CmmNode O C)
+forall (n :: Extensibility -&gt; Extensibility -&gt; *).
+Block n C C -&gt; (n C O, Block n O O, n O C)
+</span><a href="GHC.Cmm.Dataflow.Block.html#blockSplit"><span class="hs-identifier hs-var">blockSplit</span></a></span><span> </span><span class="annot"><span class="annottext">CmmBlock
+</span><a href="#local-6989586621681853339"><span class="hs-identifier hs-var">block</span></a></span><span>
+</span><span id="line-85"></span><span>        </span><span class="annot"><span class="annottext">(CmmNode O O -&gt; CmmLint ()) -&gt; [CmmNode O O] -&gt; CmmLint ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#mapM_/Data.Foldable.html#mapM_"><span class="hs-identifier hs-var">mapM_</span></a></span><span> </span><span class="annot"><span class="annottext">CmmNode O O -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmMiddle"><span class="hs-identifier hs-var">lintCmmMiddle</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Block CmmNode O O -&gt; [CmmNode O O]
+forall (n :: Extensibility -&gt; Extensibility -&gt; *).
+Block n O O -&gt; [n O O]
+</span><a href="GHC.Cmm.Dataflow.Block.html#blockToList"><span class="hs-identifier hs-var">blockToList</span></a></span><span> </span><span class="annot"><span class="annottext">Block CmmNode O O
+</span><a href="#local-6989586621681853341"><span class="hs-identifier hs-var">middle</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span>        </span><span class="annot"><span class="annottext">LabelSet -&gt; CmmNode O C -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmLast"><span class="hs-identifier hs-var">lintCmmLast</span></a></span><span> </span><span class="annot"><span class="annottext">LabelSet
+</span><a href="#local-6989586621681853338"><span class="hs-identifier hs-var">labels</span></a></span><span> </span><span class="annot"><span class="annottext">CmmNode O C
+</span><a href="#local-6989586621681853342"><span class="hs-identifier hs-var">last</span></a></span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- -----------------------------------------------------------------------------</span><span>
+</span><span id="line-89"></span><span class="hs-comment">-- lintCmmExpr</span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span class="hs-comment">-- Checks whether a CmmExpr is &quot;type-correct&quot;, and check for obvious-looking</span><span>
+</span><span id="line-92"></span><span class="hs-comment">-- byte/word mismatches.</span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-type">lintCmmExpr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Type.html#CmmType"><span class="hs-identifier hs-type">CmmType</span></a></span><span>
+</span><span id="line-95"></span><span id="lintCmmExpr"><span class="annot"><span class="annottext">lintCmmExpr :: CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var hs-var">lintCmmExpr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmLoad"><span class="hs-identifier hs-type">CmmLoad</span></a></span><span> </span><span id="local-6989586621681853349"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853349"><span class="hs-identifier hs-var">expr</span></a></span></span><span> </span><span id="local-6989586621681853350"><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853350"><span class="hs-identifier hs-var">rep</span></a></span></span><span> </span><span id="local-6989586621681853351"><span class="annot"><span class="annottext">AlignmentSpec
+</span><a href="#local-6989586621681853351"><span class="hs-identifier hs-var">_alignment</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-96"></span><span>  </span><span class="annot"><span class="annottext">CmmType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853349"><span class="hs-identifier hs-var">expr</span></a></span><span>
+</span><span id="line-97"></span><span>  </span><span class="hs-comment">-- Disabled, if we have the inlining phase before the lint phase,</span><span>
+</span><span id="line-98"></span><span>  </span><span class="hs-comment">-- we can have funny offsets due to pointer tagging. -- EZY</span><span>
+</span><span id="line-99"></span><span>  </span><span class="hs-comment">-- when (widthInBytes (typeWidth rep) &gt;= platformWordSizeInBytes platform) $</span><span>
+</span><span id="line-100"></span><span>  </span><span class="hs-comment">--   cmmCheckWordAddress expr</span><span>
+</span><span id="line-101"></span><span>  </span><span class="annot"><span class="annottext">CmmType -&gt; CmmLint CmmType
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853350"><span class="hs-identifier hs-var">rep</span></a></span><span>
+</span><span id="line-102"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span id="local-6989586621681853352"><span class="annot"><span class="annottext">expr :: CmmExpr
+</span><a href="#local-6989586621681853352"><span class="hs-identifier hs-var">expr</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmMachOp"><span class="hs-identifier hs-type">CmmMachOp</span></a></span><span> </span><span id="local-6989586621681853354"><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853354"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621681853355"><span class="annot"><span class="annottext">[CmmExpr]
+</span><a href="#local-6989586621681853355"><span class="hs-identifier hs-var">args</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-103"></span><span>  </span><span id="local-6989586621681853356"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853356"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-104"></span><span>  </span><span id="local-6989586621681853357"><span class="annot"><span class="annottext">[CmmType]
+</span><a href="#local-6989586621681853357"><span class="hs-identifier hs-var">tys</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(CmmExpr -&gt; CmmLint CmmType) -&gt; [CmmExpr] -&gt; CmmLint [CmmType]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; [a] -&gt; m [b]
+</span><a href="../../base-4.18.2.1/src/Data.Traversable.html#mapM/Data.Traversable.html#mapM"><span class="hs-identifier hs-var">mapM</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmExpr]
+</span><a href="#local-6989586621681853355"><span class="hs-identifier hs-var">args</span></a></span><span>
+</span><span id="line-105"></span><span>  </span><span class="annot"><span class="annottext">MachOp -&gt; [(CmmExpr, CmmType)] -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintShiftOp"><span class="hs-identifier hs-var">lintShiftOp</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853354"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[CmmExpr] -&gt; [CmmType] -&gt; [(CmmExpr, CmmType)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#zip/GHC.List.html#zip"><span class="hs-identifier hs-var">zip</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmExpr]
+</span><a href="#local-6989586621681853355"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmType]
+</span><a href="#local-6989586621681853357"><span class="hs-identifier hs-var">tys</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-106"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">(CmmExpr -&gt; Width) -&gt; [CmmExpr] -&gt; [Width]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmType -&gt; Width
+</span><a href="GHC.Cmm.Type.html#typeWidth"><span class="hs-identifier hs-var">typeWidth</span></a></span><span> </span><span class="annot"><span class="annottext">(CmmType -&gt; Width) -&gt; (CmmExpr -&gt; CmmType) -&gt; CmmExpr -&gt; Width
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Platform -&gt; CmmExpr -&gt; CmmType
+</span><a href="GHC.Cmm.Expr.html#cmmExprType"><span class="hs-identifier hs-var">cmmExprType</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853356"><span class="hs-identifier hs-var">platform</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[CmmExpr]
+</span><a href="#local-6989586621681853355"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">[Width] -&gt; [Width] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Platform -&gt; MachOp -&gt; [Width]
+</span><a href="GHC.Cmm.MachOp.html#machOpArgReps"><span class="hs-identifier hs-var">machOpArgReps</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853356"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853354"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-107"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">MachOp -&gt; [CmmExpr] -&gt; [CmmType] -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#cmmCheckMachOp"><span class="hs-identifier hs-var">cmmCheckMachOp</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853354"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmExpr]
+</span><a href="#local-6989586621681853355"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmType]
+</span><a href="#local-6989586621681853357"><span class="hs-identifier hs-var">tys</span></a></span><span>
+</span><span id="line-108"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; [CmmType] -&gt; [Width] -&gt; CmmLint CmmType
+forall a. CmmExpr -&gt; [CmmType] -&gt; [Width] -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintMachOpErr"><span class="hs-identifier hs-var">cmmLintMachOpErr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853352"><span class="hs-identifier hs-var">expr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(CmmExpr -&gt; CmmType) -&gt; [CmmExpr] -&gt; [CmmType]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform -&gt; CmmExpr -&gt; CmmType
+</span><a href="GHC.Cmm.Expr.html#cmmExprType"><span class="hs-identifier hs-var">cmmExprType</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853356"><span class="hs-identifier hs-var">platform</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[CmmExpr]
+</span><a href="#local-6989586621681853355"><span class="hs-identifier hs-var">args</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform -&gt; MachOp -&gt; [Width]
+</span><a href="GHC.Cmm.MachOp.html#machOpArgReps"><span class="hs-identifier hs-var">machOpArgReps</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853356"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853354"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-109"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmRegOff"><span class="hs-identifier hs-type">CmmRegOff</span></a></span><span> </span><span id="local-6989586621681853367"><span class="annot"><span class="annottext">CmmReg
+</span><a href="#local-6989586621681853367"><span class="hs-identifier hs-var">reg</span></a></span></span><span> </span><span id="local-6989586621681853368"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681853368"><span class="hs-identifier hs-var">offset</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-110"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621681853369"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853369"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-111"></span><span>       </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681853370"><span class="annot"><span class="annottext">rep :: Width
+</span><a href="#local-6989586621681853370"><span class="hs-identifier hs-var hs-var">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CmmType -&gt; Width
+</span><a href="GHC.Cmm.Type.html#typeWidth"><span class="hs-identifier hs-var">typeWidth</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform -&gt; CmmReg -&gt; CmmType
+</span><a href="GHC.Cmm.Reg.html#cmmRegType"><span class="hs-identifier hs-var">cmmRegType</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853369"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmReg
+</span><a href="#local-6989586621681853367"><span class="hs-identifier hs-var">reg</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span>       </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MachOp -&gt; [CmmExpr] -&gt; CmmExpr
+</span><a href="GHC.Cmm.Expr.html#CmmMachOp"><span class="hs-identifier hs-var">CmmMachOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Width -&gt; MachOp
+</span><a href="GHC.Cmm.MachOp.html#MO_Add"><span class="hs-identifier hs-var">MO_Add</span></a></span><span> </span><span class="annot"><span class="annottext">Width
+</span><a href="#local-6989586621681853370"><span class="hs-identifier hs-var">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-113"></span><span>                </span><span class="hs-special">[</span><span class="annot"><span class="annottext">CmmReg -&gt; CmmExpr
+</span><a href="GHC.Cmm.Expr.html#CmmReg"><span class="hs-identifier hs-var">CmmReg</span></a></span><span> </span><span class="annot"><span class="annottext">CmmReg
+</span><a href="#local-6989586621681853367"><span class="hs-identifier hs-var">reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">CmmLit -&gt; CmmExpr
+</span><a href="GHC.Cmm.Expr.html#CmmLit"><span class="hs-identifier hs-var">CmmLit</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer -&gt; Width -&gt; CmmLit
+</span><a href="GHC.Cmm.Expr.html#CmmInt"><span class="hs-identifier hs-var">CmmInt</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#fromIntegral/GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681853368"><span class="hs-identifier hs-var">offset</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Width
+</span><a href="#local-6989586621681853370"><span class="hs-identifier hs-var">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span id="local-6989586621681853376"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853376"><span class="hs-identifier hs-var">expr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-115"></span><span>  </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621681853377"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853377"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-116"></span><span>     </span><span class="annot"><span class="annottext">CmmType -&gt; CmmLint CmmType
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform -&gt; CmmExpr -&gt; CmmType
+</span><a href="GHC.Cmm.Expr.html#cmmExprType"><span class="hs-identifier hs-var">cmmExprType</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853377"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853376"><span class="hs-identifier hs-var">expr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span class="annot"><span class="hs-comment">-- | Check for obviously out-of-bounds shift operations</span></span><span>
+</span><span id="line-119"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintShiftOp"><span class="hs-identifier hs-type">lintShiftOp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.MachOp.html#MachOp"><span class="hs-identifier hs-type">MachOp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Cmm.Type.html#CmmType"><span class="hs-identifier hs-type">CmmType</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-120"></span><span id="lintShiftOp"><span class="annot"><span class="annottext">lintShiftOp :: MachOp -&gt; [(CmmExpr, CmmType)] -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintShiftOp"><span class="hs-identifier hs-var hs-var">lintShiftOp</span></a></span></span><span> </span><span id="local-6989586621681853378"><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853378"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmExpr
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681853379"><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853379"><span class="hs-identifier hs-var">arg_ty</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmLit"><span class="hs-identifier hs-type">CmmLit</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmInt"><span class="hs-identifier hs-type">CmmInt</span></a></span><span> </span><span id="local-6989586621681853380"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621681853380"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="annot"><span class="annottext">Width
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-121"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">MachOp -&gt; Bool
+</span><a href="GHC.Cmm.Lint.html#isShiftOp"><span class="hs-identifier hs-var">isShiftOp</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853378"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-122"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621681853380"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#fromIntegral/GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Width -&gt; Int
+</span><a href="GHC.Cmm.Type.html#widthInBits"><span class="hs-identifier hs-var">widthInBits</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmType -&gt; Width
+</span><a href="GHC.Cmm.Type.html#typeWidth"><span class="hs-identifier hs-var">typeWidth</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853379"><span class="hs-identifier hs-var">arg_ty</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; CmmLint ()
+forall a. SDoc -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintErr"><span class="hs-identifier hs-var">cmmLintErr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Shift operation&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp -&gt; SDoc
+</span><a href="GHC.Cmm.MachOp.html#pprMachOp"><span class="hs-identifier hs-var">pprMachOp</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853378"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-124"></span><span>                </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;has out-of-range offset&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621681853380"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-125"></span><span>                </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%3E"><span class="hs-operator hs-var">&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;. This will result in undefined behavior&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintShiftOp"><span class="hs-identifier hs-var">lintShiftOp</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[(CmmExpr, CmmType)]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span>
+</span><span id="line-128"></span><span class="annot"><a href="GHC.Cmm.Lint.html#isShiftOp"><span class="hs-identifier hs-type">isShiftOp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.MachOp.html#MachOp"><span class="hs-identifier hs-type">MachOp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-129"></span><span id="isShiftOp"><span class="annot"><span class="annottext">isShiftOp :: MachOp -&gt; Bool
+</span><a href="GHC.Cmm.Lint.html#isShiftOp"><span class="hs-identifier hs-var hs-var">isShiftOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.MachOp.html#MO_Shl"><span class="hs-identifier hs-type">MO_Shl</span></a></span><span> </span><span class="annot"><span class="annottext">Width
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-130"></span><span class="annot"><a href="GHC.Cmm.Lint.html#isShiftOp"><span class="hs-identifier hs-var">isShiftOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.MachOp.html#MO_U_Shr"><span class="hs-identifier hs-type">MO_U_Shr</span></a></span><span> </span><span class="annot"><span class="annottext">Width
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-131"></span><span class="annot"><a href="GHC.Cmm.Lint.html#isShiftOp"><span class="hs-identifier hs-var">isShiftOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.MachOp.html#MO_S_Shr"><span class="hs-identifier hs-type">MO_S_Shr</span></a></span><span> </span><span class="annot"><span class="annottext">Width
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-132"></span><span class="annot"><a href="GHC.Cmm.Lint.html#isShiftOp"><span class="hs-identifier hs-var">isShiftOp</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><span class="hs-identifier">_</span></span><span>            </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-133"></span><span>
+</span><span id="line-134"></span><span class="hs-comment">-- Check for some common byte/word mismatches (eg. Sp + 1)</span><span>
+</span><span id="line-135"></span><span class="annot"><a href="GHC.Cmm.Lint.html#cmmCheckMachOp"><span class="hs-identifier hs-type">cmmCheckMachOp</span></a></span><span>   </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.MachOp.html#MachOp"><span class="hs-identifier hs-type">MachOp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Cmm.Type.html#CmmType"><span class="hs-identifier hs-type">CmmType</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Type.html#CmmType"><span class="hs-identifier hs-type">CmmType</span></a></span><span>
+</span><span id="line-136"></span><span id="cmmCheckMachOp"><span class="annot"><span class="annottext">cmmCheckMachOp :: MachOp -&gt; [CmmExpr] -&gt; [CmmType] -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#cmmCheckMachOp"><span class="hs-identifier hs-var hs-var">cmmCheckMachOp</span></a></span></span><span> </span><span id="local-6989586621681853389"><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853389"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-special">[</span><span id="local-6989586621681853390"><span class="annot"><span class="annottext">lit :: CmmExpr
+</span><a href="#local-6989586621681853390"><span class="hs-identifier hs-var">lit</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmLit"><span class="hs-identifier hs-type">CmmLit</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmInt"><span class="hs-identifier hs-type">CmmInt</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="hs-special">}</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621681853391"><span class="annot"><span class="annottext">reg :: CmmExpr
+</span><a href="#local-6989586621681853391"><span class="hs-identifier hs-var">reg</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmReg"><span class="hs-identifier hs-type">CmmReg</span></a></span><span> </span><span class="annot"><span class="annottext">CmmReg
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span id="local-6989586621681853392"><span class="annot"><span class="annottext">[CmmType]
+</span><a href="#local-6989586621681853392"><span class="hs-identifier hs-var">tys</span></a></span></span><span>
+</span><span id="line-137"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MachOp -&gt; [CmmExpr] -&gt; [CmmType] -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#cmmCheckMachOp"><span class="hs-identifier hs-var">cmmCheckMachOp</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853389"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853391"><span class="hs-identifier hs-var">reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853390"><span class="hs-identifier hs-var">lit</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[CmmType]
+</span><a href="#local-6989586621681853392"><span class="hs-identifier hs-var">tys</span></a></span><span>
+</span><span id="line-138"></span><span class="annot"><a href="GHC.Cmm.Lint.html#cmmCheckMachOp"><span class="hs-identifier hs-var">cmmCheckMachOp</span></a></span><span> </span><span id="local-6989586621681853393"><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853393"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="annot"><span class="annottext">[CmmExpr]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681853394"><span class="annot"><span class="annottext">[CmmType]
+</span><a href="#local-6989586621681853394"><span class="hs-identifier hs-var">tys</span></a></span></span><span>
+</span><span id="line-139"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621681853395"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853395"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-140"></span><span>       </span><span class="annot"><span class="annottext">CmmType -&gt; CmmLint CmmType
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform -&gt; MachOp -&gt; [CmmType] -&gt; CmmType
+</span><a href="GHC.Cmm.MachOp.html#machOpResultType"><span class="hs-identifier hs-var">machOpResultType</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853395"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853393"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmType]
+</span><a href="#local-6989586621681853394"><span class="hs-identifier hs-var">tys</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-141"></span><span>
+</span><span id="line-142"></span><span class="hs-comment">{-
+isOffsetOp :: MachOp -&gt; Bool
+isOffsetOp (MO_Add _) = True
+isOffsetOp (MO_Sub _) = True
+isOffsetOp _ = False
+
+-- This expression should be an address from which a word can be loaded:
+-- check for funny-looking sub-word offsets.
+_cmmCheckWordAddress :: CmmExpr -&gt; CmmLint ()
+_cmmCheckWordAddress e@(CmmMachOp op [arg, CmmLit (CmmInt i _)])
+  | isOffsetOp op &amp;&amp; notNodeReg arg &amp;&amp; i `rem` fromIntegral (platformWordSizeInBytes platform) /= 0
+  = cmmLintDubiousWordOffset e
+_cmmCheckWordAddress e@(CmmMachOp op [CmmLit (CmmInt i _), arg])
+  | isOffsetOp op &amp;&amp; notNodeReg arg &amp;&amp; i `rem` fromIntegral (platformWordSizeInBytes platform) /= 0
+  = cmmLintDubiousWordOffset e
+_cmmCheckWordAddress _
+  = return ()
+
+-- No warnings for unaligned arithmetic with the node register,
+-- which is used to extract fields from tagged constructor closures.
+notNodeReg :: CmmExpr -&gt; Bool
+notNodeReg (CmmReg reg) | reg == nodeReg = False
+notNodeReg _                             = True
+-}</span><span>
+</span><span id="line-166"></span><span>
+</span><span id="line-167"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintCmmMiddle"><span class="hs-identifier hs-type">lintCmmMiddle</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmNode"><span class="hs-identifier hs-type">CmmNode</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Block.html#O"><span class="hs-identifier hs-type">O</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Block.html#O"><span class="hs-identifier hs-type">O</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-168"></span><span id="lintCmmMiddle"><span class="annot"><span class="annottext">lintCmmMiddle :: CmmNode O O -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmMiddle"><span class="hs-identifier hs-var hs-var">lintCmmMiddle</span></a></span></span><span> </span><span id="local-6989586621681853397"><span class="annot"><span class="annottext">CmmNode O O
+</span><a href="#local-6989586621681853397"><span class="hs-identifier hs-var">node</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">CmmNode O O
+</span><a href="#local-6989586621681853397"><span class="hs-identifier hs-var">node</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-169"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmComment"><span class="hs-identifier hs-type">CmmComment</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-170"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmTick"><span class="hs-identifier hs-type">CmmTick</span></a></span><span> </span><span class="annot"><span class="annottext">CmmTickish
+</span><span class="hs-identifier">_</span></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-171"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmUnwind"><span class="hs-identifier hs-type">CmmUnwind</span></a></span><span class="hs-special">{</span><span class="hs-special">}</span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmAssign"><span class="hs-identifier hs-type">CmmAssign</span></a></span><span> </span><span id="local-6989586621681853418"><span class="annot"><span class="annottext">CmmReg
+</span><a href="#local-6989586621681853418"><span class="hs-identifier hs-var">reg</span></a></span></span><span> </span><span id="local-6989586621681853419"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853419"><span class="hs-identifier hs-var">expr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-174"></span><span>            </span><span id="local-6989586621681853420"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853420"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-175"></span><span>            </span><span id="local-6989586621681853421"><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853421"><span class="hs-identifier hs-var">erep</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853419"><span class="hs-identifier hs-var">expr</span></a></span><span>
+</span><span id="line-176"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681853422"><span class="annot"><span class="annottext">reg_ty :: CmmType
+</span><a href="#local-6989586621681853422"><span class="hs-identifier hs-var hs-var">reg_ty</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Platform -&gt; CmmReg -&gt; CmmType
+</span><a href="GHC.Cmm.Reg.html#cmmRegType"><span class="hs-identifier hs-var">cmmRegType</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853420"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmReg
+</span><a href="#local-6989586621681853418"><span class="hs-identifier hs-var">reg</span></a></span><span>
+</span><span id="line-177"></span><span>            </span><span class="annot"><span class="annottext">Bool -&gt; CmmLint () -&gt; CmmLint ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/Control.Monad.html#unless/Control.Monad.html#unless"><span class="hs-identifier hs-var">unless</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmType -&gt; CmmType -&gt; Bool
+</span><a href="#local-6989586621681853423"><span class="hs-identifier hs-var">compat_regs</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853421"><span class="hs-identifier hs-var">erep</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853422"><span class="hs-identifier hs-var">reg_ty</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(CmmLint () -&gt; CmmLint ()) -&gt; CmmLint () -&gt; CmmLint ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-178"></span><span>              </span><span class="annot"><span class="annottext">CmmNode O O -&gt; CmmType -&gt; CmmType -&gt; CmmLint ()
+forall (e :: Extensibility) (x :: Extensibility) a.
+CmmNode e x -&gt; CmmType -&gt; CmmType -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintAssignErr"><span class="hs-identifier hs-var">cmmLintAssignErr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmReg -&gt; CmmExpr -&gt; CmmNode O O
+</span><a href="GHC.Cmm.Node.html#CmmAssign"><span class="hs-identifier hs-var">CmmAssign</span></a></span><span> </span><span class="annot"><span class="annottext">CmmReg
+</span><a href="#local-6989586621681853418"><span class="hs-identifier hs-var">reg</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853419"><span class="hs-identifier hs-var">expr</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853421"><span class="hs-identifier hs-var">erep</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853422"><span class="hs-identifier hs-var">reg_ty</span></a></span><span>
+</span><span id="line-179"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-180"></span><span>      </span><span class="annot"><a href="#local-6989586621681853423"><span class="hs-identifier hs-type">compat_regs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Type.html#CmmType"><span class="hs-identifier hs-type">CmmType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Type.html#CmmType"><span class="hs-identifier hs-type">CmmType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-181"></span><span>      </span><span id="local-6989586621681853423"><span class="annot"><span class="annottext">compat_regs :: CmmType -&gt; CmmType -&gt; Bool
+</span><a href="#local-6989586621681853423"><span class="hs-identifier hs-var hs-var">compat_regs</span></a></span></span><span> </span><span id="local-6989586621681853425"><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853425"><span class="hs-identifier hs-var">ty1</span></a></span></span><span> </span><span id="local-6989586621681853426"><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853426"><span class="hs-identifier hs-var">ty2</span></a></span></span><span>
+</span><span id="line-182"></span><span>        </span><span class="hs-comment">-- As noted in #22297, SIMD vector registers can be used for</span><span>
+</span><span id="line-183"></span><span>        </span><span class="hs-comment">-- multiple different purposes, e.g. xmm1 can be used to hold 4 Floats,</span><span>
+</span><span id="line-184"></span><span>        </span><span class="hs-comment">-- or 4 Int32s, or 2 Word64s, ...</span><span>
+</span><span id="line-185"></span><span>        </span><span class="hs-comment">-- To allow this, we relax the check: we only ensure that the widths</span><span>
+</span><span id="line-186"></span><span>        </span><span class="hs-comment">-- match, until we can find a more robust solution.</span><span>
+</span><span id="line-187"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">CmmType -&gt; Bool
+</span><a href="GHC.Cmm.Type.html#isVecType"><span class="hs-identifier hs-var">isVecType</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853425"><span class="hs-identifier hs-var">ty1</span></a></span><span>
+</span><span id="line-188"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">CmmType -&gt; Bool
+</span><a href="GHC.Cmm.Type.html#isVecType"><span class="hs-identifier hs-var">isVecType</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853426"><span class="hs-identifier hs-var">ty2</span></a></span><span>
+</span><span id="line-189"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CmmType -&gt; Width
+</span><a href="GHC.Cmm.Type.html#typeWidth"><span class="hs-identifier hs-var">typeWidth</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853425"><span class="hs-identifier hs-var">ty1</span></a></span><span> </span><span class="annot"><span class="annottext">Width -&gt; Width -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">CmmType -&gt; Width
+</span><a href="GHC.Cmm.Type.html#typeWidth"><span class="hs-identifier hs-var">typeWidth</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853426"><span class="hs-identifier hs-var">ty2</span></a></span><span>
+</span><span id="line-190"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-191"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CmmType -&gt; CmmType -&gt; Bool
+</span><a href="GHC.Cmm.Type.html#cmmEqType_ignoring_ptrhood"><span class="hs-identifier hs-var">cmmEqType_ignoring_ptrhood</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853425"><span class="hs-identifier hs-var">ty1</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853426"><span class="hs-identifier hs-var">ty2</span></a></span><span>
+</span><span id="line-192"></span><span>
+</span><span id="line-193"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmStore"><span class="hs-identifier hs-type">CmmStore</span></a></span><span> </span><span id="local-6989586621681853435"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853435"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span id="local-6989586621681853436"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853436"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621681853437"><span class="annot"><span class="annottext">AlignmentSpec
+</span><a href="#local-6989586621681853437"><span class="hs-identifier hs-var">_alignment</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-194"></span><span>            </span><span class="annot"><span class="annottext">CmmType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853435"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-195"></span><span>            </span><span class="annot"><span class="annottext">CmmType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853436"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-196"></span><span>            </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-197"></span><span>
+</span><span id="line-198"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmUnsafeForeignCall"><span class="hs-identifier hs-type">CmmUnsafeForeignCall</span></a></span><span> </span><span id="local-6989586621681853444"><span class="annot"><span class="annottext">ForeignTarget
+</span><a href="#local-6989586621681853444"><span class="hs-identifier hs-var">target</span></a></span></span><span> </span><span id="local-6989586621681853445"><span class="annot"><span class="annottext">[LocalReg]
+</span><a href="#local-6989586621681853445"><span class="hs-identifier hs-var">_formals</span></a></span></span><span> </span><span id="local-6989586621681853446"><span class="annot"><span class="annottext">[CmmExpr]
+</span><a href="#local-6989586621681853446"><span class="hs-identifier hs-var">actuals</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-199"></span><span>            </span><span class="annot"><span class="annottext">ForeignTarget -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintTarget"><span class="hs-identifier hs-var">lintTarget</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignTarget
+</span><a href="#local-6989586621681853444"><span class="hs-identifier hs-var">target</span></a></span><span>
+</span><span id="line-200"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681853454"><span class="annot"><span class="annottext">lintArg :: CmmExpr -&gt; CmmLint CmmType
+</span><a href="#local-6989586621681853454"><span class="hs-identifier hs-var hs-var">lintArg</span></a></span></span><span> </span><span id="local-6989586621681853455"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853455"><span class="hs-identifier hs-var">expr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-201"></span><span>                  </span><span class="hs-comment">-- Arguments can't mention caller-saved</span><span>
+</span><span id="line-202"></span><span>                  </span><span class="hs-comment">-- registers. See Note [Register parameter passing].</span><span>
+</span><span id="line-203"></span><span>                  </span><span class="annot"><span class="annottext">SDoc -&gt; CmmExpr -&gt; CmmLint ()
+forall a.
+(UserOfRegs GlobalReg a, OutputableP Platform a) =&gt;
+SDoc -&gt; a -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#mayNotMentionCallerSavedRegs"><span class="hs-identifier hs-var">mayNotMentionCallerSavedRegs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;foreign call argument&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853455"><span class="hs-identifier hs-var">expr</span></a></span><span>
+</span><span id="line-204"></span><span>                  </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853455"><span class="hs-identifier hs-var">expr</span></a></span><span>
+</span><span id="line-205"></span><span>
+</span><span id="line-206"></span><span>            </span><span class="annot"><span class="annottext">(CmmExpr -&gt; CmmLint CmmType) -&gt; [CmmExpr] -&gt; CmmLint ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#mapM_/Data.Foldable.html#mapM_"><span class="hs-identifier hs-var">mapM_</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="#local-6989586621681853454"><span class="hs-identifier hs-var">lintArg</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmExpr]
+</span><a href="#local-6989586621681853446"><span class="hs-identifier hs-var">actuals</span></a></span><span>
+</span><span id="line-207"></span><span>
+</span><span id="line-208"></span><span>
+</span><span id="line-209"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintCmmLast"><span class="hs-identifier hs-type">lintCmmLast</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Label.html#LabelSet"><span class="hs-identifier hs-type">LabelSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmNode"><span class="hs-identifier hs-type">CmmNode</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Block.html#O"><span class="hs-identifier hs-type">O</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Block.html#C"><span class="hs-identifier hs-type">C</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-210"></span><span id="lintCmmLast"><span class="annot"><span class="annottext">lintCmmLast :: LabelSet -&gt; CmmNode O C -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintCmmLast"><span class="hs-identifier hs-var hs-var">lintCmmLast</span></a></span></span><span> </span><span id="local-6989586621681853457"><span class="annot"><span class="annottext">LabelSet
+</span><a href="#local-6989586621681853457"><span class="hs-identifier hs-var">labels</span></a></span></span><span> </span><span id="local-6989586621681853458"><span class="annot"><span class="annottext">CmmNode O C
+</span><a href="#local-6989586621681853458"><span class="hs-identifier hs-var">node</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">CmmNode O C
+</span><a href="#local-6989586621681853458"><span class="hs-identifier hs-var">node</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-211"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmBranch"><span class="hs-identifier hs-type">CmmBranch</span></a></span><span> </span><span id="local-6989586621681853462"><span class="annot"><span class="annottext">Label
+</span><a href="#local-6989586621681853462"><span class="hs-identifier hs-var">id</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Label -&gt; CmmLint ()
+</span><a href="#local-6989586621681853463"><span class="hs-identifier hs-var">checkTarget</span></a></span><span> </span><span class="annot"><span class="annottext">Label
+</span><a href="#local-6989586621681853462"><span class="hs-identifier hs-var">id</span></a></span><span>
+</span><span id="line-212"></span><span>
+</span><span id="line-213"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmCondBranch"><span class="hs-identifier hs-type">CmmCondBranch</span></a></span><span> </span><span id="local-6989586621681853472"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853472"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681853473"><span class="annot"><span class="annottext">Label
+</span><a href="#local-6989586621681853473"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621681853474"><span class="annot"><span class="annottext">Label
+</span><a href="#local-6989586621681853474"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="annot"><span class="annottext">Maybe Bool
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-214"></span><span>            </span><span id="local-6989586621681853475"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853475"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-215"></span><span>            </span><span class="annot"><span class="annottext">(Label -&gt; CmmLint ()) -&gt; [Label] -&gt; CmmLint ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#mapM_/Data.Foldable.html#mapM_"><span class="hs-identifier hs-var">mapM_</span></a></span><span> </span><span class="annot"><span class="annottext">Label -&gt; CmmLint ()
+</span><a href="#local-6989586621681853463"><span class="hs-identifier hs-var">checkTarget</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Label
+</span><a href="#local-6989586621681853473"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Label
+</span><a href="#local-6989586621681853474"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-216"></span><span>            </span><span class="annot"><span class="annottext">CmmType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853472"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-217"></span><span>            </span><span class="annot"><span class="annottext">Platform -&gt; CmmExpr -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#checkCond"><span class="hs-identifier hs-var">checkCond</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853475"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853472"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-218"></span><span>
+</span><span id="line-219"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmSwitch"><span class="hs-identifier hs-type">CmmSwitch</span></a></span><span> </span><span id="local-6989586621681853494"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853494"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681853495"><span class="annot"><span class="annottext">SwitchTargets
+</span><a href="#local-6989586621681853495"><span class="hs-identifier hs-var">ids</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-220"></span><span>            </span><span id="local-6989586621681853496"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853496"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-221"></span><span>            </span><span class="annot"><span class="annottext">(Label -&gt; CmmLint ()) -&gt; [Label] -&gt; CmmLint ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#mapM_/Data.Foldable.html#mapM_"><span class="hs-identifier hs-var">mapM_</span></a></span><span> </span><span class="annot"><span class="annottext">Label -&gt; CmmLint ()
+</span><a href="#local-6989586621681853463"><span class="hs-identifier hs-var">checkTarget</span></a></span><span> </span><span class="annot"><span class="annottext">([Label] -&gt; CmmLint ()) -&gt; [Label] -&gt; CmmLint ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">SwitchTargets -&gt; [Label]
+</span><a href="GHC.Cmm.Switch.html#switchTargetsToList"><span class="hs-identifier hs-var">switchTargetsToList</span></a></span><span> </span><span class="annot"><span class="annottext">SwitchTargets
+</span><a href="#local-6989586621681853495"><span class="hs-identifier hs-var">ids</span></a></span><span>
+</span><span id="line-222"></span><span>            </span><span id="local-6989586621681853497"><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853497"><span class="hs-identifier hs-var">erep</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853494"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-223"></span><span>            </span><span class="annot"><span class="annottext">Bool -&gt; CmmLint () -&gt; CmmLint ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/Control.Monad.html#unless/Control.Monad.html#unless"><span class="hs-identifier hs-var">unless</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmType -&gt; Bool
+</span><a href="GHC.Cmm.Type.html#isWordAny"><span class="hs-identifier hs-var">isWordAny</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853497"><span class="hs-identifier hs-var">erep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(CmmLint () -&gt; CmmLint ()) -&gt; CmmLint () -&gt; CmmLint ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-224"></span><span>              </span><span class="annot"><span class="annottext">SDoc -&gt; CmmLint ()
+forall a. SDoc -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintErr"><span class="hs-identifier hs-var">cmmLintErr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;switch scrutinee is not a word (of any size): &quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%3E"><span class="hs-operator hs-var">&lt;&gt;</span></a></span><span>
+</span><span id="line-225"></span><span>                          </span><span class="annot"><span class="annottext">Platform -&gt; CmmExpr -&gt; SDoc
+forall env a. OutputableP env a =&gt; env -&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#pdoc"><span class="hs-identifier hs-var">pdoc</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853496"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853494"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%3E"><span class="hs-operator hs-var">&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot; :: &quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%3E"><span class="hs-operator hs-var">&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853497"><span class="hs-identifier hs-var">erep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-226"></span><span>
+</span><span id="line-227"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmCall"><span class="hs-identifier hs-type">CmmCall</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">cml_target :: CmmNode O C -&gt; CmmExpr
+</span><a href="GHC.Cmm.Node.html#cml_target"><span class="hs-identifier hs-var">cml_target</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621681853505"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853505"><span class="hs-identifier hs-var">target</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cml_cont :: CmmNode O C -&gt; Maybe Label
+</span><a href="GHC.Cmm.Node.html#cml_cont"><span class="hs-identifier hs-var">cml_cont</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621681853507"><span class="annot"><span class="annottext">Maybe Label
+</span><a href="#local-6989586621681853507"><span class="hs-identifier hs-var">cont</span></a></span></span><span> </span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-228"></span><span>          </span><span class="annot"><span class="annottext">CmmType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853505"><span class="hs-identifier hs-var">target</span></a></span><span>
+</span><span id="line-229"></span><span>          </span><span class="annot"><span class="annottext">CmmLint () -&gt; (Label -&gt; CmmLint ()) -&gt; Maybe Label -&gt; CmmLint ()
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Data.Maybe.html#maybe/Data.Maybe.html#maybe"><span class="hs-identifier hs-var">maybe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Label -&gt; CmmLint ()
+</span><a href="#local-6989586621681853463"><span class="hs-identifier hs-var">checkTarget</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Label
+</span><a href="#local-6989586621681853507"><span class="hs-identifier hs-var">cont</span></a></span><span>
+</span><span id="line-230"></span><span>
+</span><span id="line-231"></span><span>  </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmForeignCall"><span class="hs-identifier hs-type">CmmForeignCall</span></a></span><span> </span><span id="local-6989586621681853516"><span class="annot"><span class="annottext">ForeignTarget
+</span><a href="#local-6989586621681853516"><span class="hs-identifier hs-var">tgt</span></a></span></span><span> </span><span class="annot"><span class="annottext">[LocalReg]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681853517"><span class="annot"><span class="annottext">[CmmExpr]
+</span><a href="#local-6989586621681853517"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span id="local-6989586621681853518"><span class="annot"><span class="annottext">Label
+</span><a href="#local-6989586621681853518"><span class="hs-identifier hs-var">succ</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-232"></span><span>          </span><span class="annot"><span class="annottext">ForeignTarget -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintTarget"><span class="hs-identifier hs-var">lintTarget</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignTarget
+</span><a href="#local-6989586621681853516"><span class="hs-identifier hs-var">tgt</span></a></span><span>
+</span><span id="line-233"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681853525"><span class="annot"><span class="annottext">lintArg :: CmmExpr -&gt; CmmLint CmmType
+</span><a href="#local-6989586621681853525"><span class="hs-identifier hs-var hs-var">lintArg</span></a></span></span><span> </span><span id="local-6989586621681853526"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853526"><span class="hs-identifier hs-var">expr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-234"></span><span>                </span><span class="hs-comment">-- Arguments can't mention caller-saved</span><span>
+</span><span id="line-235"></span><span>                </span><span class="hs-comment">-- registers. See Note [Register</span><span>
+</span><span id="line-236"></span><span>                </span><span class="hs-comment">-- parameter passing].</span><span>
+</span><span id="line-237"></span><span>                </span><span class="hs-comment">-- N.B. This won't catch local registers</span><span>
+</span><span id="line-238"></span><span>                </span><span class="hs-comment">-- which the NCG's register allocator later</span><span>
+</span><span id="line-239"></span><span>                </span><span class="hs-comment">-- places in caller-saved registers.</span><span>
+</span><span id="line-240"></span><span>                </span><span class="annot"><span class="annottext">SDoc -&gt; CmmExpr -&gt; CmmLint ()
+forall a.
+(UserOfRegs GlobalReg a, OutputableP Platform a) =&gt;
+SDoc -&gt; a -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#mayNotMentionCallerSavedRegs"><span class="hs-identifier hs-var">mayNotMentionCallerSavedRegs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;foreign call argument&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853526"><span class="hs-identifier hs-var">expr</span></a></span><span>
+</span><span id="line-241"></span><span>                </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853526"><span class="hs-identifier hs-var">expr</span></a></span><span>
+</span><span id="line-242"></span><span>          </span><span class="annot"><span class="annottext">(CmmExpr -&gt; CmmLint CmmType) -&gt; [CmmExpr] -&gt; CmmLint ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#mapM_/Data.Foldable.html#mapM_"><span class="hs-identifier hs-var">mapM_</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="#local-6989586621681853525"><span class="hs-identifier hs-var">lintArg</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmExpr]
+</span><a href="#local-6989586621681853517"><span class="hs-identifier hs-var">args</span></a></span><span>
+</span><span id="line-243"></span><span>          </span><span class="annot"><span class="annottext">Label -&gt; CmmLint ()
+</span><a href="#local-6989586621681853463"><span class="hs-identifier hs-var">checkTarget</span></a></span><span> </span><span class="annot"><span class="annottext">Label
+</span><a href="#local-6989586621681853518"><span class="hs-identifier hs-var">succ</span></a></span><span>
+</span><span id="line-244"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-245"></span><span>  </span><span id="local-6989586621681853463"><span class="annot"><span class="annottext">checkTarget :: Label -&gt; CmmLint ()
+</span><a href="#local-6989586621681853463"><span class="hs-identifier hs-var hs-var">checkTarget</span></a></span></span><span> </span><span id="local-6989586621681853527"><span class="annot"><span class="annottext">Label
+</span><a href="#local-6989586621681853527"><span class="hs-identifier hs-var">id</span></a></span></span><span>
+</span><span id="line-246"></span><span>     </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ElemOf LabelSet -&gt; LabelSet -&gt; Bool
+forall set. IsSet set =&gt; ElemOf set -&gt; set -&gt; Bool
+</span><a href="GHC.Cmm.Dataflow.Collections.html#setMember"><span class="hs-identifier hs-var">setMember</span></a></span><span> </span><span class="annot"><span class="annottext">ElemOf LabelSet
+Label
+</span><a href="#local-6989586621681853527"><span class="hs-identifier hs-var">id</span></a></span><span> </span><span class="annot"><span class="annottext">LabelSet
+</span><a href="#local-6989586621681853457"><span class="hs-identifier hs-var">labels</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-247"></span><span>     </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; CmmLint ()
+forall a. SDoc -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintErr"><span class="hs-identifier hs-var">cmmLintErr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Branch to nonexistent id&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Label -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Label
+</span><a href="#local-6989586621681853527"><span class="hs-identifier hs-var">id</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-248"></span><span>
+</span><span id="line-249"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintTarget"><span class="hs-identifier hs-type">lintTarget</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Node.html#ForeignTarget"><span class="hs-identifier hs-type">ForeignTarget</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-250"></span><span id="lintTarget"><span class="annot"><span class="annottext">lintTarget :: ForeignTarget -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#lintTarget"><span class="hs-identifier hs-var hs-var">lintTarget</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Node.html#ForeignTarget"><span class="hs-identifier hs-type">ForeignTarget</span></a></span><span> </span><span id="local-6989586621681853530"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853530"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="annot"><span class="annottext">ForeignConvention
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-251"></span><span>    </span><span class="annot"><span class="annottext">SDoc -&gt; CmmExpr -&gt; CmmLint ()
+forall a.
+(UserOfRegs GlobalReg a, OutputableP Platform a) =&gt;
+SDoc -&gt; a -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#mayNotMentionCallerSavedRegs"><span class="hs-identifier hs-var">mayNotMentionCallerSavedRegs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;foreign target&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853530"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-252"></span><span>    </span><span class="annot"><span class="annottext">CmmType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmLint CmmType
+</span><a href="GHC.Cmm.Lint.html#lintCmmExpr"><span class="hs-identifier hs-var">lintCmmExpr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853530"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-253"></span><span>    </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-254"></span><span class="annot"><a href="GHC.Cmm.Lint.html#lintTarget"><span class="hs-identifier hs-var">lintTarget</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Node.html#PrimTarget"><span class="hs-identifier hs-type">PrimTarget</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-255"></span><span>
+</span><span id="line-256"></span><span class="hs-comment">-- | As noted in Note [Register parameter passing], the arguments and</span><span>
+</span><span id="line-257"></span><span class="hs-comment">-- 'ForeignTarget' of a foreign call mustn't mention</span><span>
+</span><span id="line-258"></span><span class="hs-comment">-- caller-saved registers.</span><span>
+</span><span id="line-259"></span><span id="local-6989586621681853118"><span class="annot"><a href="GHC.Cmm.Lint.html#mayNotMentionCallerSavedRegs"><span class="hs-identifier hs-type">mayNotMentionCallerSavedRegs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#UserOfRegs"><span class="hs-identifier hs-type">UserOfRegs</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Reg.html#GlobalReg"><span class="hs-identifier hs-type">GlobalReg</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853118"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#OutputableP"><span class="hs-identifier hs-type">OutputableP</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853118"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-260"></span><span>                             </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#SDoc"><span class="hs-identifier hs-type">SDoc</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621681853118"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-261"></span><span id="mayNotMentionCallerSavedRegs"><span class="annot"><span class="annottext">mayNotMentionCallerSavedRegs :: forall a.
+(UserOfRegs GlobalReg a, OutputableP Platform a) =&gt;
+SDoc -&gt; a -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#mayNotMentionCallerSavedRegs"><span class="hs-identifier hs-var hs-var">mayNotMentionCallerSavedRegs</span></a></span></span><span> </span><span id="local-6989586621681853547"><span class="annot"><span class="annottext">SDoc
+</span><a href="#local-6989586621681853547"><span class="hs-identifier hs-var">what</span></a></span></span><span> </span><span id="local-6989586621681853548"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681853548"><span class="hs-identifier hs-var">thing</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-262"></span><span>    </span><span id="local-6989586621681853549"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853549"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-263"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681853550"><span class="annot"><span class="annottext">badRegs :: [GlobalReg]
+</span><a href="#local-6989586621681853550"><span class="hs-identifier hs-var hs-var">badRegs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(GlobalReg -&gt; Bool) -&gt; [GlobalReg] -&gt; [GlobalReg]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#filter/GHC.List.html#filter"><span class="hs-identifier hs-var">filter</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform -&gt; GlobalReg -&gt; Bool
+</span><a href="GHC.Platform.Regs.html#callerSaves"><span class="hs-identifier hs-var">callerSaves</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853549"><span class="hs-identifier hs-var">platform</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-264"></span><span>                  </span><span class="annot"><span class="annottext">([GlobalReg] -&gt; [GlobalReg]) -&gt; [GlobalReg] -&gt; [GlobalReg]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+-&gt; ([GlobalReg] -&gt; GlobalReg -&gt; [GlobalReg])
+-&gt; [GlobalReg]
+-&gt; a
+-&gt; [GlobalReg]
+forall b. Platform -&gt; (b -&gt; GlobalReg -&gt; b) -&gt; b -&gt; a -&gt; b
+forall r a b.
+UserOfRegs r a =&gt;
+Platform -&gt; (b -&gt; r -&gt; b) -&gt; b -&gt; a -&gt; b
+</span><a href="GHC.Cmm.Expr.html#foldRegsUsed"><span class="hs-identifier hs-var">foldRegsUsed</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853549"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(GlobalReg -&gt; [GlobalReg] -&gt; [GlobalReg])
+-&gt; [GlobalReg] -&gt; GlobalReg -&gt; [GlobalReg]
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#flip/GHC.Base.html#flip"><span class="hs-identifier hs-var">flip</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">:</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681853548"><span class="hs-identifier hs-var">thing</span></a></span><span>
+</span><span id="line-265"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; CmmLint () -&gt; CmmLint ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/Control.Monad.html#unless/Control.Monad.html#unless"><span class="hs-identifier hs-var">unless</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[GlobalReg] -&gt; Bool
+forall a. [a] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#null/Data.Foldable.html#null"><span class="hs-identifier hs-var">null</span></a></span><span> </span><span class="annot"><span class="annottext">[GlobalReg]
+</span><a href="#local-6989586621681853550"><span class="hs-identifier hs-var">badRegs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-266"></span><span>      </span><span class="annot"><span class="annottext">(CmmLint () -&gt; CmmLint ()) -&gt; CmmLint () -&gt; CmmLint ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; CmmLint ()
+forall a. SDoc -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintErr"><span class="hs-identifier hs-var">cmmLintErr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SDoc
+</span><a href="#local-6989586621681853547"><span class="hs-identifier hs-var">what</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;mentions caller-saved registers: &quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%3E"><span class="hs-operator hs-var">&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">[GlobalReg] -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">[GlobalReg]
+</span><a href="#local-6989586621681853550"><span class="hs-identifier hs-var">badRegs</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsDoc doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%24%24"><span class="hs-operator hs-var">$$</span></a></span><span> </span><span class="annot"><span class="annottext">Platform -&gt; a -&gt; SDoc
+forall env a. OutputableP env a =&gt; env -&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#pdoc"><span class="hs-identifier hs-var">pdoc</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853549"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681853548"><span class="hs-identifier hs-var">thing</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-267"></span><span>
+</span><span id="line-268"></span><span class="annot"><a href="GHC.Cmm.Lint.html#checkCond"><span class="hs-identifier hs-type">checkCond</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-269"></span><span id="checkCond"><span class="annot"><span class="annottext">checkCond :: Platform -&gt; CmmExpr -&gt; CmmLint ()
+</span><a href="GHC.Cmm.Lint.html#checkCond"><span class="hs-identifier hs-var hs-var">checkCond</span></a></span></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmMachOp"><span class="hs-identifier hs-type">CmmMachOp</span></a></span><span> </span><span id="local-6989586621681853555"><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853555"><span class="hs-identifier hs-var">mop</span></a></span></span><span> </span><span class="annot"><span class="annottext">[CmmExpr]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">MachOp -&gt; Bool
+</span><a href="GHC.Cmm.MachOp.html#isComparisonMachOp"><span class="hs-identifier hs-var">isComparisonMachOp</span></a></span><span> </span><span class="annot"><span class="annottext">MachOp
+</span><a href="#local-6989586621681853555"><span class="hs-identifier hs-var">mop</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-270"></span><span class="annot"><a href="GHC.Cmm.Lint.html#checkCond"><span class="hs-identifier hs-var">checkCond</span></a></span><span> </span><span id="local-6989586621681853557"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853557"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmLit"><span class="hs-identifier hs-type">CmmLit</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmInt"><span class="hs-identifier hs-type">CmmInt</span></a></span><span> </span><span id="local-6989586621681853558"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621681853558"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621681853559"><span class="annot"><span class="annottext">Width
+</span><a href="#local-6989586621681853559"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621681853558"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621681853558"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Width
+</span><a href="#local-6989586621681853559"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Width -&gt; Width -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Platform -&gt; Width
+</span><a href="GHC.Cmm.Type.html#wordWidth"><span class="hs-identifier hs-var">wordWidth</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853557"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; CmmLint ()
+forall a. a -&gt; CmmLint a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-comment">-- constant values</span><span>
+</span><span id="line-271"></span><span class="annot"><a href="GHC.Cmm.Lint.html#checkCond"><span class="hs-identifier hs-var">checkCond</span></a></span><span> </span><span id="local-6989586621681853562"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853562"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681853563"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853563"><span class="hs-identifier hs-var">expr</span></a></span></span><span>
+</span><span id="line-272"></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; CmmLint ()
+forall a. SDoc -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintErr"><span class="hs-identifier hs-var">cmmLintErr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SDoc -&gt; Int -&gt; SDoc -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#hang"><span class="hs-identifier hs-var">hang</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;expression is not a conditional:&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-273"></span><span>                         </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform -&gt; CmmExpr -&gt; SDoc
+forall env a. OutputableP env a =&gt; env -&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#pdoc"><span class="hs-identifier hs-var">pdoc</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853562"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853563"><span class="hs-identifier hs-var">expr</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-274"></span><span>
+</span><span id="line-275"></span><span class="hs-comment">-- -----------------------------------------------------------------------------</span><span>
+</span><span id="line-276"></span><span class="hs-comment">-- CmmLint monad</span><span>
+</span><span id="line-277"></span><span>
+</span><span id="line-278"></span><span class="hs-comment">-- just a basic error monad:</span><span>
+</span><span id="line-279"></span><span>
+</span><span id="line-280"></span><span class="hs-keyword">newtype</span><span> </span><span id="CmmLint"><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-var">CmmLint</span></a></span></span><span> </span><span id="local-6989586621681853060"><span class="annot"><a href="#local-6989586621681853060"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="CmmLint"><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-var">CmmLint</span></a></span></span><span> </span><span class="hs-special">{</span><span> </span><span id="unCL"><span class="annot"><span class="annottext">forall a. CmmLint a -&gt; Platform -&gt; Either SDoc a
+</span><a href="GHC.Cmm.Lint.html#unCL"><span class="hs-identifier hs-var hs-var">unCL</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#Either/Data.Either.html#Either"><span class="hs-identifier hs-type">Either</span></a></span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#SDoc"><span class="hs-identifier hs-type">SDoc</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853060"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-281"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="annot"><span class="hs-keyword">stock</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681853567"><span id="local-6989586621681853571"><span class="annot"><span class="annottext">(forall a b. (a -&gt; b) -&gt; CmmLint a -&gt; CmmLint b)
+-&gt; (forall a b. a -&gt; CmmLint b -&gt; CmmLint a) -&gt; Functor CmmLint
+forall a b. a -&gt; CmmLint b -&gt; CmmLint a
+forall a b. (a -&gt; b) -&gt; CmmLint a -&gt; CmmLint b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+$cfmap :: forall a b. (a -&gt; b) -&gt; CmmLint a -&gt; CmmLint b
+fmap :: forall a b. (a -&gt; b) -&gt; CmmLint a -&gt; CmmLint b
+$c&lt;$ :: forall a b. a -&gt; CmmLint b -&gt; CmmLint a
+&lt;$ :: forall a b. a -&gt; CmmLint b -&gt; CmmLint a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#Functor/GHC.Base.html#Functor"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></a></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-282"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681853578"><span id="local-6989586621681853584"><span id="local-6989586621681853589"><span id="local-6989586621681853594"><span id="local-6989586621681853599"><span class="annot"><span class="annottext">Functor CmmLint
+Functor CmmLint =&gt;
+(forall a. a -&gt; CmmLint a)
+-&gt; (forall a b. CmmLint (a -&gt; b) -&gt; CmmLint a -&gt; CmmLint b)
+-&gt; (forall a b c.
+    (a -&gt; b -&gt; c) -&gt; CmmLint a -&gt; CmmLint b -&gt; CmmLint c)
+-&gt; (forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint b)
+-&gt; (forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint a)
+-&gt; Applicative CmmLint
+forall a. a -&gt; CmmLint a
+forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint a
+forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint b
+forall a b. CmmLint (a -&gt; b) -&gt; CmmLint a -&gt; CmmLint b
+forall a b c. (a -&gt; b -&gt; c) -&gt; CmmLint a -&gt; CmmLint b -&gt; CmmLint c
+forall (f :: * -&gt; *).
+Functor f =&gt;
+(forall a. a -&gt; f a)
+-&gt; (forall a b. f (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; f a -&gt; f b -&gt; f c)
+-&gt; (forall a b. f a -&gt; f b -&gt; f b)
+-&gt; (forall a b. f a -&gt; f b -&gt; f a)
+-&gt; Applicative f
+$cpure :: forall a. a -&gt; CmmLint a
+pure :: forall a. a -&gt; CmmLint a
+$c&lt;*&gt; :: forall a b. CmmLint (a -&gt; b) -&gt; CmmLint a -&gt; CmmLint b
+&lt;*&gt; :: forall a b. CmmLint (a -&gt; b) -&gt; CmmLint a -&gt; CmmLint b
+$cliftA2 :: forall a b c. (a -&gt; b -&gt; c) -&gt; CmmLint a -&gt; CmmLint b -&gt; CmmLint c
+liftA2 :: forall a b c. (a -&gt; b -&gt; c) -&gt; CmmLint a -&gt; CmmLint b -&gt; CmmLint c
+$c*&gt; :: forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint b
+*&gt; :: forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint b
+$c&lt;* :: forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint a
+&lt;* :: forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#Applicative/GHC.Base.html#Applicative"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Applicative</span></a></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681853620"><span id="local-6989586621681853626"><span id="local-6989586621681853631"><span class="annot"><span class="annottext">Applicative CmmLint
+Applicative CmmLint =&gt;
+(forall a b. CmmLint a -&gt; (a -&gt; CmmLint b) -&gt; CmmLint b)
+-&gt; (forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint b)
+-&gt; (forall a. a -&gt; CmmLint a)
+-&gt; Monad CmmLint
+forall a. a -&gt; CmmLint a
+forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint b
+forall a b. CmmLint a -&gt; (a -&gt; CmmLint b) -&gt; CmmLint b
+forall (m :: * -&gt; *).
+Applicative m =&gt;
+(forall a b. m a -&gt; (a -&gt; m b) -&gt; m b)
+-&gt; (forall a b. m a -&gt; m b -&gt; m b)
+-&gt; (forall a. a -&gt; m a)
+-&gt; Monad m
+$c&gt;&gt;= :: forall a b. CmmLint a -&gt; (a -&gt; CmmLint b) -&gt; CmmLint b
+&gt;&gt;= :: forall a b. CmmLint a -&gt; (a -&gt; CmmLint b) -&gt; CmmLint b
+$c&gt;&gt; :: forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint b
+&gt;&gt; :: forall a b. CmmLint a -&gt; CmmLint b -&gt; CmmLint b
+$creturn :: forall a. a -&gt; CmmLint a
+return :: forall a. a -&gt; CmmLint a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#Monad/GHC.Base.html#Monad"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Monad</span></a></span></span></span></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">via</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Reader.html#ReaderT/Control.Monad.Trans.Reader.html#ReaderT"><span class="hs-identifier hs-type">ReaderT</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Except.html#Except/Control.Monad.Trans.Except.html#Except"><span class="hs-identifier hs-type">Except</span></a></span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#SDoc"><span class="hs-identifier hs-type">SDoc</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-283"></span><span>
+</span><span id="line-284"></span><span class="annot"><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-type">getPlatform</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span>
+</span><span id="line-285"></span><span id="getPlatform"><span class="annot"><span class="annottext">getPlatform :: CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var hs-var">getPlatform</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Platform -&gt; Either SDoc Platform) -&gt; CmmLint Platform
+forall a. (Platform -&gt; Either SDoc a) -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-var">CmmLint</span></a></span><span> </span><span class="annot"><span class="annottext">((Platform -&gt; Either SDoc Platform) -&gt; CmmLint Platform)
+-&gt; (Platform -&gt; Either SDoc Platform) -&gt; CmmLint Platform
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681853640"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853640"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Platform -&gt; Either SDoc Platform
+forall a b. b -&gt; Either a b
+</span><a href="../../base-4.18.2.1/src/Data.Either.html#Right/Data.Either.html#Right"><span class="hs-identifier hs-var">Right</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853640"><span class="hs-identifier hs-var">platform</span></a></span><span>
+</span><span id="line-286"></span><span>
+</span><span id="line-287"></span><span id="local-6989586621681853110"><span class="annot"><a href="GHC.Cmm.Lint.html#cmmLintErr"><span class="hs-identifier hs-type">cmmLintErr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#SDoc"><span class="hs-identifier hs-type">SDoc</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853110"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-288"></span><span id="cmmLintErr"><span class="annot"><span class="annottext">cmmLintErr :: forall a. SDoc -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintErr"><span class="hs-identifier hs-var hs-var">cmmLintErr</span></a></span></span><span> </span><span id="local-6989586621681853641"><span class="annot"><span class="annottext">SDoc
+</span><a href="#local-6989586621681853641"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Platform -&gt; Either SDoc a) -&gt; CmmLint a
+forall a. (Platform -&gt; Either SDoc a) -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-var">CmmLint</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">Platform
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; Either SDoc a
+forall a b. a -&gt; Either a b
+</span><a href="../../base-4.18.2.1/src/Data.Either.html#Left/Data.Either.html#Left"><span class="hs-identifier hs-var">Left</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc
+</span><a href="#local-6989586621681853641"><span class="hs-identifier hs-var">msg</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-289"></span><span>
+</span><span id="line-290"></span><span id="local-6989586621681853073"><span class="annot"><a href="GHC.Cmm.Lint.html#addLintInfo"><span class="hs-identifier hs-type">addLintInfo</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#SDoc"><span class="hs-identifier hs-type">SDoc</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853073"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853073"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-291"></span><span id="addLintInfo"><span class="annot"><span class="annottext">addLintInfo :: forall a. SDoc -&gt; CmmLint a -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#addLintInfo"><span class="hs-identifier hs-var hs-var">addLintInfo</span></a></span></span><span> </span><span id="local-6989586621681853642"><span class="annot"><span class="annottext">SDoc
+</span><a href="#local-6989586621681853642"><span class="hs-identifier hs-var">info</span></a></span></span><span> </span><span id="local-6989586621681853643"><span class="annot"><span class="annottext">CmmLint a
+</span><a href="#local-6989586621681853643"><span class="hs-identifier hs-var">thing</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Platform -&gt; Either SDoc a) -&gt; CmmLint a
+forall a. (Platform -&gt; Either SDoc a) -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-var">CmmLint</span></a></span><span> </span><span class="annot"><span class="annottext">((Platform -&gt; Either SDoc a) -&gt; CmmLint a)
+-&gt; (Platform -&gt; Either SDoc a) -&gt; CmmLint a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681853644"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853644"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-292"></span><span>   </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">CmmLint a -&gt; Platform -&gt; Either SDoc a
+forall a. CmmLint a -&gt; Platform -&gt; Either SDoc a
+</span><a href="GHC.Cmm.Lint.html#unCL"><span class="hs-identifier hs-var">unCL</span></a></span><span> </span><span class="annot"><span class="annottext">CmmLint a
+</span><a href="#local-6989586621681853643"><span class="hs-identifier hs-var">thing</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853644"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-293"></span><span>        </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#Left/Data.Either.html#Left"><span class="hs-identifier hs-type">Left</span></a></span><span> </span><span id="local-6989586621681853645"><span class="annot"><span class="annottext">SDoc
+</span><a href="#local-6989586621681853645"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; Either SDoc a
+forall a b. a -&gt; Either a b
+</span><a href="../../base-4.18.2.1/src/Data.Either.html#Left/Data.Either.html#Left"><span class="hs-identifier hs-var">Left</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SDoc -&gt; Int -&gt; SDoc -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#hang"><span class="hs-identifier hs-var">hang</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc
+</span><a href="#local-6989586621681853642"><span class="hs-identifier hs-var">info</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="annot"><span class="annottext">SDoc
+</span><a href="#local-6989586621681853645"><span class="hs-identifier hs-var">err</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-294"></span><span>        </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#Right/Data.Either.html#Right"><span class="hs-identifier hs-type">Right</span></a></span><span> </span><span id="local-6989586621681853646"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681853646"><span class="hs-identifier hs-var">a</span></a></span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a -&gt; Either SDoc a
+forall a b. b -&gt; Either a b
+</span><a href="../../base-4.18.2.1/src/Data.Either.html#Right/Data.Either.html#Right"><span class="hs-identifier hs-var">Right</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681853646"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-295"></span><span>
+</span><span id="line-296"></span><span id="local-6989586621681853105"><span class="annot"><a href="GHC.Cmm.Lint.html#cmmLintMachOpErr"><span class="hs-identifier hs-type">cmmLintMachOpErr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Cmm.Type.html#CmmType"><span class="hs-identifier hs-type">CmmType</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Cmm.Type.html#Width"><span class="hs-identifier hs-type">Width</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853105"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-297"></span><span id="cmmLintMachOpErr"><span class="annot"><span class="annottext">cmmLintMachOpErr :: forall a. CmmExpr -&gt; [CmmType] -&gt; [Width] -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintMachOpErr"><span class="hs-identifier hs-var hs-var">cmmLintMachOpErr</span></a></span></span><span> </span><span id="local-6989586621681853662"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853662"><span class="hs-identifier hs-var">expr</span></a></span></span><span> </span><span id="local-6989586621681853663"><span class="annot"><span class="annottext">[CmmType]
+</span><a href="#local-6989586621681853663"><span class="hs-identifier hs-var">argsRep</span></a></span></span><span> </span><span id="local-6989586621681853664"><span class="annot"><span class="annottext">[Width]
+</span><a href="#local-6989586621681853664"><span class="hs-identifier hs-var">opExpectsRep</span></a></span></span><span>
+</span><span id="line-298"></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-299"></span><span>       </span><span id="local-6989586621681853665"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853665"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-300"></span><span>       </span><span class="annot"><span class="annottext">SDoc -&gt; CmmLint a
+forall a. SDoc -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintErr"><span class="hs-identifier hs-var">cmmLintErr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;in MachOp application: &quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsDoc doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%24%24"><span class="hs-operator hs-var">$$</span></a></span><span>
+</span><span id="line-301"></span><span>                   </span><span class="annot"><span class="annottext">Int -&gt; SDoc -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#nest"><span class="hs-identifier hs-var">nest</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform -&gt; CmmExpr -&gt; SDoc
+forall env a. OutputableP env a =&gt; env -&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#pdoc"><span class="hs-identifier hs-var">pdoc</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853665"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681853662"><span class="hs-identifier hs-var">expr</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsDoc doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%24%24"><span class="hs-operator hs-var">$$</span></a></span><span>
+</span><span id="line-302"></span><span>                      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;op is expecting: &quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">[Width] -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">[Width]
+</span><a href="#local-6989586621681853664"><span class="hs-identifier hs-var">opExpectsRep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsDoc doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%24%24"><span class="hs-operator hs-var">$$</span></a></span><span>
+</span><span id="line-303"></span><span>                      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;arguments provide: &quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmType] -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmType]
+</span><a href="#local-6989586621681853663"><span class="hs-identifier hs-var">argsRep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-304"></span><span>
+</span><span id="line-305"></span><span id="local-6989586621681853114"><span id="local-6989586621681853115"><span id="local-6989586621681853116"><span class="annot"><a href="GHC.Cmm.Lint.html#cmmLintAssignErr"><span class="hs-identifier hs-type">cmmLintAssignErr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Node.html#CmmNode"><span class="hs-identifier hs-type">CmmNode</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853114"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853115"><span class="hs-identifier hs-type">x</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Type.html#CmmType"><span class="hs-identifier hs-type">CmmType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Type.html#CmmType"><span class="hs-identifier hs-type">CmmType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Lint.html#CmmLint"><span class="hs-identifier hs-type">CmmLint</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681853116"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-306"></span><span id="cmmLintAssignErr"><span class="annot"><span class="annottext">cmmLintAssignErr :: forall (e :: Extensibility) (x :: Extensibility) a.
+CmmNode e x -&gt; CmmType -&gt; CmmType -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintAssignErr"><span class="hs-identifier hs-var hs-var">cmmLintAssignErr</span></a></span></span><span> </span><span id="local-6989586621681853678"><span class="annot"><span class="annottext">CmmNode e x
+</span><a href="#local-6989586621681853678"><span class="hs-identifier hs-var">stmt</span></a></span></span><span> </span><span id="local-6989586621681853679"><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853679"><span class="hs-identifier hs-var">e_ty</span></a></span></span><span> </span><span id="local-6989586621681853680"><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853680"><span class="hs-identifier hs-var">r_ty</span></a></span></span><span>
+</span><span id="line-307"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-308"></span><span>    </span><span id="local-6989586621681853681"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853681"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmLint Platform
+</span><a href="GHC.Cmm.Lint.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-309"></span><span>    </span><span class="annot"><span class="annottext">SDoc -&gt; CmmLint a
+forall a. SDoc -&gt; CmmLint a
+</span><a href="GHC.Cmm.Lint.html#cmmLintErr"><span class="hs-identifier hs-var">cmmLintErr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;in assignment: &quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsDoc doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%24%24"><span class="hs-operator hs-var">$$</span></a></span><span>
+</span><span id="line-310"></span><span>                </span><span class="annot"><span class="annottext">Int -&gt; SDoc -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#nest"><span class="hs-identifier hs-var">nest</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SDoc] -&gt; SDoc
+forall doc. IsDoc doc =&gt; [doc] -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#vcat"><span class="hs-identifier hs-var">vcat</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Platform -&gt; CmmNode e x -&gt; SDoc
+forall env a. OutputableP env a =&gt; env -&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#pdoc"><span class="hs-identifier hs-var">pdoc</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681853681"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmNode e x
+</span><a href="#local-6989586621681853678"><span class="hs-identifier hs-var">stmt</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-311"></span><span>                              </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Reg ty:&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853680"><span class="hs-identifier hs-var">r_ty</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-312"></span><span>                              </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Rhs ty:&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681853679"><span class="hs-identifier hs-var">e_ty</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-313"></span><span>
+</span><span id="line-314"></span><span>
+</span><span id="line-315"></span><span class="hs-comment">{-
+cmmLintDubiousWordOffset :: CmmExpr -&gt; CmmLint a
+cmmLintDubiousWordOffset expr
+   = cmmLintErr (text &quot;offset is not a multiple of words: &quot; $$
+                 nest 2 (ppr expr))
+-}</span><span>
+</span><span id="line-321"></span><span>
+</span><span id="line-322"></span></pre></body></html>

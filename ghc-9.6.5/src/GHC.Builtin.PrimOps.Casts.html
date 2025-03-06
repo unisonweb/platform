@@ -1,0 +1,660 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">{-
+This module contains helpers to cast variables
+between different Int/WordReps in StgLand.
+
+-}</span><span>
+</span><span id="line-6"></span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Builtin.PrimOps.Casts</span><span>
+</span><span id="line-8"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#getCasts"><span class="hs-identifier">getCasts</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-9"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-12"></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html"><span class="hs-identifier">GHC.Core.TyCon</span></a></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html"><span class="hs-identifier">GHC.Utils.Outputable</span></a></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Panic.html"><span class="hs-identifier">GHC.Utils.Panic</span></a></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Panic.Plain.html"><span class="hs-identifier">GHC.Utils.Panic.Plain</span></a></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.RepType.html"><span class="hs-identifier">GHC.Types.RepType</span></a></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.Type.html"><span class="hs-identifier">GHC.Core.Type</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Builtin.Types.Prim.html"><span class="hs-identifier">GHC.Builtin.Types.Prim</span></a></span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Builtin.PrimOps.html"><span class="hs-identifier">GHC.Builtin.PrimOps</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Plugins.html"><span class="hs-identifier">GHC.Plugins</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier">HasDebugCallStack</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-comment">{- Note [PrimRep based casting]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+This module contains a number of utility functions useful when
+converting between variables of differing PrimReps.
+
+The general pattern is:
+* We have two primReps `from_rep` and `to_rep`.
+* We want a list of PrimOps we can apply to a variable of rep `from_rep`.
+Applying the list of primOps in order takes us to `to_rep` from `from_rep` giving
+us a variable of the returned type at each step.
+
+E.g. we call `getCasts from_rep to_rep` and get back [(op1#,ty1),(op2#,ty2)].
+We can use this result to construct a function of type
+`StgExpr -&gt; StgExpr` by construction an expression
+
+    case op1# &lt;from&gt; of (x' :: ty1) -&gt; case op2# x' of x' -&gt; &lt;rhs_hole&gt;
+
+Ideally backends will compile the sequence of PrimOps to a no-op. E.g. by reusing
+the same register but just relabeling it as another width.
+However this is might not always be possible or the required optimizations
+simply not implemented in the backend. This means currently many of these casts
+will be cheap but not all of them will be completely zero-cost.
+
+-}</span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- | `getCasts from_rep to_rep` gives us a list of primops which when applied in order convert from_rep to to_rep.</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- See Note [PrimRep based casting]</span><span>
+</span><span id="line-51"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#getCasts"><span class="hs-identifier hs-type">getCasts</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-52"></span><span id="getCasts"><span class="annot"><span class="annottext">getCasts :: PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#getCasts"><span class="hs-identifier hs-var hs-var">getCasts</span></a></span></span><span> </span><span id="local-6989586621682061427"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span></span><span> </span><span id="local-6989586621682061428"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span></span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-comment">-- No-op</span><span>
+</span><span id="line-54"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-comment">-- pprTrace &quot;getCasts&quot; (ppr (from_rep,to_rep)) $</span><span>
+</span><span id="line-55"></span><span>    </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; PrimRep -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span>  </span><span class="hs-comment">-- Float &lt;-&gt; Double</span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; PrimRep -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#FloatRep"><span class="hs-identifier hs-var">FloatRep</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-60"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; SDoc -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. HasCallStack =&gt; Bool -&gt; SDoc -&gt; a -&gt; a
+</span><a href="GHC.Utils.Panic.html#assertPpr"><span class="hs-identifier hs-var">assertPpr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; PrimRep -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#DoubleRep"><span class="hs-identifier hs-var">DoubleRep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(PrimOp, Type)] -&gt; [(PrimOp, Type)])
+-&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-61"></span><span>    </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#DoubleToFloatOp"><span class="hs-identifier hs-var">DoubleToFloatOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#floatPrimTy"><span class="hs-identifier hs-var">floatPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; PrimRep -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#DoubleRep"><span class="hs-identifier hs-var">DoubleRep</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-63"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; SDoc -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. HasCallStack =&gt; Bool -&gt; SDoc -&gt; a -&gt; a
+</span><a href="GHC.Utils.Panic.html#assertPpr"><span class="hs-identifier hs-var">assertPpr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; PrimRep -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#FloatRep"><span class="hs-identifier hs-var">FloatRep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(PrimOp, Type)] -&gt; [(PrimOp, Type)])
+-&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-64"></span><span>    </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#FloatToDoubleOp"><span class="hs-identifier hs-var">FloatToDoubleOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#doublePrimTy"><span class="hs-identifier hs-var">doublePrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span>  </span><span class="hs-comment">-- Addr &lt;-&gt; Word/Int</span><span>
+</span><span id="line-67"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; PrimRep -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#AddrRep"><span class="hs-identifier hs-var">AddrRep</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; [(PrimOp, Type)]
+PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordOrIntToAddrRep"><span class="hs-identifier hs-var">wordOrIntToAddrRep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span>
+</span><span id="line-68"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; PrimRep -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#AddrRep"><span class="hs-identifier hs-var">AddrRep</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; [(PrimOp, Type)]
+PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#addrToWordOrIntRep"><span class="hs-identifier hs-var">addrToWordOrIntRep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span>  </span><span class="hs-comment">-- Int* -&gt; Int*</span><span>
+</span><span id="line-71"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsInt"><span class="hs-identifier hs-var">primRepIsInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span>
+</span><span id="line-72"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsInt"><span class="hs-identifier hs-var">primRepIsInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span>
+</span><span id="line-73"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#sizedIntToSizedInt"><span class="hs-identifier hs-var">sizedIntToSizedInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span>  </span><span class="hs-comment">-- Word* -&gt; Word*</span><span>
+</span><span id="line-76"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsWord"><span class="hs-identifier hs-var">primRepIsWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span>
+</span><span id="line-77"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsWord"><span class="hs-identifier hs-var">primRepIsWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#sizedWordToSizedWord"><span class="hs-identifier hs-var">sizedWordToSizedWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-comment">-- Word* -&gt; Int*</span><span>
+</span><span id="line-81"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsWord"><span class="hs-identifier hs-var">primRepIsWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span>
+</span><span id="line-82"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsInt"><span class="hs-identifier hs-var">primRepIsInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span>
+</span><span id="line-83"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621682061445"><span class="annot"><span class="annottext">PrimOp
+</span><a href="#local-6989586621682061445"><span class="hs-identifier hs-var">op1</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621682061446"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061446"><span class="hs-identifier hs-var">r1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; (PrimOp, PrimRep)
+PrimRep -&gt; (PrimOp, PrimRep)
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordToIntRep"><span class="hs-identifier hs-var">wordToIntRep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span>
+</span><span id="line-84"></span><span>    </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="#local-6989586621682061445"><span class="hs-identifier hs-var">op1</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">PrimRep -&gt; Type
+</span><a href="GHC.Types.RepType.html#primRepToType"><span class="hs-identifier hs-var">primRepToType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061446"><span class="hs-identifier hs-var">r1</span></a></span><span class="hs-special">)</span><span class="annot"><span class="annottext">(PrimOp, Type) -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#sizedIntToSizedInt"><span class="hs-identifier hs-var">sizedIntToSizedInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061446"><span class="hs-identifier hs-var">r1</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span>  </span><span class="hs-comment">-- Int* -&gt; Word*</span><span>
+</span><span id="line-87"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsInt"><span class="hs-identifier hs-var">primRepIsInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span>
+</span><span id="line-88"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsWord"><span class="hs-identifier hs-var">primRepIsWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span>
+</span><span id="line-89"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621682061449"><span class="annot"><span class="annottext">PrimOp
+</span><a href="#local-6989586621682061449"><span class="hs-identifier hs-var">op1</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621682061450"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061450"><span class="hs-identifier hs-var">r1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; (PrimOp, PrimRep)
+PrimRep -&gt; (PrimOp, PrimRep)
+</span><a href="GHC.Builtin.PrimOps.Casts.html#intToWordRep"><span class="hs-identifier hs-var">intToWordRep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span>
+</span><span id="line-90"></span><span>    </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="#local-6989586621682061449"><span class="hs-identifier hs-var">op1</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">PrimRep -&gt; Type
+</span><a href="GHC.Types.RepType.html#primRepToType"><span class="hs-identifier hs-var">primRepToType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061450"><span class="hs-identifier hs-var">r1</span></a></span><span class="hs-special">)</span><span class="annot"><span class="annottext">(PrimOp, Type) -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#sizedWordToSizedWord"><span class="hs-identifier hs-var">sizedWordToSizedWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061450"><span class="hs-identifier hs-var">r1</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span>
+</span><span id="line-91"></span><span>
+</span><span id="line-92"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; [(PrimOp, Type)]
+forall a. HasCallStack =&gt; String -&gt; SDoc -&gt; a
+</span><a href="GHC.Utils.Panic.html#pprPanic"><span class="hs-identifier hs-var">pprPanic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;getCasts:Unexpect rep combination&quot;</span></span><span>
+</span><span id="line-93"></span><span>                          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(PrimRep, PrimRep) -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061427"><span class="hs-identifier hs-var">from_rep</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061428"><span class="hs-identifier hs-var">to_rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#wordOrIntToAddrRep"><span class="hs-identifier hs-type">wordOrIntToAddrRep</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-96"></span><span id="wordOrIntToAddrRep"><span class="annot"><span class="annottext">wordOrIntToAddrRep :: (() :: Constraint) =&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordOrIntToAddrRep"><span class="hs-identifier hs-var hs-var">wordOrIntToAddrRep</span></a></span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#AddrRep"><span class="hs-identifier hs-var">AddrRep</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-comment">-- No-op argument is already AddrRep</span><span>
+</span><span id="line-97"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#wordOrIntToAddrRep"><span class="hs-identifier hs-var">wordOrIntToAddrRep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#IntRep"><span class="hs-identifier hs-var">IntRep</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToAddrOp"><span class="hs-identifier hs-var">IntToAddrOp</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#addrPrimTy"><span class="hs-identifier hs-var">addrPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-98"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#wordOrIntToAddrRep"><span class="hs-identifier hs-var">wordOrIntToAddrRep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#WordRep"><span class="hs-identifier hs-var">WordRep</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#WordToIntOp"><span class="hs-identifier hs-var">WordToIntOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#intPrimTy"><span class="hs-identifier hs-var">intPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToAddrOp"><span class="hs-identifier hs-var">IntToAddrOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#addrPrimTy"><span class="hs-identifier hs-var">addrPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-99"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#wordOrIntToAddrRep"><span class="hs-identifier hs-var">wordOrIntToAddrRep</span></a></span><span> </span><span id="local-6989586621682061466"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061466"><span class="hs-identifier hs-var">r</span></a></span></span><span>
+</span><span id="line-100"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsInt"><span class="hs-identifier hs-var">primRepIsInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061466"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#intToMachineInt"><span class="hs-identifier hs-var">intToMachineInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061466"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#intPrimTy"><span class="hs-identifier hs-var">intPrimTy</span></a></span><span class="hs-special">)</span><span class="annot"><span class="annottext">(PrimOp, Type) -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToAddrOp"><span class="hs-identifier hs-var">IntToAddrOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#addrPrimTy"><span class="hs-identifier hs-var">addrPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-101"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsWord"><span class="hs-identifier hs-var">primRepIsWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061466"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-102"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621682061468"><span class="annot"><span class="annottext">PrimOp
+</span><a href="#local-6989586621682061468"><span class="hs-identifier hs-var">op1</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621682061469"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061469"><span class="hs-identifier hs-var">r1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; (PrimOp, PrimRep)
+PrimRep -&gt; (PrimOp, PrimRep)
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordToIntRep"><span class="hs-identifier hs-var">wordToIntRep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061466"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-103"></span><span>        </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="#local-6989586621682061468"><span class="hs-identifier hs-var">op1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Type
+</span><a href="GHC.Types.RepType.html#primRepToType"><span class="hs-identifier hs-var">primRepToType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061469"><span class="hs-identifier hs-var">r1</span></a></span><span class="hs-special">)</span><span class="annot"><span class="annottext">(PrimOp, Type) -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#intToMachineInt"><span class="hs-identifier hs-var">intToMachineInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061469"><span class="hs-identifier hs-var">r1</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#intPrimTy"><span class="hs-identifier hs-var">intPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToAddrOp"><span class="hs-identifier hs-var">IntToAddrOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#addrPrimTy"><span class="hs-identifier hs-var">addrPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-104"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; [(PrimOp, Type)]
+forall a. HasCallStack =&gt; String -&gt; SDoc -&gt; a
+</span><a href="GHC.Utils.Panic.html#pprPanic"><span class="hs-identifier hs-var">pprPanic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Rep not word or int rep&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061466"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span>
+</span><span id="line-106"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#addrToWordOrIntRep"><span class="hs-identifier hs-type">addrToWordOrIntRep</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-107"></span><span class="hs-comment">-- Machine sizes</span><span>
+</span><span id="line-108"></span><span id="addrToWordOrIntRep"><span class="annot"><span class="annottext">addrToWordOrIntRep :: (() :: Constraint) =&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#addrToWordOrIntRep"><span class="hs-identifier hs-var hs-var">addrToWordOrIntRep</span></a></span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#IntRep"><span class="hs-identifier hs-var">IntRep</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#AddrToIntOp"><span class="hs-identifier hs-var">AddrToIntOp</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#intPrimTy"><span class="hs-identifier hs-var">intPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-109"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#addrToWordOrIntRep"><span class="hs-identifier hs-var">addrToWordOrIntRep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#WordRep"><span class="hs-identifier hs-var">WordRep</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#AddrToIntOp"><span class="hs-identifier hs-var">AddrToIntOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#intPrimTy"><span class="hs-identifier hs-var">intPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToWordOp"><span class="hs-identifier hs-var">IntToWordOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#wordPrimTy"><span class="hs-identifier hs-var">wordPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-110"></span><span class="hs-comment">-- Explicitly sized reps</span><span>
+</span><span id="line-111"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#addrToWordOrIntRep"><span class="hs-identifier hs-var">addrToWordOrIntRep</span></a></span><span> </span><span id="local-6989586621682061479"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061479"><span class="hs-identifier hs-var">r</span></a></span></span><span>
+</span><span id="line-112"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsWord"><span class="hs-identifier hs-var">primRepIsWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061479"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#AddrToIntOp"><span class="hs-identifier hs-var">AddrToIntOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#intPrimTy"><span class="hs-identifier hs-var">intPrimTy</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimOp, Type) -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToWordOp"><span class="hs-identifier hs-var">IntToWordOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#wordPrimTy"><span class="hs-identifier hs-var">wordPrimTy</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimOp, Type) -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#sizedWordToSizedWord"><span class="hs-identifier hs-var">sizedWordToSizedWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#WordRep"><span class="hs-identifier hs-var">WordRep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061479"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-113"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsInt"><span class="hs-identifier hs-var">primRepIsInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061479"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#AddrToIntOp"><span class="hs-identifier hs-var">AddrToIntOp</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#intPrimTy"><span class="hs-identifier hs-var">intPrimTy</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimOp, Type) -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#sizedIntToSizedInt"><span class="hs-identifier hs-var">sizedIntToSizedInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#IntRep"><span class="hs-identifier hs-var">IntRep</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061479"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-114"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; [(PrimOp, Type)]
+forall a. HasCallStack =&gt; String -&gt; SDoc -&gt; a
+</span><a href="GHC.Utils.Panic.html#pprPanic"><span class="hs-identifier hs-var">pprPanic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Target rep not word or int rep&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061479"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-115"></span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span class="hs-comment">-- WordX# -&gt; IntX# (same size), argument is source rep</span><span>
+</span><span id="line-118"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#wordToIntRep"><span class="hs-identifier hs-type">wordToIntRep</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-119"></span><span id="wordToIntRep"><span class="annot"><span class="annottext">wordToIntRep :: (() :: Constraint) =&gt; PrimRep -&gt; (PrimOp, PrimRep)
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordToIntRep"><span class="hs-identifier hs-var hs-var">wordToIntRep</span></a></span></span><span> </span><span id="local-6989586621682061484"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061484"><span class="hs-identifier hs-var">rep</span></a></span></span><span>
+</span><span id="line-120"></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061484"><span class="hs-identifier hs-var">rep</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-121"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#WordRep"><span class="hs-identifier hs-var">WordRep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#WordToIntOp"><span class="hs-identifier hs-var">WordToIntOp</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#IntRep"><span class="hs-identifier hs-var">IntRep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-122"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word8Rep"><span class="hs-identifier hs-var">Word8Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Word8ToInt8Op"><span class="hs-identifier hs-var">Word8ToInt8Op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int8Rep"><span class="hs-identifier hs-var">Int8Rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word16Rep"><span class="hs-identifier hs-var">Word16Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Word16ToInt16Op"><span class="hs-identifier hs-var">Word16ToInt16Op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int16Rep"><span class="hs-identifier hs-var">Int16Rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-124"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word32Rep"><span class="hs-identifier hs-var">Word32Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Word32ToInt32Op"><span class="hs-identifier hs-var">Word32ToInt32Op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int32Rep"><span class="hs-identifier hs-var">Int32Rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-125"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word64Rep"><span class="hs-identifier hs-var">Word64Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Word64ToInt64Op"><span class="hs-identifier hs-var">Word64ToInt64Op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int64Rep"><span class="hs-identifier hs-var">Int64Rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; (PrimOp, PrimRep)
+forall a. HasCallStack =&gt; String -&gt; SDoc -&gt; a
+</span><a href="GHC.Utils.Panic.html#pprPanic"><span class="hs-identifier hs-var">pprPanic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Rep not a wordRep&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061484"><span class="hs-identifier hs-var">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span>
+</span><span id="line-128"></span><span class="hs-comment">-- IntX# -&gt; WordX#, argument is source rep</span><span>
+</span><span id="line-129"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#intToWordRep"><span class="hs-identifier hs-type">intToWordRep</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-130"></span><span id="intToWordRep"><span class="annot"><span class="annottext">intToWordRep :: (() :: Constraint) =&gt; PrimRep -&gt; (PrimOp, PrimRep)
+</span><a href="GHC.Builtin.PrimOps.Casts.html#intToWordRep"><span class="hs-identifier hs-var hs-var">intToWordRep</span></a></span></span><span> </span><span id="local-6989586621682061501"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061501"><span class="hs-identifier hs-var">rep</span></a></span></span><span>
+</span><span id="line-131"></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061501"><span class="hs-identifier hs-var">rep</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-132"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#IntRep"><span class="hs-identifier hs-var">IntRep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToWordOp"><span class="hs-identifier hs-var">IntToWordOp</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#WordRep"><span class="hs-identifier hs-var">WordRep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-133"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int8Rep"><span class="hs-identifier hs-var">Int8Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Int8ToWord8Op"><span class="hs-identifier hs-var">Int8ToWord8Op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word8Rep"><span class="hs-identifier hs-var">Word8Rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-134"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int16Rep"><span class="hs-identifier hs-var">Int16Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Int16ToWord16Op"><span class="hs-identifier hs-var">Int16ToWord16Op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word16Rep"><span class="hs-identifier hs-var">Word16Rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int32Rep"><span class="hs-identifier hs-var">Int32Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Int32ToWord32Op"><span class="hs-identifier hs-var">Int32ToWord32Op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word32Rep"><span class="hs-identifier hs-var">Word32Rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-136"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int64Rep"><span class="hs-identifier hs-var">Int64Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Int64ToWord64Op"><span class="hs-identifier hs-var">Int64ToWord64Op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word64Rep"><span class="hs-identifier hs-var">Word64Rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-137"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; (PrimOp, PrimRep)
+forall a. HasCallStack =&gt; String -&gt; SDoc -&gt; a
+</span><a href="GHC.Utils.Panic.html#pprPanic"><span class="hs-identifier hs-var">pprPanic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Rep not a wordRep&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061501"><span class="hs-identifier hs-var">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-138"></span><span>
+</span><span id="line-139"></span><span class="hs-comment">-- Casts between any size int to any other size of int</span><span>
+</span><span id="line-140"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#sizedIntToSizedInt"><span class="hs-identifier hs-type">sizedIntToSizedInt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-141"></span><span id="sizedIntToSizedInt"><span class="annot"><span class="annottext">sizedIntToSizedInt :: (() :: Constraint) =&gt; PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#sizedIntToSizedInt"><span class="hs-identifier hs-var hs-var">sizedIntToSizedInt</span></a></span></span><span> </span><span id="local-6989586621682061512"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061512"><span class="hs-identifier hs-var">r1</span></a></span></span><span> </span><span id="local-6989586621682061513"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061513"><span class="hs-identifier hs-var">r2</span></a></span></span><span>
+</span><span id="line-142"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061512"><span class="hs-identifier hs-var">r1</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; PrimRep -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061513"><span class="hs-identifier hs-var">r2</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-143"></span><span class="hs-comment">-- Cast to Int#</span><span>
+</span><span id="line-144"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#sizedIntToSizedInt"><span class="hs-identifier hs-var">sizedIntToSizedInt</span></a></span><span> </span><span id="local-6989586621682061514"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061514"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#IntRep"><span class="hs-identifier hs-var">IntRep</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#intToMachineInt"><span class="hs-identifier hs-var">intToMachineInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061514"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#intPrimTy"><span class="hs-identifier hs-var">intPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-145"></span><span class="hs-comment">-- Cast from Int#</span><span>
+</span><span id="line-146"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#sizedIntToSizedInt"><span class="hs-identifier hs-var">sizedIntToSizedInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#IntRep"><span class="hs-identifier hs-var">IntRep</span></a></span><span> </span><span id="local-6989586621682061515"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061515"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#intFromMachineInt"><span class="hs-identifier hs-var">intFromMachineInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061515"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">PrimRep -&gt; Type
+</span><a href="GHC.Types.RepType.html#primRepToType"><span class="hs-identifier hs-var">primRepToType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061515"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-147"></span><span class="hs-comment">-- Sized to differently sized must go over machine word.</span><span>
+</span><span id="line-148"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#sizedIntToSizedInt"><span class="hs-identifier hs-var">sizedIntToSizedInt</span></a></span><span> </span><span id="local-6989586621682061517"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061517"><span class="hs-identifier hs-var">r1</span></a></span></span><span> </span><span id="local-6989586621682061518"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061518"><span class="hs-identifier hs-var">r2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#intToMachineInt"><span class="hs-identifier hs-var">intToMachineInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061517"><span class="hs-identifier hs-var">r1</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#intPrimTy"><span class="hs-identifier hs-var">intPrimTy</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimOp, Type) -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#intFromMachineInt"><span class="hs-identifier hs-var">intFromMachineInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061518"><span class="hs-identifier hs-var">r2</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">PrimRep -&gt; Type
+</span><a href="GHC.Types.RepType.html#primRepToType"><span class="hs-identifier hs-var">primRepToType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061518"><span class="hs-identifier hs-var">r2</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-149"></span><span>
+</span><span id="line-150"></span><span class="hs-comment">-- Casts between any size Word to any other size of Word</span><span>
+</span><span id="line-151"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#sizedWordToSizedWord"><span class="hs-identifier hs-type">sizedWordToSizedWord</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-152"></span><span id="sizedWordToSizedWord"><span class="annot"><span class="annottext">sizedWordToSizedWord :: (() :: Constraint) =&gt; PrimRep -&gt; PrimRep -&gt; [(PrimOp, Type)]
+</span><a href="GHC.Builtin.PrimOps.Casts.html#sizedWordToSizedWord"><span class="hs-identifier hs-var hs-var">sizedWordToSizedWord</span></a></span></span><span> </span><span id="local-6989586621682061525"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061525"><span class="hs-identifier hs-var">r1</span></a></span></span><span> </span><span id="local-6989586621682061526"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061526"><span class="hs-identifier hs-var">r2</span></a></span></span><span>
+</span><span id="line-153"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061525"><span class="hs-identifier hs-var">r1</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; PrimRep -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061526"><span class="hs-identifier hs-var">r2</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-154"></span><span class="hs-comment">-- Cast to Word#</span><span>
+</span><span id="line-155"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#sizedWordToSizedWord"><span class="hs-identifier hs-var">sizedWordToSizedWord</span></a></span><span> </span><span id="local-6989586621682061527"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061527"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#WordRep"><span class="hs-identifier hs-var">WordRep</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordToMachineWord"><span class="hs-identifier hs-var">wordToMachineWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061527"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#wordPrimTy"><span class="hs-identifier hs-var">wordPrimTy</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-156"></span><span class="hs-comment">-- Cast from Word#</span><span>
+</span><span id="line-157"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#sizedWordToSizedWord"><span class="hs-identifier hs-var">sizedWordToSizedWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#WordRep"><span class="hs-identifier hs-var">WordRep</span></a></span><span> </span><span id="local-6989586621682061529"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061529"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordFromMachineWord"><span class="hs-identifier hs-var">wordFromMachineWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061529"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Type
+</span><a href="GHC.Types.RepType.html#primRepToType"><span class="hs-identifier hs-var">primRepToType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061529"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-158"></span><span class="hs-comment">-- Conversion between different non-machine sizes must go via machine word.</span><span>
+</span><span id="line-159"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#sizedWordToSizedWord"><span class="hs-identifier hs-var">sizedWordToSizedWord</span></a></span><span> </span><span id="local-6989586621682061531"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061531"><span class="hs-identifier hs-var">r1</span></a></span></span><span> </span><span id="local-6989586621682061532"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061532"><span class="hs-identifier hs-var">r2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordToMachineWord"><span class="hs-identifier hs-var">wordToMachineWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061531"><span class="hs-identifier hs-var">r1</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Builtin.Types.Prim.html#wordPrimTy"><span class="hs-identifier hs-var">wordPrimTy</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimOp, Type) -&gt; [(PrimOp, Type)] -&gt; [(PrimOp, Type)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordFromMachineWord"><span class="hs-identifier hs-var">wordFromMachineWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061532"><span class="hs-identifier hs-var">r2</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; Type
+</span><a href="GHC.Types.RepType.html#primRepToType"><span class="hs-identifier hs-var">primRepToType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061532"><span class="hs-identifier hs-var">r2</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span>
+</span><span id="line-162"></span><span class="hs-comment">-- Prefer the definitions above this line if possible</span><span>
+</span><span id="line-163"></span><span class="hs-comment">----------------------</span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span>
+</span><span id="line-166"></span><span class="hs-comment">-- Int*# to Int#</span><span>
+</span><span id="line-167"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#intToMachineInt"><span class="hs-pragma hs-type">intToMachineInt</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-168"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#intToMachineInt"><span class="hs-identifier hs-type">intToMachineInt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span>
+</span><span id="line-169"></span><span id="intToMachineInt"><span class="annot"><span class="annottext">intToMachineInt :: (() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#intToMachineInt"><span class="hs-identifier hs-var hs-var">intToMachineInt</span></a></span></span><span> </span><span id="local-6989586621682061540"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061540"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-170"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; SDoc -&gt; PrimOp -&gt; PrimOp
+forall a. HasCallStack =&gt; Bool -&gt; SDoc -&gt; a -&gt; a
+</span><a href="GHC.Utils.Panic.html#assertPpr"><span class="hs-identifier hs-var">assertPpr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsInt"><span class="hs-identifier hs-var">primRepIsInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061540"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061540"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimOp -&gt; PrimOp) -&gt; PrimOp -&gt; PrimOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-171"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061540"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-172"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int8Rep"><span class="hs-identifier hs-var">Int8Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Int8ToIntOp"><span class="hs-identifier hs-var">Int8ToIntOp</span></a></span><span>
+</span><span id="line-173"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int16Rep"><span class="hs-identifier hs-var">Int16Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Int16ToIntOp"><span class="hs-identifier hs-var">Int16ToIntOp</span></a></span><span>
+</span><span id="line-174"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int32Rep"><span class="hs-identifier hs-var">Int32Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Int32ToIntOp"><span class="hs-identifier hs-var">Int32ToIntOp</span></a></span><span>
+</span><span id="line-175"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int64Rep"><span class="hs-identifier hs-var">Int64Rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Int64ToIntOp"><span class="hs-identifier hs-var">Int64ToIntOp</span></a></span><span>
+</span><span id="line-176"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; PrimOp
+forall a. HasCallStack =&gt; String -&gt; SDoc -&gt; a
+</span><a href="GHC.Utils.Panic.html#pprPanic"><span class="hs-identifier hs-var">pprPanic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Source rep not int&quot;</span></span><span> </span><span class="annot"><span class="annottext">(SDoc -&gt; PrimOp) -&gt; SDoc -&gt; PrimOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061540"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-177"></span><span>
+</span><span id="line-178"></span><span class="hs-comment">-- Int# to Int*#</span><span>
+</span><span id="line-179"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#intFromMachineInt"><span class="hs-pragma hs-type">intFromMachineInt</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-180"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#intFromMachineInt"><span class="hs-identifier hs-type">intFromMachineInt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span>
+</span><span id="line-181"></span><span id="intFromMachineInt"><span class="annot"><span class="annottext">intFromMachineInt :: (() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#intFromMachineInt"><span class="hs-identifier hs-var hs-var">intFromMachineInt</span></a></span></span><span> </span><span id="local-6989586621682061552"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061552"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-182"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; SDoc -&gt; PrimOp -&gt; PrimOp
+forall a. HasCallStack =&gt; Bool -&gt; SDoc -&gt; a -&gt; a
+</span><a href="GHC.Utils.Panic.html#assertPpr"><span class="hs-identifier hs-var">assertPpr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsInt"><span class="hs-identifier hs-var">primRepIsInt</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061552"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061552"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimOp -&gt; PrimOp) -&gt; PrimOp -&gt; PrimOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-183"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061552"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-184"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int8Rep"><span class="hs-identifier hs-var">Int8Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToInt8Op"><span class="hs-identifier hs-var">IntToInt8Op</span></a></span><span>
+</span><span id="line-185"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int16Rep"><span class="hs-identifier hs-var">Int16Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToInt16Op"><span class="hs-identifier hs-var">IntToInt16Op</span></a></span><span>
+</span><span id="line-186"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int32Rep"><span class="hs-identifier hs-var">Int32Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToInt32Op"><span class="hs-identifier hs-var">IntToInt32Op</span></a></span><span>
+</span><span id="line-187"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Int64Rep"><span class="hs-identifier hs-var">Int64Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#IntToInt64Op"><span class="hs-identifier hs-var">IntToInt64Op</span></a></span><span>
+</span><span id="line-188"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; PrimOp
+forall a. HasCallStack =&gt; String -&gt; SDoc -&gt; a
+</span><a href="GHC.Utils.Panic.html#pprPanic"><span class="hs-identifier hs-var">pprPanic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Dest rep not sized int&quot;</span></span><span> </span><span class="annot"><span class="annottext">(SDoc -&gt; PrimOp) -&gt; SDoc -&gt; PrimOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061552"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-189"></span><span>
+</span><span id="line-190"></span><span class="hs-comment">-- Word# to Word*#</span><span>
+</span><span id="line-191"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#wordFromMachineWord"><span class="hs-pragma hs-type">wordFromMachineWord</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-192"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#wordFromMachineWord"><span class="hs-identifier hs-type">wordFromMachineWord</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span>
+</span><span id="line-193"></span><span id="wordFromMachineWord"><span class="annot"><span class="annottext">wordFromMachineWord :: (() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordFromMachineWord"><span class="hs-identifier hs-var hs-var">wordFromMachineWord</span></a></span></span><span> </span><span id="local-6989586621682061563"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061563"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-194"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; PrimOp -&gt; PrimOp
+forall a. HasCallStack =&gt; Bool -&gt; a -&gt; a
+</span><a href="GHC.Utils.Panic.Plain.html#assert"><span class="hs-identifier hs-var">assert</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsWord"><span class="hs-identifier hs-var">primRepIsWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061563"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimOp -&gt; PrimOp) -&gt; PrimOp -&gt; PrimOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-195"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061563"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-196"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word8Rep"><span class="hs-identifier hs-var">Word8Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#WordToWord8Op"><span class="hs-identifier hs-var">WordToWord8Op</span></a></span><span>
+</span><span id="line-197"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word16Rep"><span class="hs-identifier hs-var">Word16Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#WordToWord16Op"><span class="hs-identifier hs-var">WordToWord16Op</span></a></span><span>
+</span><span id="line-198"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word32Rep"><span class="hs-identifier hs-var">Word32Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#WordToWord32Op"><span class="hs-identifier hs-var">WordToWord32Op</span></a></span><span>
+</span><span id="line-199"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word64Rep"><span class="hs-identifier hs-var">Word64Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#WordToWord64Op"><span class="hs-identifier hs-var">WordToWord64Op</span></a></span><span>
+</span><span id="line-200"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; PrimOp
+forall a. HasCallStack =&gt; String -&gt; SDoc -&gt; a
+</span><a href="GHC.Utils.Panic.html#pprPanic"><span class="hs-identifier hs-var">pprPanic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Dest rep not sized word&quot;</span></span><span> </span><span class="annot"><span class="annottext">(SDoc -&gt; PrimOp) -&gt; SDoc -&gt; PrimOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061563"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-201"></span><span>
+</span><span id="line-202"></span><span class="hs-comment">-- Word*# to Word#</span><span>
+</span><span id="line-203"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#wordToMachineWord"><span class="hs-pragma hs-type">wordToMachineWord</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-204"></span><span class="annot"><a href="GHC.Builtin.PrimOps.Casts.html#wordToMachineWord"><span class="hs-identifier hs-type">wordToMachineWord</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#PrimRep"><span class="hs-identifier hs-type">PrimRep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Builtin.PrimOps.html#PrimOp"><span class="hs-identifier hs-type">PrimOp</span></a></span><span>
+</span><span id="line-205"></span><span id="wordToMachineWord"><span class="annot"><span class="annottext">wordToMachineWord :: (() :: Constraint) =&gt; PrimRep -&gt; PrimOp
+</span><a href="GHC.Builtin.PrimOps.Casts.html#wordToMachineWord"><span class="hs-identifier hs-var hs-var">wordToMachineWord</span></a></span></span><span> </span><span id="local-6989586621682061578"><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061578"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-206"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; SDoc -&gt; PrimOp -&gt; PrimOp
+forall a. HasCallStack =&gt; Bool -&gt; SDoc -&gt; a -&gt; a
+</span><a href="GHC.Utils.Panic.html#assertPpr"><span class="hs-identifier hs-var">assertPpr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimRep -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#primRepIsWord"><span class="hs-identifier hs-var">primRepIsWord</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061578"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Not a word rep:&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%3E"><span class="hs-operator hs-var">&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061578"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimOp -&gt; PrimOp) -&gt; PrimOp -&gt; PrimOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-207"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061578"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-208"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word8Rep"><span class="hs-identifier hs-var">Word8Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Word8ToWordOp"><span class="hs-identifier hs-var">Word8ToWordOp</span></a></span><span>
+</span><span id="line-209"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word16Rep"><span class="hs-identifier hs-var">Word16Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Word16ToWordOp"><span class="hs-identifier hs-var">Word16ToWordOp</span></a></span><span>
+</span><span id="line-210"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word32Rep"><span class="hs-identifier hs-var">Word32Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Word32ToWordOp"><span class="hs-identifier hs-var">Word32ToWordOp</span></a></span><span>
+</span><span id="line-211"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="GHC.Core.TyCon.html#Word64Rep"><span class="hs-identifier hs-var">Word64Rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimOp
+</span><a href="GHC.Builtin.PrimOps.html#Word64ToWordOp"><span class="hs-identifier hs-var">Word64ToWordOp</span></a></span><span>
+</span><span id="line-212"></span><span>        </span><span class="annot"><span class="annottext">PrimRep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; PrimOp
+forall a. HasCallStack =&gt; String -&gt; SDoc -&gt; a
+</span><a href="GHC.Utils.Panic.html#pprPanic"><span class="hs-identifier hs-var">pprPanic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Dest rep not sized word&quot;</span></span><span> </span><span class="annot"><span class="annottext">(SDoc -&gt; PrimOp) -&gt; SDoc -&gt; PrimOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PrimRep
+</span><a href="#local-6989586621682061578"><span class="hs-identifier hs-var">r</span></a></span></pre></body></html>

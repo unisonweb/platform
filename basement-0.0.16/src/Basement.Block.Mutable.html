@@ -1,0 +1,402 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module      : Basement.Block.Mutable</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Maintainer  : Haskell Foundation</span><span>
+</span><span id="line-5"></span><span class="hs-comment">--</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- A block of memory that contains elements of a type,</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- very similar to an unboxed array but with the key difference:</span><span>
+</span><span id="line-8"></span><span class="hs-comment">--</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- * It doesn't have slicing capability (no cheap take or drop)</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- * It consume less memory: 1 Offset, 1 CountOf, 1 Pinning status trimmed</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- * It's unpackable in any constructor</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- * It uses unpinned memory by default</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- It should be rarely needed in high level API, but</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- in lowlevel API or some data structure containing lots</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- of unboxed array that will benefit from optimisation.</span><span>
+</span><span id="line-17"></span><span class="hs-comment">--</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- Because it's unpinned, the blocks are compactable / movable,</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- at the expense of making them less friendly to interop with the C layer</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- as address.</span><span>
+</span><span id="line-21"></span><span class="hs-comment">--</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- Note that sadly the bytearray primitive type automatically create</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- a pinned bytearray if the size is bigger than a certain threshold</span><span>
+</span><span id="line-24"></span><span class="hs-comment">--</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- GHC Documentation associated:</span><span>
+</span><span id="line-26"></span><span class="hs-comment">--</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- includes/rts/storage/Block.h</span><span>
+</span><span id="line-28"></span><span class="hs-comment">--   * LARGE_OBJECT_THRESHOLD ((uint32_t)(BLOCK_SIZE * 8 / 10))</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--   * BLOCK_SIZE   (1&lt;&lt;BLOCK_SHIFT)</span><span>
+</span><span id="line-30"></span><span class="hs-comment">--</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- includes/rts/Constant.h</span><span>
+</span><span id="line-32"></span><span class="hs-comment">--   * BLOCK_SHIFT  12</span><span>
+</span><span id="line-33"></span><span class="hs-comment">--</span><span>
+</span><span id="line-34"></span><span class="hs-pragma">{-# LANGUAGE MagicHash           #-}</span><span>
+</span><span id="line-35"></span><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables #-}</span><span>
+</span><span id="line-36"></span><span class="hs-pragma">{-# LANGUAGE UnboxedTuples       #-}</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Basement.Block.Mutable</span><span>
+</span><span id="line-38"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#Block"><span class="hs-identifier">Block</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#MutableBlock"><span class="hs-identifier">MutableBlock</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Mutable.html#mutableLengthSize"><span class="hs-identifier">mutableLengthSize</span></a></span><span>
+</span><span id="line-41"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#mutableLength"><span class="hs-identifier">mutableLength</span></a></span><span>
+</span><span id="line-42"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#mutableLengthBytes"><span class="hs-identifier">mutableLengthBytes</span></a></span><span>
+</span><span id="line-43"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#mutableWithPtr"><span class="hs-identifier">mutableWithPtr</span></a></span><span>
+</span><span id="line-44"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#withMutablePtr"><span class="hs-identifier">withMutablePtr</span></a></span><span>
+</span><span id="line-45"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#withMutablePtrHint"><span class="hs-identifier">withMutablePtrHint</span></a></span><span>
+</span><span id="line-46"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#new"><span class="hs-identifier">new</span></a></span><span>
+</span><span id="line-47"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#newPinned"><span class="hs-identifier">newPinned</span></a></span><span>
+</span><span id="line-48"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#mutableEmpty"><span class="hs-identifier">mutableEmpty</span></a></span><span>
+</span><span id="line-49"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Mutable.html#iterSet"><span class="hs-identifier">iterSet</span></a></span><span>
+</span><span id="line-50"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Mutable.html#read"><span class="hs-identifier">read</span></a></span><span>
+</span><span id="line-51"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Mutable.html#write"><span class="hs-identifier">write</span></a></span><span>
+</span><span id="line-52"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#unsafeNew"><span class="hs-identifier">unsafeNew</span></a></span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#unsafeWrite"><span class="hs-identifier">unsafeWrite</span></a></span><span>
+</span><span id="line-54"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#unsafeRead"><span class="hs-identifier">unsafeRead</span></a></span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#unsafeFreeze"><span class="hs-identifier">unsafeFreeze</span></a></span><span>
+</span><span id="line-56"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#unsafeThaw"><span class="hs-identifier">unsafeThaw</span></a></span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#unsafeCopyElements"><span class="hs-identifier">unsafeCopyElements</span></a></span><span>
+</span><span id="line-58"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#unsafeCopyElementsRO"><span class="hs-identifier">unsafeCopyElementsRO</span></a></span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#unsafeCopyBytes"><span class="hs-identifier">unsafeCopyBytes</span></a></span><span>
+</span><span id="line-60"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#unsafeCopyBytesRO"><span class="hs-identifier">unsafeCopyBytesRO</span></a></span><span>
+</span><span id="line-61"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#unsafeCopyBytesPtr"><span class="hs-identifier">unsafeCopyBytesPtr</span></a></span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Foreign</span></span><span>
+</span><span id="line-63"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Mutable.html#copyFromPtr"><span class="hs-identifier">copyFromPtr</span></a></span><span>
+</span><span id="line-64"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Block.Mutable.html#copyToPtr"><span class="hs-identifier">copyToPtr</span></a></span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-66"></span><span>
+</span><span id="line-67"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">GHC.Prim</span></span><span>
+</span><span id="line-68"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">GHC.Types</span></span><span>
+</span><span id="line-69"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Basement.Compat.Base.html"><span class="hs-identifier">Basement.Compat.Base</span></a></span><span>
+</span><span id="line-70"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Proxy</span></span><span>
+</span><span id="line-71"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Basement.Exception.html"><span class="hs-identifier">Basement.Exception</span></a></span><span>
+</span><span id="line-72"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Basement.Types.OffsetSize.html"><span class="hs-identifier">Basement.Types.OffsetSize</span></a></span><span>
+</span><span id="line-73"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Basement.Monad.html"><span class="hs-identifier">Basement.Monad</span></a></span><span>
+</span><span id="line-74"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Basement.Numerical.Additive.html"><span class="hs-identifier">Basement.Numerical.Additive</span></a></span><span>
+</span><span id="line-75"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Basement.PrimType.html"><span class="hs-identifier">Basement.PrimType</span></a></span><span>
+</span><span id="line-76"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Basement.Block.Base.html"><span class="hs-identifier">Basement.Block.Base</span></a></span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="annot"><span class="hs-comment">-- | Set all mutable block element to a value</span></span><span>
+</span><span id="line-79"></span><span id="local-6989586621679170927"><span id="local-6989586621679170929"><span class="annot"><a href="Basement.Block.Mutable.html#iterSet"><span class="hs-identifier hs-type">iterSet</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.PrimType.html#PrimType"><span class="hs-identifier hs-type">PrimType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170927"><span class="hs-identifier hs-type">ty</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170929"><span class="hs-keyword hs-type">prim</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-80"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.Types.OffsetSize.html#Offset"><span class="hs-identifier hs-type">Offset</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170927"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679170927"><span class="hs-identifier hs-type">ty</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-81"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#MutableBlock"><span class="hs-identifier hs-type">MutableBlock</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170927"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.Monad.html#PrimState"><span class="hs-identifier hs-type">PrimState</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170929"><span class="hs-keyword hs-type">prim</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679170929"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-83"></span><span id="iterSet"><span class="annot"><span class="annottext">iterSet :: forall ty (prim :: * -&gt; *).
+(PrimType ty, PrimMonad prim) =&gt;
+(Offset ty -&gt; ty) -&gt; MutableBlock ty (PrimState prim) -&gt; prim ()
+</span><a href="Basement.Block.Mutable.html#iterSet"><span class="hs-identifier hs-var hs-var">iterSet</span></a></span></span><span> </span><span id="local-6989586621679171034"><span class="annot"><span class="annottext">Offset ty -&gt; ty
+</span><a href="#local-6989586621679171034"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679171035"><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171035"><span class="hs-identifier hs-var">ma</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Offset ty -&gt; prim ()
+</span><a href="#local-6989586621679171036"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-85"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679171037"><span class="annot"><span class="annottext">sz :: CountOf ty
+</span><a href="#local-6989586621679171037"><span class="hs-identifier hs-var hs-var">sz</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim) -&gt; CountOf ty
+forall ty st. PrimType ty =&gt; MutableBlock ty st -&gt; CountOf ty
+</span><a href="Basement.Block.Base.html#mutableLength"><span class="hs-identifier hs-var">mutableLength</span></a></span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171035"><span class="hs-identifier hs-var">ma</span></a></span><span>
+</span><span id="line-86"></span><span>    </span><span id="local-6989586621679171036"><span class="annot"><span class="annottext">loop :: Offset ty -&gt; prim ()
+</span><a href="#local-6989586621679171036"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621679171038"><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171038"><span class="hs-identifier hs-var">i</span></a></span></span><span>
+</span><span id="line-87"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171038"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty -&gt; CountOf ty -&gt; Bool
+forall ty. Offset ty -&gt; CountOf ty -&gt; Bool
+</span><a href="Basement.Types.OffsetSize.html#.%3D%3D%23"><span class="hs-operator hs-var">.==#</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf ty
+</span><a href="#local-6989586621679171037"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; prim ()
+forall a. a -&gt; prim a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim) -&gt; Offset ty -&gt; ty -&gt; prim ()
+forall (prim :: * -&gt; *) ty.
+(PrimMonad prim, PrimType ty) =&gt;
+MutableBlock ty (PrimState prim) -&gt; Offset ty -&gt; ty -&gt; prim ()
+</span><a href="Basement.Block.Base.html#unsafeWrite"><span class="hs-identifier hs-var">unsafeWrite</span></a></span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171035"><span class="hs-identifier hs-var">ma</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171038"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Offset ty -&gt; ty
+</span><a href="#local-6989586621679171034"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171038"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">prim () -&gt; prim () -&gt; prim ()
+forall a b. prim a -&gt; prim b -&gt; prim b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Offset ty -&gt; prim ()
+</span><a href="#local-6989586621679171036"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171038"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Offset ty -&gt; Offset ty -&gt; Offset ty
+forall a. Additive a =&gt; a -&gt; a -&gt; a
+</span><a href="Basement.Numerical.Additive.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Offset ty
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span>    </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="#local-6989586621679171036"><span class="hs-pragma hs-type">loop</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span id="local-6989586621679171041"><span id="local-6989586621679171042"><span class="annot"><a href="Basement.Block.Mutable.html#mutableLengthSize"><span class="hs-identifier hs-type">mutableLengthSize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Basement.PrimType.html#PrimType"><span class="hs-identifier hs-type">PrimType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679171041"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#MutableBlock"><span class="hs-identifier hs-type">MutableBlock</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679171041"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679171042"><span class="hs-identifier hs-type">st</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.Types.OffsetSize.html#CountOf"><span class="hs-identifier hs-type">CountOf</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679171041"><span class="hs-identifier hs-type">ty</span></a></span></span></span><span>
+</span><span id="line-92"></span><span id="mutableLengthSize"><span class="annot"><span class="annottext">mutableLengthSize :: forall ty st. PrimType ty =&gt; MutableBlock ty st -&gt; CountOf ty
+</span><a href="Basement.Block.Mutable.html#mutableLengthSize"><span class="hs-identifier hs-var hs-var">mutableLengthSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableBlock ty st -&gt; CountOf ty
+forall ty st. PrimType ty =&gt; MutableBlock ty st -&gt; CountOf ty
+</span><a href="Basement.Block.Base.html#mutableLength"><span class="hs-identifier hs-var">mutableLength</span></a></span><span>
+</span><span id="line-93"></span><span class="hs-pragma">{-# DEPRECATED</span><span> </span><span class="hs-pragma">mutableLengthSize</span><span> </span><span class="hs-pragma">&quot;use mutableLength&quot;</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="hs-comment">-- | read a cell in a mutable array.</span><span>
+</span><span id="line-96"></span><span class="hs-comment">--</span><span>
+</span><span id="line-97"></span><span class="hs-comment">-- If the index is out of bounds, an error is raised.</span><span>
+</span><span id="line-98"></span><span id="local-6989586621679170955"><span id="local-6989586621679170956"><span class="annot"><a href="Basement.Block.Mutable.html#read"><span class="hs-identifier hs-type">read</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170955"><span class="hs-keyword hs-type">prim</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.PrimType.html#PrimType"><span class="hs-identifier hs-type">PrimType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170956"><span class="hs-identifier hs-type">ty</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#MutableBlock"><span class="hs-identifier hs-type">MutableBlock</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170956"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.Monad.html#PrimState"><span class="hs-identifier hs-type">PrimState</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170955"><span class="hs-keyword hs-type">prim</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.Types.OffsetSize.html#Offset"><span class="hs-identifier hs-type">Offset</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170956"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679170955"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170956"><span class="hs-identifier hs-type">ty</span></a></span></span></span><span>
+</span><span id="line-99"></span><span id="read"><span class="annot"><span class="annottext">read :: forall (prim :: * -&gt; *) ty.
+(PrimMonad prim, PrimType ty) =&gt;
+MutableBlock ty (PrimState prim) -&gt; Offset ty -&gt; prim ty
+</span><a href="Basement.Block.Mutable.html#read"><span class="hs-identifier hs-var hs-var">read</span></a></span></span><span> </span><span id="local-6989586621679171051"><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171051"><span class="hs-identifier hs-var">array</span></a></span></span><span> </span><span id="local-6989586621679171052"><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171052"><span class="hs-identifier hs-var">n</span></a></span></span><span>
+</span><span id="line-100"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Offset ty -&gt; CountOf ty -&gt; Bool
+forall ty. Offset ty -&gt; CountOf ty -&gt; Bool
+</span><a href="Basement.Exception.html#isOutOfBound"><span class="hs-identifier hs-var">isOutOfBound</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171052"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf ty
+</span><a href="#local-6989586621679171054"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OutOfBoundOperation -&gt; Offset ty -&gt; CountOf ty -&gt; prim ty
+forall (prim :: * -&gt; *) ty a.
+PrimMonad prim =&gt;
+OutOfBoundOperation -&gt; Offset ty -&gt; CountOf ty -&gt; prim a
+</span><a href="Basement.Exception.html#primOutOfBound"><span class="hs-identifier hs-var">primOutOfBound</span></a></span><span> </span><span class="annot"><span class="annottext">OutOfBoundOperation
+</span><a href="Basement.Exception.html#OOB_Read"><span class="hs-identifier hs-var">OOB_Read</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171052"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf ty
+</span><a href="#local-6989586621679171054"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-101"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>          </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim) -&gt; Offset ty -&gt; prim ty
+forall (prim :: * -&gt; *) ty.
+(PrimMonad prim, PrimType ty) =&gt;
+MutableBlock ty (PrimState prim) -&gt; Offset ty -&gt; prim ty
+</span><a href="Basement.Block.Base.html#unsafeRead"><span class="hs-identifier hs-var">unsafeRead</span></a></span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171051"><span class="hs-identifier hs-var">array</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171052"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-102"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679171054"><span class="annot"><span class="annottext">len :: CountOf ty
+</span><a href="#local-6989586621679171054"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim) -&gt; CountOf ty
+forall ty st. PrimType ty =&gt; MutableBlock ty st -&gt; CountOf ty
+</span><a href="Basement.Block.Base.html#mutableLength"><span class="hs-identifier hs-var">mutableLength</span></a></span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171051"><span class="hs-identifier hs-var">array</span></a></span><span>
+</span><span id="line-103"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Basement.Block.Mutable.html#read"><span class="hs-pragma hs-type">read</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="hs-comment">-- | Write to a cell in a mutable array.</span><span>
+</span><span id="line-106"></span><span class="hs-comment">--</span><span>
+</span><span id="line-107"></span><span class="hs-comment">-- If the index is out of bounds, an error is raised.</span><span>
+</span><span id="line-108"></span><span id="local-6989586621679171057"><span id="local-6989586621679171058"><span class="annot"><a href="Basement.Block.Mutable.html#write"><span class="hs-identifier hs-type">write</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679171057"><span class="hs-keyword hs-type">prim</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.PrimType.html#PrimType"><span class="hs-identifier hs-type">PrimType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679171058"><span class="hs-identifier hs-type">ty</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#MutableBlock"><span class="hs-identifier hs-type">MutableBlock</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679171058"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.Monad.html#PrimState"><span class="hs-identifier hs-type">PrimState</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679171057"><span class="hs-keyword hs-type">prim</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.Types.OffsetSize.html#Offset"><span class="hs-identifier hs-type">Offset</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679171058"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679171058"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679171057"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-109"></span><span id="write"><span class="annot"><span class="annottext">write :: forall (prim :: * -&gt; *) ty.
+(PrimMonad prim, PrimType ty) =&gt;
+MutableBlock ty (PrimState prim) -&gt; Offset ty -&gt; ty -&gt; prim ()
+</span><a href="Basement.Block.Mutable.html#write"><span class="hs-identifier hs-var hs-var">write</span></a></span></span><span> </span><span id="local-6989586621679171065"><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171065"><span class="hs-identifier hs-var">array</span></a></span></span><span> </span><span id="local-6989586621679171066"><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171066"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621679171067"><span class="annot"><span class="annottext">ty
+</span><a href="#local-6989586621679171067"><span class="hs-identifier hs-var">val</span></a></span></span><span>
+</span><span id="line-110"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Offset ty -&gt; CountOf ty -&gt; Bool
+forall ty. Offset ty -&gt; CountOf ty -&gt; Bool
+</span><a href="Basement.Exception.html#isOutOfBound"><span class="hs-identifier hs-var">isOutOfBound</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171066"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf ty
+</span><a href="#local-6989586621679171068"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OutOfBoundOperation -&gt; Offset ty -&gt; CountOf ty -&gt; prim ()
+forall (prim :: * -&gt; *) ty a.
+PrimMonad prim =&gt;
+OutOfBoundOperation -&gt; Offset ty -&gt; CountOf ty -&gt; prim a
+</span><a href="Basement.Exception.html#primOutOfBound"><span class="hs-identifier hs-var">primOutOfBound</span></a></span><span> </span><span class="annot"><span class="annottext">OutOfBoundOperation
+</span><a href="Basement.Exception.html#OOB_Write"><span class="hs-identifier hs-var">OOB_Write</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171066"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf ty
+</span><a href="#local-6989586621679171068"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-111"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>          </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim) -&gt; Offset ty -&gt; ty -&gt; prim ()
+forall (prim :: * -&gt; *) ty.
+(PrimMonad prim, PrimType ty) =&gt;
+MutableBlock ty (PrimState prim) -&gt; Offset ty -&gt; ty -&gt; prim ()
+</span><a href="Basement.Block.Base.html#unsafeWrite"><span class="hs-identifier hs-var">unsafeWrite</span></a></span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171065"><span class="hs-identifier hs-var">array</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171066"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">ty
+</span><a href="#local-6989586621679171067"><span class="hs-identifier hs-var">val</span></a></span><span>
+</span><span id="line-112"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-113"></span><span>    </span><span id="local-6989586621679171068"><span class="annot"><span class="annottext">len :: CountOf ty
+</span><a href="#local-6989586621679171068"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim) -&gt; CountOf ty
+forall ty st. PrimType ty =&gt; MutableBlock ty st -&gt; CountOf ty
+</span><a href="Basement.Block.Mutable.html#mutableLengthSize"><span class="hs-identifier hs-var">mutableLengthSize</span></a></span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171065"><span class="hs-identifier hs-var">array</span></a></span><span>
+</span><span id="line-114"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Basement.Block.Mutable.html#write"><span class="hs-pragma hs-type">write</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-115"></span><span>
+</span><span id="line-116"></span><span class="hs-comment">-- | Copy from a pointer, @count@ elements, into the Mutable Block at a starting offset @ofs@</span><span>
+</span><span id="line-117"></span><span class="hs-comment">--</span><span>
+</span><span id="line-118"></span><span class="hs-comment">-- if the source pointer is invalid (size or bad allocation), bad things will happen</span><span>
+</span><span id="line-119"></span><span class="hs-comment">--</span><span>
+</span><span id="line-120"></span><span class="annot"><a href="Basement.Block.Mutable.html#copyFromPtr"><span class="hs-identifier hs-type">copyFromPtr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679170965"><span class="annot"><a href="#local-6989586621679170965"><span class="hs-keyword hs-type">prim</span></a></span></span><span> </span><span id="local-6989586621679170966"><span class="annot"><a href="#local-6989586621679170966"><span class="hs-identifier hs-type">ty</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170965"><span class="hs-keyword hs-type">prim</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.PrimType.html#PrimType"><span class="hs-identifier hs-type">PrimType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170966"><span class="hs-identifier hs-type">ty</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-121"></span><span>            </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="#local-6989586621679170966"><span class="hs-identifier hs-type">ty</span></a></span><span>                           </span><span class="annot"><span class="hs-comment">-- ^ Source Ptr of 'ty' to start of memory</span></span><span>
+</span><span id="line-122"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#MutableBlock"><span class="hs-identifier hs-type">MutableBlock</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170966"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.Monad.html#PrimState"><span class="hs-identifier hs-type">PrimState</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170965"><span class="hs-keyword hs-type">prim</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-comment">-- ^ Destination mutable block</span></span><span>
+</span><span id="line-123"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.Types.OffsetSize.html#Offset"><span class="hs-identifier hs-type">Offset</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170966"><span class="hs-identifier hs-type">ty</span></a></span><span>                        </span><span class="annot"><span class="hs-comment">-- ^ Start offset in the destination mutable block</span></span><span>
+</span><span id="line-124"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.Types.OffsetSize.html#CountOf"><span class="hs-identifier hs-type">CountOf</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170966"><span class="hs-identifier hs-type">ty</span></a></span><span>                       </span><span class="annot"><span class="hs-comment">-- ^ Number of 'ty' elements</span></span><span>
+</span><span id="line-125"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679170965"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span id="copyFromPtr"><span class="annot"><span class="annottext">copyFromPtr :: forall (prim :: * -&gt; *) ty.
+(PrimMonad prim, PrimType ty) =&gt;
+Ptr ty
+-&gt; MutableBlock ty (PrimState prim)
+-&gt; Offset ty
+-&gt; CountOf ty
+-&gt; prim ()
+</span><a href="Basement.Block.Mutable.html#copyFromPtr"><span class="hs-identifier hs-var hs-var">copyFromPtr</span></a></span></span><span> </span><span id="local-6989586621679171077"><span class="annot"><span class="annottext">src :: Ptr ty
+</span><a href="#local-6989586621679171077"><span class="hs-identifier hs-var">src</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span id="local-6989586621679171079"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679171079"><span class="hs-identifier hs-var">src#</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679171080"><span class="annot"><span class="annottext">mb :: MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171080"><span class="hs-identifier hs-var">mb</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Basement.Block.Base.html#MutableBlock"><span class="hs-identifier hs-type">MutableBlock</span></a></span><span> </span><span id="local-6989586621679171082"><span class="annot"><span class="annottext">MutableByteArray# (PrimState prim)
+</span><a href="#local-6989586621679171082"><span class="hs-identifier hs-var">mba</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679171083"><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171083"><span class="hs-identifier hs-var">ofs</span></a></span></span><span> </span><span id="local-6989586621679171084"><span class="annot"><span class="annottext">CountOf ty
+</span><a href="#local-6989586621679171084"><span class="hs-identifier hs-var">count</span></a></span></span><span>
+</span><span id="line-127"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Offset Word8
+</span><a href="#local-6989586621679171085"><span class="hs-identifier hs-var">end</span></a></span><span> </span><span class="annot"><span class="annottext">Offset Word8 -&gt; Offset Word8 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">CountOf Word8 -&gt; Offset Word8
+forall a. CountOf a -&gt; Offset a
+</span><a href="Basement.Types.OffsetSize.html#sizeAsOffset"><span class="hs-identifier hs-var">sizeAsOffset</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf Word8
+</span><a href="#local-6989586621679171088"><span class="hs-identifier hs-var">arrSz</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OutOfBoundOperation -&gt; Offset Word8 -&gt; CountOf Word8 -&gt; prim ()
+forall (prim :: * -&gt; *) ty a.
+PrimMonad prim =&gt;
+OutOfBoundOperation -&gt; Offset ty -&gt; CountOf ty -&gt; prim a
+</span><a href="Basement.Exception.html#primOutOfBound"><span class="hs-identifier hs-var">primOutOfBound</span></a></span><span> </span><span class="annot"><span class="annottext">OutOfBoundOperation
+</span><a href="Basement.Exception.html#OOB_MemCopy"><span class="hs-identifier hs-var">OOB_MemCopy</span></a></span><span> </span><span class="annot"><span class="annottext">Offset Word8
+</span><a href="#local-6989586621679171085"><span class="hs-identifier hs-var">end</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf Word8
+</span><a href="#local-6989586621679171088"><span class="hs-identifier hs-var">arrSz</span></a></span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>                </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(State# (PrimState prim) -&gt; (# State# (PrimState prim), () #))
+-&gt; prim ()
+forall a.
+(State# (PrimState prim) -&gt; (# State# (PrimState prim), a #))
+-&gt; prim a
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+(State# (PrimState m) -&gt; (# State# (PrimState m), a #)) -&gt; m a
+</span><a href="Basement.Monad.html#primitive"><span class="hs-identifier hs-var">primitive</span></a></span><span> </span><span class="annot"><span class="annottext">((State# (PrimState prim) -&gt; (# State# (PrimState prim), () #))
+ -&gt; prim ())
+-&gt; (State# (PrimState prim) -&gt; (# State# (PrimState prim), () #))
+-&gt; prim ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679171091"><span class="annot"><span class="annottext">State# (PrimState prim)
+</span><a href="#local-6989586621679171091"><span class="hs-identifier hs-var">st</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">Addr#
+-&gt; MutableByteArray# (PrimState prim)
+-&gt; Int#
+-&gt; Int#
+-&gt; State# (PrimState prim)
+-&gt; State# (PrimState prim)
+forall d.
+Addr#
+-&gt; MutableByteArray# d -&gt; Int# -&gt; Int# -&gt; State# d -&gt; State# d
+</span><span class="hs-identifier hs-var">copyAddrToByteArray#</span></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679171079"><span class="hs-identifier hs-var">src#</span></a></span><span> </span><span class="annot"><span class="annottext">MutableByteArray# (PrimState prim)
+</span><a href="#local-6989586621679171082"><span class="hs-identifier hs-var">mba</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679171092"><span class="hs-identifier hs-var">od#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679171093"><span class="hs-identifier hs-var">bytes#</span></a></span><span> </span><span class="annot"><span class="annottext">State# (PrimState prim)
+</span><a href="#local-6989586621679171091"><span class="hs-identifier hs-var">st</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-129"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-130"></span><span>    </span><span id="local-6989586621679171085"><span class="annot"><span class="annottext">end :: Offset Word8
+</span><a href="#local-6989586621679171085"><span class="hs-identifier hs-var hs-var">end</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Offset Word8
+</span><a href="#local-6989586621679171094"><span class="hs-identifier hs-var">od</span></a></span><span> </span><span class="annot"><span class="annottext">Offset Word8 -&gt; CountOf Word8 -&gt; Offset Word8
+forall ty. Offset ty -&gt; CountOf ty -&gt; Offset ty
+</span><a href="Basement.Types.OffsetSize.html#offsetPlusE"><span class="hs-operator hs-var">`offsetPlusE`</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf Word8
+</span><a href="#local-6989586621679171088"><span class="hs-identifier hs-var">arrSz</span></a></span><span>
+</span><span id="line-131"></span><span>
+</span><span id="line-132"></span><span>    </span><span id="local-6989586621679171096"><span class="annot"><span class="annottext">sz :: CountOf Word8
+</span><a href="#local-6989586621679171096"><span class="hs-identifier hs-var hs-var">sz</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Proxy ty -&gt; CountOf Word8
+forall ty. PrimType ty =&gt; Proxy ty -&gt; CountOf Word8
+</span><a href="Basement.PrimType.html#primSizeInBytes"><span class="hs-identifier hs-var">primSizeInBytes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Proxy ty
+forall {k} (t :: k). Proxy t
+</span><span class="hs-identifier hs-var">Proxy</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Proxy</span></span><span> </span><span class="annot"><a href="#local-6989586621679170966"><span class="hs-identifier hs-type">ty</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-133"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679171088"><span class="annot"><span class="annottext">arrSz :: CountOf Word8
+</span><a href="#local-6989586621679171088"><span class="hs-identifier hs-var">arrSz</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Basement.Types.OffsetSize.html#CountOf"><span class="hs-identifier hs-type">CountOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679171093"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679171093"><span class="hs-identifier hs-var">bytes#</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CountOf Word8 -&gt; CountOf ty -&gt; CountOf Word8
+forall ty. CountOf Word8 -&gt; CountOf ty -&gt; CountOf Word8
+</span><a href="Basement.Types.OffsetSize.html#sizeOfE"><span class="hs-identifier hs-var">sizeOfE</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf Word8
+</span><a href="#local-6989586621679171096"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf ty
+</span><a href="#local-6989586621679171084"><span class="hs-identifier hs-var">count</span></a></span><span>
+</span><span id="line-134"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679171094"><span class="annot"><span class="annottext">od :: Offset Word8
+</span><a href="#local-6989586621679171094"><span class="hs-identifier hs-var">od</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Basement.Types.OffsetSize.html#Offset"><span class="hs-identifier hs-type">Offset</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679171092"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679171092"><span class="hs-identifier hs-var">od#</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CountOf Word8 -&gt; Offset ty -&gt; Offset Word8
+forall ty. CountOf Word8 -&gt; Offset ty -&gt; Offset Word8
+</span><a href="Basement.Types.OffsetSize.html#offsetOfE"><span class="hs-identifier hs-var">offsetOfE</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf Word8
+</span><a href="#local-6989586621679171096"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171083"><span class="hs-identifier hs-var">ofs</span></a></span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span class="hs-comment">-- | Copy all the block content to the memory starting at the destination address</span><span>
+</span><span id="line-137"></span><span class="hs-comment">--</span><span>
+</span><span id="line-138"></span><span class="hs-comment">-- If the destination pointer is invalid (size or bad allocation), bad things will happen</span><span>
+</span><span id="line-139"></span><span class="annot"><a href="Basement.Block.Mutable.html#copyToPtr"><span class="hs-identifier hs-type">copyToPtr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679170984"><span class="annot"><a href="#local-6989586621679170984"><span class="hs-identifier hs-type">ty</span></a></span></span><span> </span><span id="local-6989586621679170985"><span class="annot"><a href="#local-6989586621679170985"><span class="hs-keyword hs-type">prim</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.PrimType.html#PrimType"><span class="hs-identifier hs-type">PrimType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170984"><span class="hs-identifier hs-type">ty</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170985"><span class="hs-keyword hs-type">prim</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-140"></span><span>          </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Basement.Block.Base.html#MutableBlock"><span class="hs-identifier hs-type">MutableBlock</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170984"><span class="hs-identifier hs-type">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.Monad.html#PrimState"><span class="hs-identifier hs-type">PrimState</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170985"><span class="hs-keyword hs-type">prim</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-comment">-- ^ The source mutable block to copy</span></span><span>
+</span><span id="line-141"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.Types.OffsetSize.html#Offset"><span class="hs-identifier hs-type">Offset</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170984"><span class="hs-identifier hs-type">ty</span></a></span><span>                        </span><span class="annot"><span class="hs-comment">-- ^ The source offset in the mutable block</span></span><span>
+</span><span id="line-142"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="#local-6989586621679170984"><span class="hs-identifier hs-type">ty</span></a></span><span>                           </span><span class="annot"><span class="hs-comment">-- ^ The destination address where the copy is going to start</span></span><span>
+</span><span id="line-143"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.Types.OffsetSize.html#CountOf"><span class="hs-identifier hs-type">CountOf</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679170984"><span class="hs-identifier hs-type">ty</span></a></span><span>                       </span><span class="annot"><span class="hs-comment">-- ^ The number of bytes</span></span><span>
+</span><span id="line-144"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679170985"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-145"></span><span id="copyToPtr"><span class="annot"><span class="annottext">copyToPtr :: forall ty (prim :: * -&gt; *).
+(PrimType ty, PrimMonad prim) =&gt;
+MutableBlock ty (PrimState prim)
+-&gt; Offset ty -&gt; Ptr ty -&gt; CountOf ty -&gt; prim ()
+</span><a href="Basement.Block.Mutable.html#copyToPtr"><span class="hs-identifier hs-var hs-var">copyToPtr</span></a></span></span><span> </span><span id="local-6989586621679171112"><span class="annot"><span class="annottext">mb :: MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171112"><span class="hs-identifier hs-var">mb</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Basement.Block.Base.html#MutableBlock"><span class="hs-identifier hs-type">MutableBlock</span></a></span><span> </span><span id="local-6989586621679171113"><span class="annot"><span class="annottext">MutableByteArray# (PrimState prim)
+</span><a href="#local-6989586621679171113"><span class="hs-identifier hs-var">mba</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679171114"><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171114"><span class="hs-identifier hs-var">ofs</span></a></span></span><span> </span><span id="local-6989586621679171115"><span class="annot"><span class="annottext">dst :: Ptr ty
+</span><a href="#local-6989586621679171115"><span class="hs-identifier hs-var">dst</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span id="local-6989586621679171116"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679171116"><span class="hs-identifier hs-var">dst#</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679171117"><span class="annot"><span class="annottext">CountOf ty
+</span><a href="#local-6989586621679171117"><span class="hs-identifier hs-var">count</span></a></span></span><span>
+</span><span id="line-146"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Offset Word8
+</span><a href="#local-6989586621679171118"><span class="hs-identifier hs-var">srcEnd</span></a></span><span> </span><span class="annot"><span class="annottext">Offset Word8 -&gt; Offset Word8 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">CountOf Word8 -&gt; Offset Word8
+forall a. CountOf a -&gt; Offset a
+</span><a href="Basement.Types.OffsetSize.html#sizeAsOffset"><span class="hs-identifier hs-var">sizeAsOffset</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf Word8
+</span><a href="#local-6989586621679171119"><span class="hs-identifier hs-var">arrSz</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OutOfBoundOperation -&gt; Offset Word8 -&gt; CountOf Word8 -&gt; prim ()
+forall (prim :: * -&gt; *) ty a.
+PrimMonad prim =&gt;
+OutOfBoundOperation -&gt; Offset ty -&gt; CountOf ty -&gt; prim a
+</span><a href="Basement.Exception.html#primOutOfBound"><span class="hs-identifier hs-var">primOutOfBound</span></a></span><span> </span><span class="annot"><span class="annottext">OutOfBoundOperation
+</span><a href="Basement.Exception.html#OOB_MemCopy"><span class="hs-identifier hs-var">OOB_MemCopy</span></a></span><span> </span><span class="annot"><span class="annottext">Offset Word8
+</span><a href="#local-6989586621679171118"><span class="hs-identifier hs-var">srcEnd</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf Word8
+</span><a href="#local-6989586621679171119"><span class="hs-identifier hs-var">arrSz</span></a></span><span>
+</span><span id="line-147"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>                </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-148"></span><span>        </span><span id="local-6989586621679171120"><span class="annot"><span class="annottext">Block ty
+</span><a href="#local-6989586621679171120"><span class="hs-identifier hs-var">blk</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim) -&gt; prim (Block ty)
+forall (prim :: * -&gt; *) ty.
+PrimMonad prim =&gt;
+MutableBlock ty (PrimState prim) -&gt; prim (Block ty)
+</span><a href="Basement.Block.Base.html#unsafeFreeze"><span class="hs-identifier hs-var">unsafeFreeze</span></a></span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171112"><span class="hs-identifier hs-var">mb</span></a></span><span>
+</span><span id="line-149"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><a href="Basement.Block.Base.html#Block"><span class="hs-identifier hs-type">Block</span></a></span><span> </span><span id="local-6989586621679171122"><span class="annot"><span class="annottext">ByteArray#
+</span><a href="#local-6989586621679171122"><span class="hs-identifier hs-var">ba</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Block ty
+</span><a href="#local-6989586621679171120"><span class="hs-identifier hs-var">blk</span></a></span><span>
+</span><span id="line-150"></span><span>        </span><span class="annot"><span class="annottext">(State# (PrimState prim) -&gt; (# State# (PrimState prim), () #))
+-&gt; prim ()
+forall a.
+(State# (PrimState prim) -&gt; (# State# (PrimState prim), a #))
+-&gt; prim a
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+(State# (PrimState m) -&gt; (# State# (PrimState m), a #)) -&gt; m a
+</span><a href="Basement.Monad.html#primitive"><span class="hs-identifier hs-var">primitive</span></a></span><span> </span><span class="annot"><span class="annottext">((State# (PrimState prim) -&gt; (# State# (PrimState prim), () #))
+ -&gt; prim ())
+-&gt; (State# (PrimState prim) -&gt; (# State# (PrimState prim), () #))
+-&gt; prim ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679171123"><span class="annot"><span class="annottext">State# (PrimState prim)
+</span><a href="#local-6989586621679171123"><span class="hs-identifier hs-var">s1</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">ByteArray#
+-&gt; Int#
+-&gt; Addr#
+-&gt; Int#
+-&gt; State# (PrimState prim)
+-&gt; State# (PrimState prim)
+forall d.
+ByteArray# -&gt; Int# -&gt; Addr# -&gt; Int# -&gt; State# d -&gt; State# d
+</span><span class="hs-identifier hs-var">copyByteArrayToAddr#</span></span><span> </span><span class="annot"><span class="annottext">ByteArray#
+</span><a href="#local-6989586621679171122"><span class="hs-identifier hs-var">ba</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679171124"><span class="hs-identifier hs-var">os#</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679171116"><span class="hs-identifier hs-var">dst#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679171125"><span class="hs-identifier hs-var">szBytes#</span></a></span><span> </span><span class="annot"><span class="annottext">State# (PrimState prim)
+</span><a href="#local-6989586621679171123"><span class="hs-identifier hs-var">s1</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-151"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-152"></span><span>    </span><span id="local-6989586621679171118"><span class="annot"><span class="annottext">srcEnd :: Offset Word8
+</span><a href="#local-6989586621679171118"><span class="hs-identifier hs-var hs-var">srcEnd</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Offset Word8
+</span><a href="#local-6989586621679171126"><span class="hs-identifier hs-var">os</span></a></span><span> </span><span class="annot"><span class="annottext">Offset Word8 -&gt; CountOf Word8 -&gt; Offset Word8
+forall ty. Offset ty -&gt; CountOf ty -&gt; Offset ty
+</span><a href="Basement.Types.OffsetSize.html#offsetPlusE"><span class="hs-operator hs-var">`offsetPlusE`</span></a></span><span> </span><span class="annot"><span class="annottext">CountOf Word8
+</span><a href="#local-6989586621679171119"><span class="hs-identifier hs-var">arrSz</span></a></span><span>
+</span><span id="line-153"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679171126"><span class="annot"><span class="annottext">os :: Offset Word8
+</span><a href="#local-6989586621679171126"><span class="hs-identifier hs-var">os</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Basement.Types.OffsetSize.html#Offset"><span class="hs-identifier hs-type">Offset</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679171124"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679171124"><span class="hs-identifier hs-var">os#</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Offset ty -&gt; Offset Word8
+forall a. PrimType a =&gt; Offset a -&gt; Offset Word8
+</span><a href="Basement.PrimType.html#offsetInBytes"><span class="hs-identifier hs-var">offsetInBytes</span></a></span><span> </span><span class="annot"><span class="annottext">Offset ty
+</span><a href="#local-6989586621679171114"><span class="hs-identifier hs-var">ofs</span></a></span><span>
+</span><span id="line-154"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679171119"><span class="annot"><span class="annottext">arrSz :: CountOf Word8
+</span><a href="#local-6989586621679171119"><span class="hs-identifier hs-var">arrSz</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Basement.Types.OffsetSize.html#CountOf"><span class="hs-identifier hs-type">CountOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679171125"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679171125"><span class="hs-identifier hs-var">szBytes#</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim) -&gt; CountOf Word8
+forall ty st. MutableBlock ty st -&gt; CountOf Word8
+</span><a href="Basement.Block.Base.html#mutableLengthBytes"><span class="hs-identifier hs-var">mutableLengthBytes</span></a></span><span> </span><span class="annot"><span class="annottext">MutableBlock ty (PrimState prim)
+</span><a href="#local-6989586621679171112"><span class="hs-identifier hs-var">mb</span></a></span><span>
+</span><span id="line-155"></span></pre></body></html>

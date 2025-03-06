@@ -1,0 +1,484 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- -----------------------------------------------------------------------------</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- | GHC LLVM Mangler</span><span>
+</span><span id="line-3"></span><span class="hs-comment">--</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- This script processes the assembly produced by LLVM, rewriting all symbols</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- of type @function to @object. This keeps them from going through the PLT,</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- which would be bad due to tables-next-to-code. On x86_64,</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- it also rewrites AVX instructions that require alignment to their</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- unaligned counterparts, since the stack is only 16-byte aligned but these</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- instructions require 32-byte alignment.</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.CmmToLlvm.Mangler</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#llvmFixupAsm"><span class="hs-identifier">llvmFixupAsm</span></a></span><span> </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Platform.html"><span class="hs-identifier">GHC.Platform</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier">Platform</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Platform.html#platformArch"><span class="hs-identifier">platformArch</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-boot-9.6.5/src/GHC.Platform.ArchOS.html#Arch/GHC.Platform.ArchOS.html#Arch"><span class="hs-identifier">Arch</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Exception.html"><span class="hs-identifier">GHC.Utils.Exception</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Exception.Base.html#try/Control.Exception.Base.html#try"><span class="hs-identifier">try</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#/Data.ByteString.Char8.html"><span class="hs-identifier">Data.ByteString.Char8</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/System.IO.html#/System.IO.html"><span class="hs-identifier">System.IO</span></a></span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="annot"><span class="hs-comment">-- | Read in assembly file and process</span></span><span>
+</span><span id="line-23"></span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#llvmFixupAsm"><span class="hs-identifier hs-type">llvmFixupAsm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.html#FilePath/GHC.IO.html#FilePath"><span class="hs-identifier hs-type">FilePath</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.html#FilePath/GHC.IO.html#FilePath"><span class="hs-identifier hs-type">FilePath</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span id="llvmFixupAsm"><span class="annot"><span class="annottext">llvmFixupAsm :: Platform -&gt; FilePath -&gt; FilePath -&gt; IO ()
+</span><a href="GHC.CmmToLlvm.Mangler.html#llvmFixupAsm"><span class="hs-identifier hs-var hs-var">llvmFixupAsm</span></a></span></span><span> </span><span id="local-6989586621681538035"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681538035"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681538036"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538036"><span class="hs-identifier hs-var">f1</span></a></span></span><span> </span><span id="local-6989586621681538037"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538037"><span class="hs-identifier hs-var">f2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-pragma">{-# SCC</span><span> </span><span class="hs-pragma">&quot;llvm_mangler&quot;</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-25"></span><span>  </span><span class="annot"><span class="annottext">FilePath -&gt; IOMode -&gt; (Handle -&gt; IO ()) -&gt; IO ()
+forall r. FilePath -&gt; IOMode -&gt; (Handle -&gt; IO r) -&gt; IO r
+</span><a href="../../base-4.18.2.1/src/GHC.IO.StdHandles.html#withBinaryFile/GHC.IO.StdHandles.html#withBinaryFile"><span class="hs-identifier hs-var">withBinaryFile</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538036"><span class="hs-identifier hs-var">f1</span></a></span><span> </span><span class="annot"><span class="annottext">IOMode
+</span><a href="../../base-4.18.2.1/src/GHC.IO.IOMode.html#ReadMode/GHC.IO.IOMode.html#ReadMode"><span class="hs-identifier hs-var">ReadMode</span></a></span><span> </span><span class="annot"><span class="annottext">((Handle -&gt; IO ()) -&gt; IO ()) -&gt; (Handle -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681538040"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538040"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IOMode -&gt; (Handle -&gt; IO ()) -&gt; IO ()
+forall r. FilePath -&gt; IOMode -&gt; (Handle -&gt; IO r) -&gt; IO r
+</span><a href="../../base-4.18.2.1/src/GHC.IO.StdHandles.html#withBinaryFile/GHC.IO.StdHandles.html#withBinaryFile"><span class="hs-identifier hs-var">withBinaryFile</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538037"><span class="hs-identifier hs-var">f2</span></a></span><span> </span><span class="annot"><span class="annottext">IOMode
+</span><a href="../../base-4.18.2.1/src/GHC.IO.IOMode.html#WriteMode/GHC.IO.IOMode.html#WriteMode"><span class="hs-identifier hs-var">WriteMode</span></a></span><span> </span><span class="annot"><span class="annottext">((Handle -&gt; IO ()) -&gt; IO ()) -&gt; (Handle -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681538042"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538042"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-26"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; Handle -&gt; IO ()
+</span><a href="#local-6989586621681538043"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538040"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538042"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-27"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.html#hClose/GHC.IO.Handle.html#hClose"><span class="hs-identifier hs-var">hClose</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538040"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-28"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.html#hClose/GHC.IO.Handle.html#hClose"><span class="hs-identifier hs-var">hClose</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538042"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-29"></span><span>      </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-31"></span><span>    </span><span class="annot"><a href="#local-6989586621681538043"><span class="hs-identifier hs-type">go</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle/GHC.IO.Handle.Types.html#Handle"><span class="hs-identifier hs-type">Handle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle/GHC.IO.Handle.Types.html#Handle"><span class="hs-identifier hs-type">Handle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span>    </span><span id="local-6989586621681538043"><span class="annot"><span class="annottext">go :: Handle -&gt; Handle -&gt; IO ()
+</span><a href="#local-6989586621681538043"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621681538045"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538045"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621681538046"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538046"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-33"></span><span>      </span><span id="local-6989586621681538047"><span class="annot"><span class="annottext">Either IOError ByteString
+</span><a href="#local-6989586621681538047"><span class="hs-identifier hs-var">e_l</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO ByteString -&gt; IO (Either IOError ByteString)
+forall e a. Exception e =&gt; IO a -&gt; IO (Either e a)
+</span><a href="../../base-4.18.2.1/src/Control.Exception.Base.html#try/Control.Exception.Base.html#try"><span class="hs-identifier hs-var">try</span></a></span><span> </span><span class="annot"><span class="annottext">(IO ByteString -&gt; IO (Either IOError ByteString))
+-&gt; IO ByteString -&gt; IO (Either IOError ByteString)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; IO ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#hGetLine/Data.ByteString.html#hGetLine"><span class="hs-identifier hs-var">B.hGetLine</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538045"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-glyph">::</span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#Either/Data.Either.html#Either"><span class="hs-identifier hs-type">Either</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Exception.html#IOError/GHC.IO.Exception.html#IOError"><span class="hs-identifier hs-type">IOError</span></a></span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681538049"><span class="annot"><span class="annottext">writeline :: ByteString -&gt; IO ()
+</span><a href="#local-6989586621681538049"><span class="hs-identifier hs-var hs-var">writeline</span></a></span></span><span> </span><span id="local-6989586621681538050"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538050"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; ByteString -&gt; IO ()
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#hPutStrLn/Data.ByteString.Char8.html#hPutStrLn"><span class="hs-identifier hs-var">B.hPutStrLn</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538046"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform -&gt; [Rewrite] -&gt; ByteString -&gt; ByteString
+</span><a href="GHC.CmmToLlvm.Mangler.html#rewriteLine"><span class="hs-identifier hs-var">rewriteLine</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681538035"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">[Rewrite]
+</span><a href="GHC.CmmToLlvm.Mangler.html#rewrites"><span class="hs-identifier hs-var">rewrites</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538050"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO () -&gt; IO ()
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3E%3E/GHC.Base.html#%3E%3E"><span class="hs-operator hs-var">&gt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Handle -&gt; IO ()
+</span><a href="#local-6989586621681538043"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538045"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681538046"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-35"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either IOError ByteString
+</span><a href="#local-6989586621681538047"><span class="hs-identifier hs-var">e_l</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-36"></span><span>        </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#Right/Data.Either.html#Right"><span class="hs-identifier hs-type">Right</span></a></span><span> </span><span id="local-6989586621681538054"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538054"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621681538049"><span class="hs-identifier hs-var">writeline</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538054"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-37"></span><span>        </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#Left/Data.Either.html#Left"><span class="hs-identifier hs-type">Left</span></a></span><span> </span><span class="annot"><span class="annottext">IOError
+</span><span class="hs-identifier">_</span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span class="annot"><span class="hs-comment">-- | These are the rewrites that the mangler will perform</span></span><span>
+</span><span id="line-40"></span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#rewrites"><span class="hs-identifier hs-type">rewrites</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#Rewrite"><span class="hs-identifier hs-type">Rewrite</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-41"></span><span id="rewrites"><span class="annot"><span class="annottext">rewrites :: [Rewrite]
+</span><a href="GHC.CmmToLlvm.Mangler.html#rewrites"><span class="hs-identifier hs-var hs-var">rewrites</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Rewrite
+</span><a href="GHC.CmmToLlvm.Mangler.html#rewriteSymType"><span class="hs-identifier hs-var">rewriteSymType</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Rewrite
+</span><a href="GHC.CmmToLlvm.Mangler.html#rewriteAVX"><span class="hs-identifier hs-var">rewriteAVX</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Rewrite
+</span><a href="GHC.CmmToLlvm.Mangler.html#rewriteCall"><span class="hs-identifier hs-var">rewriteCall</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">type</span><span> </span><span id="Rewrite"><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#Rewrite"><span class="hs-identifier hs-var">Rewrite</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- | Rewrite a line of assembly source with the given rewrites,</span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- taking the first rewrite that applies.</span><span>
+</span><span id="line-47"></span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#rewriteLine"><span class="hs-identifier hs-type">rewriteLine</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#Rewrite"><span class="hs-identifier hs-type">Rewrite</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span>
+</span><span id="line-48"></span><span id="rewriteLine"><span class="annot"><span class="annottext">rewriteLine :: Platform -&gt; [Rewrite] -&gt; ByteString -&gt; ByteString
+</span><a href="GHC.CmmToLlvm.Mangler.html#rewriteLine"><span class="hs-identifier hs-var hs-var">rewriteLine</span></a></span></span><span> </span><span id="local-6989586621681538058"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681538058"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681538059"><span class="annot"><span class="annottext">[Rewrite]
+</span><a href="#local-6989586621681538059"><span class="hs-identifier hs-var">rewrites</span></a></span></span><span> </span><span id="local-6989586621681538060"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538060"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-49"></span><span>  </span><span class="hs-comment">-- We disable .subsections_via_symbols on darwin and ios, as the llvm code</span><span>
+</span><span id="line-50"></span><span>  </span><span class="hs-comment">-- gen uses prefix data for the info table.  This however does not prevent</span><span>
+</span><span id="line-51"></span><span>  </span><span class="hs-comment">-- llvm from generating .subsections_via_symbols, which in turn with</span><span>
+</span><span id="line-52"></span><span>  </span><span class="hs-comment">-- -dead_strip, strips the info tables, and therefore breaks ghc.</span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="#local-6989586621681538061"><span class="hs-identifier hs-var">isSubsectionsViaSymbols</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538060"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-54"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;## no .subsection_via_symbols for ghc. We need our info tables!&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-55"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-56"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">[Maybe ByteString] -&gt; Maybe ByteString
+forall a. [Maybe a] -&gt; Maybe a
+</span><a href="#local-6989586621681538063"><span class="hs-identifier hs-var">firstJust</span></a></span><span> </span><span class="annot"><span class="annottext">([Maybe ByteString] -&gt; Maybe ByteString)
+-&gt; [Maybe ByteString] -&gt; Maybe ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">(Rewrite -&gt; Maybe ByteString) -&gt; [Rewrite] -&gt; [Maybe ByteString]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621681538064"><span class="annot"><span class="annottext">Rewrite
+</span><a href="#local-6989586621681538064"><span class="hs-identifier hs-var">rewrite</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Rewrite
+</span><a href="#local-6989586621681538064"><span class="hs-identifier hs-var">rewrite</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681538058"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538065"><span class="hs-identifier hs-var">rest</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Rewrite]
+</span><a href="#local-6989586621681538059"><span class="hs-identifier hs-var">rewrites</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-57"></span><span>      </span><span class="annot"><span class="annottext">Maybe ByteString
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538060"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-58"></span><span>      </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681538066"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538066"><span class="hs-identifier hs-var">rewritten</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#concat/Data.ByteString.html#concat"><span class="hs-identifier hs-var">B.concat</span></a></span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; ByteString) -&gt; [ByteString] -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538068"><span class="hs-identifier hs-var">symbol</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;\t&quot;</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538066"><span class="hs-identifier hs-var">rewritten</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-60"></span><span>    </span><span id="local-6989586621681538061"><span class="annot"><span class="annottext">isSubsectionsViaSymbols :: ByteString -&gt; Bool
+</span><a href="#local-6989586621681538061"><span class="hs-identifier hs-var hs-var">isSubsectionsViaSymbols</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#isPrefixOf/Data.ByteString.html#isPrefixOf"><span class="hs-identifier hs-var">B.isPrefixOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;.subsections_via_symbols&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span>
+</span><span id="line-62"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621681538068"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538068"><span class="hs-identifier hs-var">symbol</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681538065"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538065"><span class="hs-identifier hs-var">rest</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; (ByteString, ByteString)
+</span><a href="GHC.CmmToLlvm.Mangler.html#splitLine"><span class="hs-identifier hs-var">splitLine</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538060"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span>    </span><span id="local-6989586621681538009"><span class="annot"><a href="#local-6989586621681538063"><span class="hs-identifier hs-type">firstJust</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681538009"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681538009"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-65"></span><span>    </span><span id="local-6989586621681538063"><span class="annot"><span class="annottext">firstJust :: forall a. [Maybe a] -&gt; Maybe a
+</span><a href="#local-6989586621681538063"><span class="hs-identifier hs-var hs-var">firstJust</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681538071"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681538071"><span class="hs-identifier hs-var">x</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span class="annot"><span class="annottext">[Maybe a]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681538071"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-66"></span><span>    </span><span class="annot"><a href="#local-6989586621681538063"><span class="hs-identifier hs-var">firstJust</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-67"></span><span>    </span><span class="annot"><a href="#local-6989586621681538063"><span class="hs-identifier hs-var">firstJust</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe a
+</span><span class="hs-identifier">_</span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621681538072"><span class="annot"><span class="annottext">[Maybe a]
+</span><a href="#local-6989586621681538072"><span class="hs-identifier hs-var">rest</span></a></span></span><span class="hs-special">)</span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Maybe a] -&gt; Maybe a
+forall a. [Maybe a] -&gt; Maybe a
+</span><a href="#local-6989586621681538063"><span class="hs-identifier hs-var">firstJust</span></a></span><span> </span><span class="annot"><span class="annottext">[Maybe a]
+</span><a href="#local-6989586621681538072"><span class="hs-identifier hs-var">rest</span></a></span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- | This rewrites @.type@ annotations of function symbols to @%object@.</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- This is done as the linker can relocate @%functions@ through the</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- Procedure Linking Table (PLT). This is bad since we expect that the</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- info table will appear directly before the symbol's location. In the</span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- case that the PLT is used, this will be not an info table but instead</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- some random PLT garbage.</span><span>
+</span><span id="line-75"></span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#rewriteSymType"><span class="hs-identifier hs-type">rewriteSymType</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#Rewrite"><span class="hs-identifier hs-type">Rewrite</span></a></span><span>
+</span><span id="line-76"></span><span id="rewriteSymType"><span class="annot"><span class="annottext">rewriteSymType :: Rewrite
+</span><a href="GHC.CmmToLlvm.Mangler.html#rewriteSymType"><span class="hs-identifier hs-var hs-var">rewriteSymType</span></a></span></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681538073"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538073"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-77"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="#local-6989586621681538074"><span class="hs-identifier hs-var">isType</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538073"><span class="hs-identifier hs-var">l</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe ByteString
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Maybe ByteString) -&gt; ByteString -&gt; Maybe ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538075"><span class="hs-identifier hs-var">rewrite</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'@'</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538075"><span class="hs-identifier hs-var">rewrite</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'%'</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538073"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-79"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-80"></span><span>    </span><span id="local-6989586621681538074"><span class="annot"><span class="annottext">isType :: ByteString -&gt; Bool
+</span><a href="#local-6989586621681538074"><span class="hs-identifier hs-var hs-var">isType</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#isPrefixOf/Data.ByteString.html#isPrefixOf"><span class="hs-identifier hs-var">B.isPrefixOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;.type&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-81"></span><span>
+</span><span id="line-82"></span><span>    </span><span class="annot"><a href="#local-6989586621681538075"><span class="hs-identifier hs-type">rewrite</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Char</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span>
+</span><span id="line-83"></span><span>    </span><span id="local-6989586621681538075"><span class="annot"><span class="annottext">rewrite :: Char -&gt; ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538075"><span class="hs-identifier hs-var hs-var">rewrite</span></a></span></span><span> </span><span id="local-6989586621681538076"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681538076"><span class="hs-identifier hs-var">prefix</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="GHC.CmmToLlvm.Mangler.html#replaceOnce"><span class="hs-identifier hs-var">replaceOnce</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538078"><span class="hs-identifier hs-var">funcType</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538079"><span class="hs-identifier hs-var">objType</span></a></span><span>
+</span><span id="line-84"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-85"></span><span>        </span><span id="local-6989586621681538078"><span class="annot"><span class="annottext">funcType :: ByteString
+</span><a href="#local-6989586621681538078"><span class="hs-identifier hs-var hs-var">funcType</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681538076"><span class="hs-identifier hs-var">prefix</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#cons/Data.ByteString.Char8.html#cons"><span class="hs-operator hs-var">`B.cons`</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;function&quot;</span></span><span>
+</span><span id="line-86"></span><span>        </span><span id="local-6989586621681538079"><span class="annot"><span class="annottext">objType :: ByteString
+</span><a href="#local-6989586621681538079"><span class="hs-identifier hs-var hs-var">objType</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681538076"><span class="hs-identifier hs-var">prefix</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#cons/Data.ByteString.Char8.html#cons"><span class="hs-operator hs-var">`B.cons`</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;object&quot;</span></span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- | This rewrites aligned AVX instructions to their unaligned counterparts on</span><span>
+</span><span id="line-89"></span><span class="hs-comment">-- x86-64. This is necessary because the stack is not adequately aligned for</span><span>
+</span><span id="line-90"></span><span class="hs-comment">-- aligned AVX spills, so LLVM would emit code that adjusts the stack pointer</span><span>
+</span><span id="line-91"></span><span class="hs-comment">-- and disable tail call optimization. Both would be catastrophic here so GHC</span><span>
+</span><span id="line-92"></span><span class="hs-comment">-- tells LLVM that the stack is 32-byte aligned (even though it isn't) and then</span><span>
+</span><span id="line-93"></span><span class="hs-comment">-- rewrites the instructions in the mangler.</span><span>
+</span><span id="line-94"></span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#rewriteAVX"><span class="hs-identifier hs-type">rewriteAVX</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#Rewrite"><span class="hs-identifier hs-type">Rewrite</span></a></span><span>
+</span><span id="line-95"></span><span id="rewriteAVX"><span class="annot"><span class="annottext">rewriteAVX :: Rewrite
+</span><a href="GHC.CmmToLlvm.Mangler.html#rewriteAVX"><span class="hs-identifier hs-var hs-var">rewriteAVX</span></a></span></span><span> </span><span id="local-6989586621681538081"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681538081"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681538082"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538082"><span class="hs-identifier hs-var">s</span></a></span></span><span>
+</span><span id="line-96"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681538084"><span class="hs-identifier hs-var">isX86_64</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-97"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="#local-6989586621681538085"><span class="hs-identifier hs-var">isVmovdqa</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538082"><span class="hs-identifier hs-var">s</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe ByteString
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Maybe ByteString) -&gt; ByteString -&gt; Maybe ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="GHC.CmmToLlvm.Mangler.html#replaceOnce"><span class="hs-identifier hs-var">replaceOnce</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;vmovdqa&quot;</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;vmovdqu&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538082"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-98"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="#local-6989586621681538086"><span class="hs-identifier hs-var">isVmovap</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538082"><span class="hs-identifier hs-var">s</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe ByteString
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Maybe ByteString) -&gt; ByteString -&gt; Maybe ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="GHC.CmmToLlvm.Mangler.html#replaceOnce"><span class="hs-identifier hs-var">replaceOnce</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;vmovap&quot;</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;vmovup&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538082"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-99"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-100"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-101"></span><span>    </span><span id="local-6989586621681538084"><span class="annot"><span class="annottext">isX86_64 :: Bool
+</span><a href="#local-6989586621681538084"><span class="hs-identifier hs-var hs-var">isX86_64</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Platform -&gt; Arch
+</span><a href="GHC.Platform.html#platformArch"><span class="hs-identifier hs-var">platformArch</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681538081"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">Arch -&gt; Arch -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Arch
+</span><a href="../../ghc-boot-9.6.5/src/GHC.Platform.ArchOS.html#ArchX86_64/GHC.Platform.ArchOS.html#ArchX86_64"><span class="hs-identifier hs-var">ArchX86_64</span></a></span><span>
+</span><span id="line-102"></span><span>    </span><span id="local-6989586621681538085"><span class="annot"><span class="annottext">isVmovdqa :: ByteString -&gt; Bool
+</span><a href="#local-6989586621681538085"><span class="hs-identifier hs-var hs-var">isVmovdqa</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#isPrefixOf/Data.ByteString.html#isPrefixOf"><span class="hs-identifier hs-var">B.isPrefixOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;vmovdqa&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-103"></span><span>    </span><span id="local-6989586621681538086"><span class="annot"><span class="annottext">isVmovap :: ByteString -&gt; Bool
+</span><a href="#local-6989586621681538086"><span class="hs-identifier hs-var hs-var">isVmovap</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#isPrefixOf/Data.ByteString.html#isPrefixOf"><span class="hs-identifier hs-var">B.isPrefixOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;vmovap&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="hs-comment">-- | This rewrites (tail) calls to avoid creating PLT entries for</span><span>
+</span><span id="line-106"></span><span class="hs-comment">-- functions on riscv64. The replacement will load the address from the</span><span>
+</span><span id="line-107"></span><span class="hs-comment">-- GOT, which is resolved to point to the real address of the function.</span><span>
+</span><span id="line-108"></span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#rewriteCall"><span class="hs-identifier hs-type">rewriteCall</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#Rewrite"><span class="hs-identifier hs-type">Rewrite</span></a></span><span>
+</span><span id="line-109"></span><span id="rewriteCall"><span class="annot"><span class="annottext">rewriteCall :: Rewrite
+</span><a href="GHC.CmmToLlvm.Mangler.html#rewriteCall"><span class="hs-identifier hs-var hs-var">rewriteCall</span></a></span></span><span> </span><span id="local-6989586621681538088"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681538088"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681538089"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538089"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-110"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681538090"><span class="hs-identifier hs-var">isRISCV64</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-111"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="#local-6989586621681538091"><span class="hs-identifier hs-var">isCall</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538089"><span class="hs-identifier hs-var">l</span></a></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe ByteString
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Maybe ByteString) -&gt; ByteString -&gt; Maybe ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; FilePath -&gt; FilePath -&gt; ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538092"><span class="hs-identifier hs-var">replaceCall</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;call&quot;</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;jalr&quot;</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;ra&quot;</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538089"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-112"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="#local-6989586621681538093"><span class="hs-identifier hs-var">isTail</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538089"><span class="hs-identifier hs-var">l</span></a></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe ByteString
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Maybe ByteString) -&gt; ByteString -&gt; Maybe ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; FilePath -&gt; FilePath -&gt; ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538092"><span class="hs-identifier hs-var">replaceCall</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;tail&quot;</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;jr&quot;</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;t1&quot;</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538089"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-113"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-114"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-115"></span><span>    </span><span id="local-6989586621681538090"><span class="annot"><span class="annottext">isRISCV64 :: Bool
+</span><a href="#local-6989586621681538090"><span class="hs-identifier hs-var hs-var">isRISCV64</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Platform -&gt; Arch
+</span><a href="GHC.Platform.html#platformArch"><span class="hs-identifier hs-var">platformArch</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681538088"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">Arch -&gt; Arch -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Arch
+</span><a href="../../ghc-boot-9.6.5/src/GHC.Platform.ArchOS.html#ArchRISCV64/GHC.Platform.ArchOS.html#ArchRISCV64"><span class="hs-identifier hs-var">ArchRISCV64</span></a></span><span>
+</span><span id="line-116"></span><span>    </span><span id="local-6989586621681538091"><span class="annot"><span class="annottext">isCall :: ByteString -&gt; Bool
+</span><a href="#local-6989586621681538091"><span class="hs-identifier hs-var hs-var">isCall</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#isPrefixOf/Data.ByteString.html#isPrefixOf"><span class="hs-identifier hs-var">B.isPrefixOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;call\t&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-117"></span><span>    </span><span id="local-6989586621681538093"><span class="annot"><span class="annottext">isTail :: ByteString -&gt; Bool
+</span><a href="#local-6989586621681538093"><span class="hs-identifier hs-var hs-var">isTail</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#isPrefixOf/Data.ByteString.html#isPrefixOf"><span class="hs-identifier hs-var">B.isPrefixOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;tail\t&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span>    </span><span id="local-6989586621681538092"><span class="annot"><span class="annottext">replaceCall :: FilePath -&gt; FilePath -&gt; FilePath -&gt; ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538092"><span class="hs-identifier hs-var hs-var">replaceCall</span></a></span></span><span> </span><span id="local-6989586621681538095"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538095"><span class="hs-identifier hs-var">call</span></a></span></span><span> </span><span id="local-6989586621681538096"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538096"><span class="hs-identifier hs-var">jump</span></a></span></span><span> </span><span id="local-6989586621681538097"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538097"><span class="hs-identifier hs-var">reg</span></a></span></span><span> </span><span id="local-6989586621681538098"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538098"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-120"></span><span>        </span><span class="annot"><span class="annottext">FilePath -&gt; ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538099"><span class="hs-identifier hs-var">appendInsn</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538096"><span class="hs-identifier hs-var">jump</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; FilePath -&gt; FilePath
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;\t&quot;</span></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; FilePath -&gt; FilePath
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538097"><span class="hs-identifier hs-var">reg</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538100"><span class="hs-identifier hs-var">removePlt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-121"></span><span>        </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="GHC.CmmToLlvm.Mangler.html#replaceOnce"><span class="hs-identifier hs-var">replaceOnce</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538095"><span class="hs-identifier hs-var">call</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;la\t&quot;</span></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; FilePath -&gt; FilePath
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538097"><span class="hs-identifier hs-var">reg</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; FilePath -&gt; FilePath
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;,&quot;</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538098"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-122"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-123"></span><span>        </span><span id="local-6989586621681538100"><span class="annot"><span class="annottext">removePlt :: ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538100"><span class="hs-identifier hs-var hs-var">removePlt</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="GHC.CmmToLlvm.Mangler.html#replaceOnce"><span class="hs-identifier hs-var">replaceOnce</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;@plt&quot;</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-124"></span><span>        </span><span id="local-6989586621681538099"><span class="annot"><span class="annottext">appendInsn :: FilePath -&gt; ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538099"><span class="hs-identifier hs-var hs-var">appendInsn</span></a></span></span><span> </span><span id="local-6989586621681538101"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538101"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#append/Data.ByteString.html#append"><span class="hs-operator hs-var">`B.append`</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">B.pack</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;\n\t&quot;</span></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; FilePath -&gt; FilePath
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621681538101"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-125"></span><span>
+</span><span id="line-126"></span><span class="hs-comment">-- | @replaceOnce match replace bs@ replaces the first occurrence of the</span><span>
+</span><span id="line-127"></span><span class="hs-comment">-- substring @match@ in @bs@ with @replace@.</span><span>
+</span><span id="line-128"></span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#replaceOnce"><span class="hs-identifier hs-type">replaceOnce</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span>
+</span><span id="line-129"></span><span id="replaceOnce"><span class="annot"><span class="annottext">replaceOnce :: ByteString -&gt; ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="GHC.CmmToLlvm.Mangler.html#replaceOnce"><span class="hs-identifier hs-var hs-var">replaceOnce</span></a></span></span><span> </span><span id="local-6989586621681538103"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538103"><span class="hs-identifier hs-var">matchBS</span></a></span></span><span> </span><span id="local-6989586621681538104"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538104"><span class="hs-identifier hs-var">replaceOnceBS</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538105"><span class="hs-identifier hs-var">loop</span></a></span><span>
+</span><span id="line-130"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-131"></span><span>    </span><span class="annot"><a href="#local-6989586621681538105"><span class="hs-identifier hs-type">loop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span>
+</span><span id="line-132"></span><span>    </span><span id="local-6989586621681538105"><span class="annot"><span class="annottext">loop :: ByteString -&gt; ByteString
+</span><a href="#local-6989586621681538105"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621681538106"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538106"><span class="hs-identifier hs-var">cts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-133"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; (ByteString, ByteString)
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#breakSubstring/Data.ByteString.html#breakSubstring"><span class="hs-identifier hs-var">B.breakSubstring</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538103"><span class="hs-identifier hs-var">matchBS</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538106"><span class="hs-identifier hs-var">cts</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-134"></span><span>          </span><span class="hs-special">(</span><span id="local-6989586621681538108"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538108"><span class="hs-identifier hs-var">hd</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681538109"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538109"><span class="hs-identifier hs-var">tl</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#null/Data.ByteString.html#null"><span class="hs-identifier hs-var">B.null</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538109"><span class="hs-identifier hs-var">tl</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538108"><span class="hs-identifier hs-var">hd</span></a></span><span>
+</span><span id="line-135"></span><span>                  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538108"><span class="hs-identifier hs-var">hd</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#append/Data.ByteString.html#append"><span class="hs-operator hs-var">`B.append`</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538104"><span class="hs-identifier hs-var">replaceOnceBS</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#append/Data.ByteString.html#append"><span class="hs-operator hs-var">`B.append`</span></a></span><span>
+</span><span id="line-136"></span><span>                                 </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#drop/Data.ByteString.html#drop"><span class="hs-identifier hs-var">B.drop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#length/Data.ByteString.html#length"><span class="hs-identifier hs-var">B.length</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538103"><span class="hs-identifier hs-var">matchBS</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538109"><span class="hs-identifier hs-var">tl</span></a></span><span>
+</span><span id="line-137"></span><span>
+</span><span id="line-138"></span><span class="hs-comment">-- | This function splits a line of assembly code into the label and the</span><span>
+</span><span id="line-139"></span><span class="hs-comment">-- rest of the code.</span><span>
+</span><span id="line-140"></span><span class="annot"><a href="GHC.CmmToLlvm.Mangler.html#splitLine"><span class="hs-identifier hs-type">splitLine</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-141"></span><span id="splitLine"><span class="annot"><span class="annottext">splitLine :: ByteString -&gt; (ByteString, ByteString)
+</span><a href="GHC.CmmToLlvm.Mangler.html#splitLine"><span class="hs-identifier hs-var hs-var">splitLine</span></a></span></span><span> </span><span id="local-6989586621681538113"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538113"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538114"><span class="hs-identifier hs-var">symbol</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Bool) -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#dropWhile/Data.ByteString.Char8.html#dropWhile"><span class="hs-identifier hs-var">B.dropWhile</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Bool
+</span><a href="#local-6989586621681538116"><span class="hs-identifier hs-var">isSpace</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538117"><span class="hs-identifier hs-var">rest</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-142"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-143"></span><span>    </span><span id="local-6989586621681538116"><span class="annot"><span class="annottext">isSpace :: Char -&gt; Bool
+</span><a href="#local-6989586621681538116"><span class="hs-identifier hs-var hs-var">isSpace</span></a></span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">' '</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-144"></span><span>    </span><span class="annot"><a href="#local-6989586621681538116"><span class="hs-identifier hs-var">isSpace</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'\t'</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-145"></span><span>    </span><span class="annot"><a href="#local-6989586621681538116"><span class="hs-identifier hs-var">isSpace</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-146"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621681538114"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538114"><span class="hs-identifier hs-var">symbol</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681538117"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538117"><span class="hs-identifier hs-var">rest</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Bool) -&gt; ByteString -&gt; (ByteString, ByteString)
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#span/Data.ByteString.Char8.html#span"><span class="hs-identifier hs-var">B.span</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Bool) -&gt; (Char -&gt; Bool) -&gt; Char -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Bool
+</span><a href="#local-6989586621681538116"><span class="hs-identifier hs-var">isSpace</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681538113"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-147"></span></pre></body></html>

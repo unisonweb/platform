@@ -1,0 +1,680 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE MagicHash, NoImplicitPrelude, BangPatterns, UnliftedFFITypes #-}</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Module      :  GHC.CString</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Copyright   :  (c) The University of Glasgow 2011</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- License     :  see libraries/ghc-prim/LICENSE</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Maintainer  :  cvs-ghc@haskell.org</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- Stability   :  internal</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- Portability :  non-portable (GHC Extensions)</span><span>
+</span><span id="line-11"></span><span class="hs-comment">--</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- GHC C strings definitions (previously in GHC.Base).</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- Use GHC.Exts from the base package instead of importing this</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- module directly.</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.CString</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-19"></span><span>        </span><span class="annot"><span class="hs-comment">-- * Ascii variants</span></span><span>
+</span><span id="line-20"></span><span>        </span><span class="annot"><a href="GHC.CString.html#unpackCString%23"><span class="hs-identifier">unpackCString#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackAppendCString%23"><span class="hs-identifier">unpackAppendCString#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackFoldrCString%23"><span class="hs-identifier">unpackFoldrCString#</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>        </span><span class="annot"><a href="GHC.CString.html#cstringLength%23"><span class="hs-identifier">cstringLength#</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>
+</span><span id="line-23"></span><span>        </span><span class="annot"><span class="hs-comment">-- * Utf variants</span></span><span>
+</span><span id="line-24"></span><span>        </span><span class="annot"><a href="GHC.CString.html#unpackCStringUtf8%23"><span class="hs-identifier">unpackCStringUtf8#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackAppendCStringUtf8%23"><span class="hs-identifier">unpackAppendCStringUtf8#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackFoldrCStringUtf8%23"><span class="hs-identifier">unpackFoldrCStringUtf8#</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span>        </span><span class="annot"><span class="hs-comment">-- * Other</span></span><span>
+</span><span id="line-27"></span><span>        </span><span class="annot"><a href="GHC.CString.html#unpackNBytes%23"><span class="hs-identifier">unpackNBytes#</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-28"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.html"><span class="hs-identifier">GHC.Types</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.html#One"><span class="hs-identifier">One</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prim.html"><span class="hs-identifier">GHC.Prim</span></a></span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="hs-comment">{-
+Note [String literals in GHC]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+String literals get quite a bit of special handling in GHC.  This Note
+summarises the moving parts.
+
+* Desugaring: see GHC.HsToCore.Match.Literal.dsLit, which in
+  turn calls GHC.Core.Make.mkStringExprFS.
+
+  The desugarer desugars the Haskell literal &quot;foo&quot; into Core
+     GHC.CString.unpackCString# &quot;foo&quot;#
+  where &quot;foo&quot;# is primitive string literal (of type Addr#).
+
+  When the string cannot be encoded as a C string, we use UTF8:
+     GHC.CString.unpackCStringUtf8# &quot;foo&quot;#
+
+* The library module ghc-prim:GHC.CString has a bunch of functions that
+  work over primitive strings, including GHC.CString.unpackCString#
+
+* GHC.Core.Op.ConstantFold has some RULES that optimise certain string
+  operations on literal strings. For example:
+
+    + Constant folding the desugared form of (&quot;foo&quot; ++ &quot;bar&quot;)
+      into (&quot;foobar&quot;)
+    + Comparing strings
+    + and more
+
+* GHC.Base has a number of regular rules for String literals.
+
+  + a rule &quot;eqString&quot;: (==) @String = eqString
+    where GHC.Base.eqString :: String -&gt; String -&gt; Bool
+
+    ConstantFold has a RULE for eqString on literals:
+     eqString (Lit &quot;foo&quot;#) (Lit &quot;bar&quot;#) --&gt; False
+
+    This allows compile time evaluation of things like &quot;foo&quot; == &quot;bar&quot;
+
+  + A bunch of rules to promote fusion:
+
+    &quot;unpack&quot;       [~1] forall a   . unpackCString# a             = build (unpackFoldrCString# a)
+    &quot;unpack-list&quot;  [1]  forall a   . unpackFoldrCString# a (:) [] = unpackCString# a
+    &quot;unpack-append&quot;     forall a n . unpackFoldrCString# a (:) n  = unpackAppendCString# a n
+
+    And UTF8 variants of these rules.
+
+* We allow primitive (unlifted) literal strings to be top-level
+  bindings, breaking out usual rule.  See GHC.Core
+  Note [Core top-level string literals]
+
+* TODO: There is work on a special code-gen path for top-level boxed strings
+     str :: [Char]
+     str = unpackCString# &quot;foo&quot;#
+  so that they can all share a common code pointer
+
+  There is a WIP MR on gitlab for this: !3012
+
+-}</span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-92"></span><span class="hs-comment">-- Unpacking C strings</span><span>
+</span><span id="line-93"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="hs-comment">-- This code is needed for virtually all programs, since it's used for</span><span>
+</span><span id="line-96"></span><span class="hs-comment">-- unpacking the strings of error messages.</span><span>
+</span><span id="line-97"></span><span>
+</span><span id="line-98"></span><span class="hs-comment">-- Used to be in GHC.Base, but was moved to ghc-prim because the new generics</span><span>
+</span><span id="line-99"></span><span class="hs-comment">-- stuff uses Strings in the representation, so to give representations for</span><span>
+</span><span id="line-100"></span><span class="hs-comment">-- ghc-prim types we need unpackCString#</span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span class="hs-comment">{- Note [Inlining unpackCString#]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+There's really no point in ever inlining things like unpackCString# as the loop
+doesn't specialise in an interesting way and we can't deforest the list
+constructors (we'd want to use unpackFoldrCString# for this). Moreover, it's
+pretty small, so there's a danger that it'll be inlined at every literal, which
+is a waste.
+
+Moreover, inlining early may interfere with a variety of rules that are supposed
+to match unpackCString#,
+
+ * BuiltInRules in GHC.Core.Opt.ConstantFold; e.g.
+       eqString (unpackCString# (Lit s1)) (unpackCString# (Lit s2)
+          = s1 == s2
+
+ * unpacking rules; e.g. in GHC.Base,
+       unpackCString# a
+          = build (unpackFoldrCString# a)
+
+ * stream fusion rules; e.g. in the `text` library,
+       unstream (S.map safe (S.streamList (GHC.unpackCString# a)))
+          = unpackCString# a
+
+Moreover, we want to make it CONLIKE, so that:
+
+* the rules in GHC.Core.Opt.ConstantFold will fire when the string is let-bound.
+  E.g. the eqString rule in GHC.Core.Opt.ConstantFold
+   eqString (unpackCString# (Lit s1)) (unpackCString# (Lit s2) = s1==s2
+
+* exprIsConApp_maybe will see the string when we have
+     let x = unpackCString# &quot;foo&quot;#
+     ...(case x of algs)...
+
+All of this goes for unpackCStringUtf8# too.
+-}</span><span>
+</span><span id="line-137"></span><span>
+</span><span id="line-138"></span><span class="hs-comment">{-
+Note [Inlining of unpackFoldrCString]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Usually the unpack-list rule turns unpackFoldrCString# into unpackCString#
+It also has a BuiltInRule in PrelRules.hs:
+     unpackFoldrCString# &quot;foo&quot; c (unpackFoldrCString# &quot;baz&quot; c n)
+       =  unpackFoldrCString# &quot;foobaz&quot; c n
+
+We use NOINLINE [0] on the grounds that, unlike
+unpackCString#, there *is* some point in inlining
+unpackFoldrCString#, because we get better code for the
+higher-order function call.
+
+This can cause a code size increase but it was minimal
+when looking at nofib.
+
+This is especially important for elem which then results in an
+allocation free loop.
+
+Note [unpackCString# iterating over addr]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When unpacking unpackCString# and friends repeatedly return a cons cell
+containing:
+* The current character we just unpacked.
+* A thunk to unpack the rest of the string.
+
+In order to minimize the size of the thunk we do not index of
+the start of the string, offsetting into it, but instead increment
+the addr and always use offset 0#.
+
+This works since these two expressions will read from the same address.
+* `indexCharOffAddr# a i`
+* `indexCharOffAddr (a `plusAddr#` i) 0#`
+
+This way we avoid the need for the thunks to close over both the start of
+the string and the current offset, saving a word for each character unpacked.
+
+This has the additional advantage the we can guarantee that only the
+increment will happen in the loop.
+-}</span><span>
+</span><span id="line-178"></span><span>
+</span><span id="line-179"></span><span class="annot"><a href="GHC.CString.html#unpackCString%23"><span class="hs-identifier hs-type">unpackCString#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-180"></span><span class="hs-pragma">{-# NOINLINE CONLIKE</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackCString%23"><span class="hs-pragma hs-type">unpackCString#</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-181"></span><span id="unpackCString%23"><span class="annot"><span class="annottext">unpackCString# :: Addr# -&gt; [Char]
+</span><a href="GHC.CString.html#unpackCString%23"><span class="hs-identifier hs-var hs-var">unpackCString#</span></a></span></span><span> </span><span id="local-6989586621679087449"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087449"><span class="hs-identifier hs-var">addr</span></a></span></span><span>
+</span><span id="line-182"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><a href="GHC.Types.html#isTrue%23"><span class="hs-identifier hs-var">isTrue#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087451"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char# -&gt; Int#
+</span><a href="GHC.Prim.html#eqChar%23"><span class="hs-operator hs-var">`eqChar#`</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><span class="hs-char">'\0'#</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-183"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span>                         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char
+</span><a href="GHC.Types.html#C%23"><span class="hs-identifier hs-var">C#</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087451"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; [Char] -&gt; [Char]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; [Char]
+</span><a href="GHC.CString.html#unpackCString%23"><span class="hs-identifier hs-var">unpackCString#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087449"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span class="hs-special">)</span><span>
+</span><span id="line-184"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-185"></span><span>        </span><span class="hs-comment">-- See Note [unpackCString# iterating over addr]</span><span>
+</span><span id="line-186"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679087451"><span class="annot"><span class="annottext">ch :: Char#
+</span><a href="#local-6989586621679087451"><span class="hs-identifier hs-var hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087449"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span>
+</span><span id="line-189"></span><span class="annot"><a href="GHC.CString.html#unpackAppendCString%23"><span class="hs-identifier hs-type">unpackAppendCString#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-190"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackAppendCString%23"><span class="hs-pragma hs-type">unpackAppendCString#</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-191"></span><span>     </span><span class="hs-comment">-- See the NOINLINE note on unpackCString#</span><span>
+</span><span id="line-192"></span><span id="unpackAppendCString%23"><span class="annot"><span class="annottext">unpackAppendCString# :: Addr# -&gt; [Char] -&gt; [Char]
+</span><a href="GHC.CString.html#unpackAppendCString%23"><span class="hs-identifier hs-var hs-var">unpackAppendCString#</span></a></span></span><span> </span><span id="local-6989586621679087452"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087452"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span id="local-6989586621679087453"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679087453"><span class="hs-identifier hs-var">rest</span></a></span></span><span>
+</span><span id="line-193"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><a href="GHC.Types.html#isTrue%23"><span class="hs-identifier hs-var">isTrue#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087454"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char# -&gt; Int#
+</span><a href="GHC.Prim.html#eqChar%23"><span class="hs-operator hs-var">`eqChar#`</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><span class="hs-char">'\0'#</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679087453"><span class="hs-identifier hs-var">rest</span></a></span><span>
+</span><span id="line-194"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span>                         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char
+</span><a href="GHC.Types.html#C%23"><span class="hs-identifier hs-var">C#</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087454"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; [Char] -&gt; [Char]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; [Char] -&gt; [Char]
+</span><a href="GHC.CString.html#unpackAppendCString%23"><span class="hs-identifier hs-var">unpackAppendCString#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087452"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679087453"><span class="hs-identifier hs-var">rest</span></a></span><span>
+</span><span id="line-195"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-196"></span><span>        </span><span class="hs-comment">-- See Note [unpackCString# iterating over addr]</span><span>
+</span><span id="line-197"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679087454"><span class="annot"><span class="annottext">ch :: Char#
+</span><a href="#local-6989586621679087454"><span class="hs-identifier hs-var hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087452"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span>
+</span><span id="line-198"></span><span>
+</span><span id="line-199"></span><span class="hs-comment">-- Usually the unpack-list rule turns unpackFoldrCString# into unpackCString#.</span><span>
+</span><span id="line-200"></span><span class="hs-comment">-- See Note [String literals in GHC] for more details.</span><span>
+</span><span id="line-201"></span><span class="hs-comment">-- See [Inlining of unpackFoldrCString]</span><span>
+</span><span id="line-202"></span><span class="hs-pragma">{-# NOINLINE</span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackFoldrCString%23"><span class="hs-pragma hs-type">unpackFoldrCString#</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-203"></span><span id="local-6989586621679087444"><span class="annot"><a href="GHC.CString.html#unpackFoldrCString%23"><span class="hs-identifier hs-type">unpackFoldrCString#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679087444"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679087444"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679087444"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679087444"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-204"></span><span id="unpackFoldrCString%23"><span class="annot"><span class="annottext">unpackFoldrCString# :: forall a. Addr# -&gt; (Char -&gt; a -&gt; a) -&gt; a -&gt; a
+</span><a href="GHC.CString.html#unpackFoldrCString%23"><span class="hs-identifier hs-var hs-var">unpackFoldrCString#</span></a></span></span><span> </span><span id="local-6989586621679087455"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087455"><span class="hs-identifier hs-var">str</span></a></span></span><span> </span><span id="local-6989586621679087456"><span class="annot"><span class="annottext">Char -&gt; a -&gt; a
+</span><a href="#local-6989586621679087456"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679087457"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679087457"><span class="hs-identifier hs-var">z_init</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; a -&gt; a
+</span><a href="#local-6989586621679087458"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087455"><span class="hs-identifier hs-var">str</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679087457"><span class="hs-identifier hs-var">z_init</span></a></span><span>
+</span><span id="line-205"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-206"></span><span>    </span><span id="local-6989586621679087458"><span class="annot"><span class="annottext">go :: Addr# -&gt; a -&gt; a
+</span><a href="#local-6989586621679087458"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679087459"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087459"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span id="local-6989586621679087460"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679087460"><span class="hs-identifier hs-var">z</span></a></span></span><span>
+</span><span id="line-207"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><a href="GHC.Types.html#isTrue%23"><span class="hs-identifier hs-var">isTrue#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087461"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char# -&gt; Int#
+</span><a href="GHC.Prim.html#eqChar%23"><span class="hs-operator hs-var">`eqChar#`</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><span class="hs-char">'\0'#</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679087460"><span class="hs-identifier hs-var">z</span></a></span><span>
+</span><span id="line-208"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span>                         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char
+</span><a href="GHC.Types.html#C%23"><span class="hs-identifier hs-var">C#</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087461"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; a -&gt; a
+</span><a href="#local-6989586621679087456"><span class="hs-operator hs-var">`f`</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; a -&gt; a
+</span><a href="#local-6989586621679087458"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087459"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679087460"><span class="hs-identifier hs-var">z</span></a></span><span>
+</span><span id="line-209"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-210"></span><span>        </span><span class="hs-comment">-- See Note [unpackCString# iterating over addr]</span><span>
+</span><span id="line-211"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679087461"><span class="annot"><span class="annottext">ch :: Char#
+</span><a href="#local-6989586621679087461"><span class="hs-identifier hs-var hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087459"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span>
+</span><span id="line-212"></span><span>
+</span><span id="line-213"></span><span class="hs-comment">-- There's really no point in inlining this for the same reasons as</span><span>
+</span><span id="line-214"></span><span class="hs-comment">-- unpackCString. See Note [Inlining unpackCString#] above for details.</span><span>
+</span><span id="line-215"></span><span class="annot"><a href="GHC.CString.html#unpackCStringUtf8%23"><span class="hs-identifier hs-type">unpackCStringUtf8#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-216"></span><span class="hs-pragma">{-# NOINLINE CONLIKE</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackCStringUtf8%23"><span class="hs-pragma hs-type">unpackCStringUtf8#</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-217"></span><span id="unpackCStringUtf8%23"><span class="annot"><span class="annottext">unpackCStringUtf8# :: Addr# -&gt; [Char]
+</span><a href="GHC.CString.html#unpackCStringUtf8%23"><span class="hs-identifier hs-var hs-var">unpackCStringUtf8#</span></a></span></span><span> </span><span id="local-6989586621679087462"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087462"><span class="hs-identifier hs-var">addr</span></a></span></span><span>
+</span><span id="line-218"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><a href="GHC.Types.html#isTrue%23"><span class="hs-identifier hs-var">isTrue#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087463"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char# -&gt; Int#
+</span><a href="GHC.Prim.html#eqChar%23"><span class="hs-operator hs-var">`eqChar#`</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><span class="hs-char">'\0'#</span></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-219"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-220"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679087464"><span class="annot"><span class="annottext">byte_count :: Bytes
+</span><a href="#local-6989586621679087464"><span class="hs-identifier hs-var hs-var">byte_count</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Bytes
+</span><a href="GHC.CString.html#getByteCount"><span class="hs-identifier hs-var">getByteCount</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087463"><span class="hs-identifier hs-var">ch</span></a></span><span>
+</span><span id="line-221"></span><span>            </span><span class="hs-glyph">!</span><span id="local-6989586621679087466"><span class="annot"><span class="annottext">utf_ch :: Char#
+</span><a href="#local-6989586621679087466"><span class="hs-identifier hs-var hs-var">utf_ch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Char# -&gt; Addr# -&gt; Char#
+</span><a href="GHC.CString.html#unpackUtf8Char%23"><span class="hs-identifier hs-var">unpackUtf8Char#</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679087464"><span class="hs-identifier hs-var">byte_count</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087463"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087462"><span class="hs-identifier hs-var">addr</span></a></span><span>
+</span><span id="line-222"></span><span>            </span><span class="hs-glyph">!</span><span id="local-6989586621679087468"><span class="annot"><span class="annottext">addr' :: Addr#
+</span><a href="#local-6989586621679087468"><span class="hs-identifier hs-var hs-var">addr'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087462"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Bytes -&gt; Addr#
+</span><a href="GHC.CString.html#plusBytes"><span class="hs-operator hs-var">`plusBytes`</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679087464"><span class="hs-identifier hs-var">byte_count</span></a></span><span>
+</span><span id="line-223"></span><span>        </span><span class="hs-keyword">in</span><span>  </span><span class="annot"><span class="annottext">Char# -&gt; Char
+</span><a href="GHC.Types.html#C%23"><span class="hs-identifier hs-var">C#</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087466"><span class="hs-identifier hs-var">utf_ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; [Char] -&gt; [Char]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; [Char]
+</span><a href="GHC.CString.html#unpackCStringUtf8%23"><span class="hs-identifier hs-var">unpackCStringUtf8#</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087468"><span class="hs-identifier hs-var">addr'</span></a></span><span>
+</span><span id="line-224"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-225"></span><span>        </span><span class="hs-comment">-- See Note [unpackCString# iterating over addr]</span><span>
+</span><span id="line-226"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679087463"><span class="annot"><span class="annottext">ch :: Char#
+</span><a href="#local-6989586621679087463"><span class="hs-identifier hs-var hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087462"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span>
+</span><span id="line-227"></span><span>
+</span><span id="line-228"></span><span class="annot"><a href="GHC.CString.html#unpackAppendCStringUtf8%23"><span class="hs-identifier hs-type">unpackAppendCStringUtf8#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-229"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackAppendCStringUtf8%23"><span class="hs-pragma hs-type">unpackAppendCStringUtf8#</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-230"></span><span>     </span><span class="hs-comment">-- See the NOINLINE note on unpackCString#</span><span>
+</span><span id="line-231"></span><span id="unpackAppendCStringUtf8%23"><span class="annot"><span class="annottext">unpackAppendCStringUtf8# :: Addr# -&gt; [Char] -&gt; [Char]
+</span><a href="GHC.CString.html#unpackAppendCStringUtf8%23"><span class="hs-identifier hs-var hs-var">unpackAppendCStringUtf8#</span></a></span></span><span> </span><span id="local-6989586621679087470"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087470"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span id="local-6989586621679087471"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679087471"><span class="hs-identifier hs-var">rest</span></a></span></span><span>
+</span><span id="line-232"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><a href="GHC.Types.html#isTrue%23"><span class="hs-identifier hs-var">isTrue#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087472"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char# -&gt; Int#
+</span><a href="GHC.Prim.html#eqChar%23"><span class="hs-operator hs-var">`eqChar#`</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><span class="hs-char">'\0'#</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679087471"><span class="hs-identifier hs-var">rest</span></a></span><span>
+</span><span id="line-233"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-234"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679087473"><span class="annot"><span class="annottext">byte_count :: Bytes
+</span><a href="#local-6989586621679087473"><span class="hs-identifier hs-var hs-var">byte_count</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Bytes
+</span><a href="GHC.CString.html#getByteCount"><span class="hs-identifier hs-var">getByteCount</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087472"><span class="hs-identifier hs-var">ch</span></a></span><span>
+</span><span id="line-235"></span><span>            </span><span class="hs-glyph">!</span><span id="local-6989586621679087474"><span class="annot"><span class="annottext">utf_ch :: Char#
+</span><a href="#local-6989586621679087474"><span class="hs-identifier hs-var hs-var">utf_ch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Char# -&gt; Addr# -&gt; Char#
+</span><a href="GHC.CString.html#unpackUtf8Char%23"><span class="hs-identifier hs-var">unpackUtf8Char#</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679087473"><span class="hs-identifier hs-var">byte_count</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087472"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087470"><span class="hs-identifier hs-var">addr</span></a></span><span>
+</span><span id="line-236"></span><span>            </span><span class="hs-glyph">!</span><span id="local-6989586621679087475"><span class="annot"><span class="annottext">addr' :: Addr#
+</span><a href="#local-6989586621679087475"><span class="hs-identifier hs-var hs-var">addr'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087470"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Bytes -&gt; Addr#
+</span><a href="GHC.CString.html#plusBytes"><span class="hs-operator hs-var">`plusBytes`</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679087473"><span class="hs-identifier hs-var">byte_count</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-237"></span><span>        </span><span class="hs-keyword">in</span><span>  </span><span class="annot"><span class="annottext">Char# -&gt; Char
+</span><a href="GHC.Types.html#C%23"><span class="hs-identifier hs-var">C#</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087474"><span class="hs-identifier hs-var">utf_ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; [Char] -&gt; [Char]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; [Char] -&gt; [Char]
+</span><a href="GHC.CString.html#unpackAppendCStringUtf8%23"><span class="hs-identifier hs-var">unpackAppendCStringUtf8#</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087475"><span class="hs-identifier hs-var">addr'</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679087471"><span class="hs-identifier hs-var">rest</span></a></span><span>
+</span><span id="line-238"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-239"></span><span>        </span><span class="hs-comment">-- See Note [unpackCString# iterating over addr]</span><span>
+</span><span id="line-240"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679087472"><span class="annot"><span class="annottext">ch :: Char#
+</span><a href="#local-6989586621679087472"><span class="hs-identifier hs-var hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087470"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span>
+</span><span id="line-241"></span><span>
+</span><span id="line-242"></span><span class="hs-comment">-- See Note [Inlining of unpackFoldrCString]</span><span>
+</span><span id="line-243"></span><span class="hs-pragma">{-# NOINLINE</span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackFoldrCStringUtf8%23"><span class="hs-pragma hs-type">unpackFoldrCStringUtf8#</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-244"></span><span id="local-6989586621679087476"><span class="annot"><a href="GHC.CString.html#unpackFoldrCStringUtf8%23"><span class="hs-identifier hs-type">unpackFoldrCStringUtf8#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679087476"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679087476"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679087476"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679087476"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-245"></span><span id="unpackFoldrCStringUtf8%23"><span class="annot"><span class="annottext">unpackFoldrCStringUtf8# :: forall a. Addr# -&gt; (Char -&gt; a -&gt; a) -&gt; a -&gt; a
+</span><a href="GHC.CString.html#unpackFoldrCStringUtf8%23"><span class="hs-identifier hs-var hs-var">unpackFoldrCStringUtf8#</span></a></span></span><span> </span><span id="local-6989586621679087477"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087477"><span class="hs-identifier hs-var">addr_init</span></a></span></span><span> </span><span id="local-6989586621679087478"><span class="annot"><span class="annottext">Char -&gt; a -&gt; a
+</span><a href="#local-6989586621679087478"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679087479"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679087479"><span class="hs-identifier hs-var">z_init</span></a></span></span><span>
+</span><span id="line-246"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; a -&gt; a
+</span><a href="#local-6989586621679087480"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087477"><span class="hs-identifier hs-var">addr_init</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679087479"><span class="hs-identifier hs-var">z_init</span></a></span><span>
+</span><span id="line-247"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-248"></span><span>    </span><span id="local-6989586621679087480"><span class="annot"><span class="annottext">go :: Addr# -&gt; a -&gt; a
+</span><a href="#local-6989586621679087480"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679087481"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087481"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span id="local-6989586621679087482"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679087482"><span class="hs-identifier hs-var">z</span></a></span></span><span>
+</span><span id="line-249"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><a href="GHC.Types.html#isTrue%23"><span class="hs-identifier hs-var">isTrue#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087483"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char# -&gt; Int#
+</span><a href="GHC.Prim.html#eqChar%23"><span class="hs-operator hs-var">`eqChar#`</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><span class="hs-char">'\0'#</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679087482"><span class="hs-identifier hs-var">z</span></a></span><span>
+</span><span id="line-250"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-251"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679087484"><span class="annot"><span class="annottext">byte_count :: Bytes
+</span><a href="#local-6989586621679087484"><span class="hs-identifier hs-var hs-var">byte_count</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Bytes
+</span><a href="GHC.CString.html#getByteCount"><span class="hs-identifier hs-var">getByteCount</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087483"><span class="hs-identifier hs-var">ch</span></a></span><span>
+</span><span id="line-252"></span><span>              </span><span class="hs-glyph">!</span><span id="local-6989586621679087485"><span class="annot"><span class="annottext">utf_ch :: Char#
+</span><a href="#local-6989586621679087485"><span class="hs-identifier hs-var hs-var">utf_ch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Char# -&gt; Addr# -&gt; Char#
+</span><a href="GHC.CString.html#unpackUtf8Char%23"><span class="hs-identifier hs-var">unpackUtf8Char#</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679087484"><span class="hs-identifier hs-var">byte_count</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087483"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087481"><span class="hs-identifier hs-var">addr</span></a></span><span>
+</span><span id="line-253"></span><span>              </span><span class="hs-glyph">!</span><span id="local-6989586621679087486"><span class="annot"><span class="annottext">addr' :: Addr#
+</span><a href="#local-6989586621679087486"><span class="hs-identifier hs-var hs-var">addr'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087481"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Bytes -&gt; Addr#
+</span><a href="GHC.CString.html#plusBytes"><span class="hs-operator hs-var">`plusBytes`</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679087484"><span class="hs-identifier hs-var">byte_count</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-254"></span><span>          </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char
+</span><a href="GHC.Types.html#C%23"><span class="hs-identifier hs-var">C#</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087485"><span class="hs-identifier hs-var">utf_ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; a -&gt; a
+</span><a href="#local-6989586621679087478"><span class="hs-operator hs-var">`f`</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; a -&gt; a
+</span><a href="#local-6989586621679087480"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087486"><span class="hs-identifier hs-var">addr'</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679087482"><span class="hs-identifier hs-var">z</span></a></span><span>
+</span><span id="line-255"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-256"></span><span>        </span><span class="hs-comment">-- See Note [unpackCString# iterating over addr]</span><span>
+</span><span id="line-257"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679087483"><span class="annot"><span class="annottext">ch :: Char#
+</span><a href="#local-6989586621679087483"><span class="hs-identifier hs-var hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087481"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span>
+</span><span id="line-258"></span><span>
+</span><span id="line-259"></span><span class="hs-comment">-- There's really no point in inlining this for the same reasons as</span><span>
+</span><span id="line-260"></span><span class="hs-comment">-- unpackCString. See Note [Inlining unpackCString#] above for details.</span><span>
+</span><span id="line-261"></span><span class="annot"><a href="GHC.CString.html#unpackNBytes%23"><span class="hs-identifier hs-type">unpackNBytes#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Prim.html#Int%23"><span class="hs-identifier hs-type">Int#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-262"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackNBytes%23"><span class="hs-pragma hs-type">unpackNBytes#</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-263"></span><span id="unpackNBytes%23"><span class="annot"><span class="annottext">unpackNBytes# :: Addr# -&gt; Int# -&gt; [Char]
+</span><a href="GHC.CString.html#unpackNBytes%23"><span class="hs-identifier hs-var hs-var">unpackNBytes#</span></a></span></span><span> </span><span id="local-6989586621679087487"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087487"><span class="hs-identifier hs-var">_addr</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-264"></span><span class="annot"><a href="GHC.CString.html#unpackNBytes%23"><span class="hs-identifier hs-var">unpackNBytes#</span></a></span><span>  </span><span id="local-6989586621679087488"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087488"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span id="local-6989586621679087489"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679087489"><span class="hs-identifier hs-var">len#</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Int# -&gt; [Char]
+</span><a href="#local-6989586621679087490"><span class="hs-identifier hs-var">unpack</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679087489"><span class="hs-identifier hs-var">len#</span></a></span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span class="hs-special">)</span><span>
+</span><span id="line-265"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-266"></span><span>     </span><span class="annot"><a href="#local-6989586621679087490"><span class="hs-identifier hs-type">unpack</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Prim.html#Int%23"><span class="hs-identifier hs-type">Int#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-267"></span><span>     </span><span id="local-6989586621679087490"><span class="annot"><span class="annottext">unpack :: [Char] -&gt; Int# -&gt; [Char]
+</span><a href="#local-6989586621679087490"><span class="hs-identifier hs-var hs-var">unpack</span></a></span></span><span> </span><span id="local-6989586621679087491"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679087491"><span class="hs-identifier hs-var">acc</span></a></span></span><span> </span><span id="local-6989586621679087492"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679087492"><span class="hs-identifier hs-var">i#</span></a></span></span><span>
+</span><span id="line-268"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><a href="GHC.Types.html#isTrue%23"><span class="hs-identifier hs-var">isTrue#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679087492"><span class="hs-identifier hs-var">i#</span></a></span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#%3C%23"><span class="hs-operator hs-var">&lt;#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span class="hs-special">)</span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679087491"><span class="hs-identifier hs-var">acc</span></a></span><span>
+</span><span id="line-269"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span>                </span><span class="hs-glyph">=</span><span>
+</span><span id="line-270"></span><span>         </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087488"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679087492"><span class="hs-identifier hs-var">i#</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-271"></span><span>            </span><span id="local-6989586621679087493"><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087493"><span class="hs-identifier hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Int# -&gt; [Char]
+</span><a href="#local-6989586621679087490"><span class="hs-identifier hs-var">unpack</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char# -&gt; Char
+</span><a href="GHC.Types.html#C%23"><span class="hs-identifier hs-var">C#</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087493"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; [Char] -&gt; [Char]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679087491"><span class="hs-identifier hs-var">acc</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679087492"><span class="hs-identifier hs-var">i#</span></a></span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span class="hs-special">)</span><span>
+</span><span id="line-272"></span><span>
+</span><span id="line-273"></span><span class="hs-comment">-- The return type is not correct here. We really want CSize,</span><span>
+</span><span id="line-274"></span><span class="hs-comment">-- but that type is defined in base. However, CSize should always</span><span>
+</span><span id="line-275"></span><span class="hs-comment">-- match the size of a machine word (I hope), so this is probably</span><span>
+</span><span id="line-276"></span><span class="hs-comment">-- alright on all platforms that GHC supports.</span><span>
+</span><span id="line-277"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;strlen&quot;</span></span><span> </span><span id="c_strlen"><span class="annot"><a href="GHC.CString.html#c_strlen"><span class="hs-identifier hs-var">c_strlen</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Prim.html#Int%23"><span class="hs-identifier hs-type">Int#</span></a></span><span>
+</span><span id="line-278"></span><span>
+</span><span id="line-279"></span><span class="hs-comment">-- | Compute the length of a NUL-terminated string. This address</span><span>
+</span><span id="line-280"></span><span class="hs-comment">-- must refer to immutable memory. GHC includes a built-in rule for</span><span>
+</span><span id="line-281"></span><span class="hs-comment">-- constant folding when the argument is a statically-known literal.</span><span>
+</span><span id="line-282"></span><span class="hs-comment">-- That is, a core-to-core pass reduces the expression</span><span>
+</span><span id="line-283"></span><span class="hs-comment">-- @cstringLength# &quot;hello&quot;#@ to the constant @5#@.</span><span>
+</span><span id="line-284"></span><span class="annot"><a href="GHC.CString.html#cstringLength%23"><span class="hs-identifier hs-type">cstringLength#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Prim.html#Int%23"><span class="hs-identifier hs-type">Int#</span></a></span><span>
+</span><span id="line-285"></span><span class="hs-pragma">{-# INLINE</span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="GHC.CString.html#cstringLength%23"><span class="hs-pragma hs-type">cstringLength#</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-286"></span><span id="cstringLength%23"><span class="annot"><span class="annottext">cstringLength# :: Addr# -&gt; Int#
+</span><a href="GHC.CString.html#cstringLength%23"><span class="hs-identifier hs-var hs-var">cstringLength#</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int#
+</span><a href="GHC.CString.html#c_strlen"><span class="hs-identifier hs-var">c_strlen</span></a></span><span>
+</span><span id="line-287"></span><span>
+</span><span id="line-288"></span><span>
+</span><span id="line-289"></span><span class="hs-comment">------------------------------</span><span>
+</span><span id="line-290"></span><span class="hs-comment">--- UTF-8 decoding utilities</span><span>
+</span><span id="line-291"></span><span class="hs-comment">------------------------------</span><span>
+</span><span id="line-292"></span><span class="hs-comment">--</span><span>
+</span><span id="line-293"></span><span class="hs-comment">-- This is one of several UTF-8 implementations provided by GHC; see Note</span><span>
+</span><span id="line-294"></span><span class="hs-comment">-- [GHC's many UTF-8 implementations] in &quot;GHC.Encoding.UTF8&quot; for an</span><span>
+</span><span id="line-295"></span><span class="hs-comment">-- overview.</span><span>
+</span><span id="line-296"></span><span class="hs-comment">--</span><span>
+</span><span id="line-297"></span><span class="hs-comment">-- These functions make explicit the logic that was originally</span><span>
+</span><span id="line-298"></span><span class="hs-comment">-- part of unpackCStringUtf8. Since we want the same support for ascii</span><span>
+</span><span id="line-299"></span><span class="hs-comment">-- and non-ascii a variety of functions needs the same logic. Instead</span><span>
+</span><span id="line-300"></span><span class="hs-comment">-- of C&amp;P'in the decoding logic all over we have it here once, and then</span><span>
+</span><span id="line-301"></span><span class="hs-comment">-- force GHC to inline it.</span><span>
+</span><span id="line-302"></span><span class="hs-comment">--</span><span>
+</span><span id="line-303"></span><span class="hs-comment">-- All the overhead of the Bytes argument and calls goes away once all is</span><span>
+</span><span id="line-304"></span><span class="hs-comment">-- said and done. And what remains is readable code in Haskell land and</span><span>
+</span><span id="line-305"></span><span class="hs-comment">-- performant code in the resulting binary.</span><span>
+</span><span id="line-306"></span><span>
+</span><span id="line-307"></span><span class="hs-keyword">data</span><span> </span><span id="Bytes"><span class="annot"><a href="GHC.CString.html#Bytes"><span class="hs-identifier hs-var">Bytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="One"><span class="annot"><a href="GHC.CString.html#One"><span class="hs-identifier hs-var">One</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="Two"><span class="annot"><a href="GHC.CString.html#Two"><span class="hs-identifier hs-var">Two</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="Three"><span class="annot"><a href="GHC.CString.html#Three"><span class="hs-identifier hs-var">Three</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="Four"><span class="annot"><a href="GHC.CString.html#Four"><span class="hs-identifier hs-var">Four</span></a></span></span><span>
+</span><span id="line-308"></span><span>
+</span><span id="line-309"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="GHC.CString.html#getByteCount"><span class="hs-pragma hs-type">getByteCount</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-310"></span><span class="annot"><a href="GHC.CString.html#getByteCount"><span class="hs-identifier hs-type">getByteCount</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Char%23"><span class="hs-identifier hs-type">Char#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CString.html#Bytes"><span class="hs-identifier hs-type">Bytes</span></a></span><span>
+</span><span id="line-311"></span><span id="getByteCount"><span class="annot"><span class="annottext">getByteCount :: Char# -&gt; Bytes
+</span><a href="GHC.CString.html#getByteCount"><span class="hs-identifier hs-var hs-var">getByteCount</span></a></span></span><span> </span><span id="local-6989586621679087499"><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087499"><span class="hs-identifier hs-var">ch</span></a></span></span><span>
+</span><span id="line-312"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><a href="GHC.Types.html#isTrue%23"><span class="hs-identifier hs-var">isTrue#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087499"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char# -&gt; Int#
+</span><a href="GHC.Prim.html#leChar%23"><span class="hs-operator hs-var">`leChar#`</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><span class="hs-char">'\x7F'#</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#One"><span class="hs-identifier hs-var">One</span></a></span><span>
+</span><span id="line-313"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><a href="GHC.Types.html#isTrue%23"><span class="hs-identifier hs-var">isTrue#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087499"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char# -&gt; Int#
+</span><a href="GHC.Prim.html#leChar%23"><span class="hs-operator hs-var">`leChar#`</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><span class="hs-char">'\xDF'#</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#Two"><span class="hs-identifier hs-var">Two</span></a></span><span>
+</span><span id="line-314"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><a href="GHC.Types.html#isTrue%23"><span class="hs-identifier hs-var">isTrue#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087499"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Char# -&gt; Char# -&gt; Int#
+</span><a href="GHC.Prim.html#leChar%23"><span class="hs-operator hs-var">`leChar#`</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><span class="hs-char">'\xEF'#</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#Three"><span class="hs-identifier hs-var">Three</span></a></span><span>
+</span><span id="line-315"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span>                           </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#Four"><span class="hs-identifier hs-var">Four</span></a></span><span>
+</span><span id="line-316"></span><span>
+</span><span id="line-317"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="GHC.CString.html#plusBytes"><span class="hs-pragma hs-type">plusBytes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-318"></span><span class="annot"><a href="GHC.CString.html#plusBytes"><span class="hs-identifier hs-type">plusBytes</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CString.html#Bytes"><span class="hs-identifier hs-type">Bytes</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span>
+</span><span id="line-319"></span><span id="plusBytes"><span class="annot"><span class="annottext">plusBytes :: Addr# -&gt; Bytes -&gt; Addr#
+</span><a href="GHC.CString.html#plusBytes"><span class="hs-identifier hs-var hs-var">plusBytes</span></a></span></span><span> </span><span id="local-6989586621679087500"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087500"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span id="local-6989586621679087501"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679087501"><span class="hs-identifier hs-var">bytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-320"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679087501"><span class="hs-identifier hs-var">bytes</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-321"></span><span>    </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#One"><span class="hs-identifier hs-var">One</span></a></span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087500"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span>
+</span><span id="line-322"></span><span>    </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#Two"><span class="hs-identifier hs-var">Two</span></a></span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087500"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">2#</span></span><span>
+</span><span id="line-323"></span><span>    </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#Three"><span class="hs-identifier hs-var">Three</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087500"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">3#</span></span><span>
+</span><span id="line-324"></span><span>    </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#Four"><span class="hs-identifier hs-var">Four</span></a></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087500"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">4#</span></span><span>
+</span><span id="line-325"></span><span>
+</span><span id="line-326"></span><span class="hs-comment">-- | Take the current address, read unicode char of the given size.</span><span>
+</span><span id="line-327"></span><span class="hs-comment">-- We obviously want the number of bytes, but we have to read one</span><span>
+</span><span id="line-328"></span><span class="hs-comment">-- byte to determine the number of bytes for the current codepoint</span><span>
+</span><span id="line-329"></span><span class="hs-comment">-- so we might as well reuse it and avoid a read.</span><span>
+</span><span id="line-330"></span><span class="hs-comment">--</span><span>
+</span><span id="line-331"></span><span class="hs-comment">-- Side Note: We don't dare to decode all 4 possibilities at once.</span><span>
+</span><span id="line-332"></span><span class="hs-comment">-- Reading past the end of the addr might trigger an exception.</span><span>
+</span><span id="line-333"></span><span class="hs-comment">-- For this reason we really have to check the width first and only</span><span>
+</span><span id="line-334"></span><span class="hs-comment">-- decode after.</span><span>
+</span><span id="line-335"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="GHC.CString.html#unpackUtf8Char%23"><span class="hs-pragma hs-type">unpackUtf8Char#</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-336"></span><span class="annot"><a href="GHC.CString.html#unpackUtf8Char%23"><span class="hs-identifier hs-type">unpackUtf8Char#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CString.html#Bytes"><span class="hs-identifier hs-type">Bytes</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Prim.html#Char%23"><span class="hs-identifier hs-type">Char#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Prim.html#Addr%23"><span class="hs-identifier hs-type">Addr#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Prim.html#Char%23"><span class="hs-identifier hs-type">Char#</span></a></span><span>
+</span><span id="line-337"></span><span id="unpackUtf8Char%23"><span class="annot"><span class="annottext">unpackUtf8Char# :: Bytes -&gt; Char# -&gt; Addr# -&gt; Char#
+</span><a href="GHC.CString.html#unpackUtf8Char%23"><span class="hs-identifier hs-var hs-var">unpackUtf8Char#</span></a></span></span><span> </span><span id="local-6989586621679087502"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679087502"><span class="hs-identifier hs-var">bytes</span></a></span></span><span> </span><span id="local-6989586621679087503"><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087503"><span class="hs-identifier hs-var">ch</span></a></span></span><span> </span><span id="local-6989586621679087504"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087504"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-338"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679087502"><span class="hs-identifier hs-var">bytes</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-339"></span><span>    </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#One"><span class="hs-identifier hs-var">One</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087503"><span class="hs-identifier hs-var">ch</span></a></span><span>
+</span><span id="line-340"></span><span>    </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#Two"><span class="hs-identifier hs-var">Two</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>   </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int# -&gt; Char#
+</span><a href="GHC.Prim.html#chr%23"><span class="hs-identifier hs-var">chr#</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char# -&gt; Int#
+</span><a href="GHC.Prim.html#ord%23"><span class="hs-identifier hs-var">ord#</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087503"><span class="hs-identifier hs-var">ch</span></a></span><span>                                           </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0xC0#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#uncheckedIShiftL%23"><span class="hs-operator hs-var">`uncheckedIShiftL#`</span></a></span><span>  </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">6#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#%2B%23"><span class="hs-operator hs-var">+#</span></a></span><span>
+</span><span id="line-341"></span><span>                     </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char# -&gt; Int#
+</span><a href="GHC.Prim.html#ord%23"><span class="hs-identifier hs-var">ord#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087504"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0x80#</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-342"></span><span>    </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#Three"><span class="hs-identifier hs-var">Three</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int# -&gt; Char#
+</span><a href="GHC.Prim.html#chr%23"><span class="hs-identifier hs-var">chr#</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char# -&gt; Int#
+</span><a href="GHC.Prim.html#ord%23"><span class="hs-identifier hs-var">ord#</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087503"><span class="hs-identifier hs-var">ch</span></a></span><span>                                           </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0xE0#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#uncheckedIShiftL%23"><span class="hs-operator hs-var">`uncheckedIShiftL#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">12#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#%2B%23"><span class="hs-operator hs-var">+#</span></a></span><span>
+</span><span id="line-343"></span><span>                    </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char# -&gt; Int#
+</span><a href="GHC.Prim.html#ord%23"><span class="hs-identifier hs-var">ord#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087504"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0x80#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#uncheckedIShiftL%23"><span class="hs-operator hs-var">`uncheckedIShiftL#`</span></a></span><span>  </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">6#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#%2B%23"><span class="hs-operator hs-var">+#</span></a></span><span>
+</span><span id="line-344"></span><span>                     </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char# -&gt; Int#
+</span><a href="GHC.Prim.html#ord%23"><span class="hs-identifier hs-var">ord#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087504"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">2#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0x80#</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-345"></span><span>    </span><span class="annot"><span class="annottext">Bytes
+</span><a href="GHC.CString.html#Four"><span class="hs-identifier hs-var">Four</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int# -&gt; Char#
+</span><a href="GHC.Prim.html#chr%23"><span class="hs-identifier hs-var">chr#</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char# -&gt; Int#
+</span><a href="GHC.Prim.html#ord%23"><span class="hs-identifier hs-var">ord#</span></a></span><span> </span><span class="annot"><span class="annottext">Char#
+</span><a href="#local-6989586621679087503"><span class="hs-identifier hs-var">ch</span></a></span><span>                                           </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0xF0#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#uncheckedIShiftL%23"><span class="hs-operator hs-var">`uncheckedIShiftL#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">18#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#%2B%23"><span class="hs-operator hs-var">+#</span></a></span><span>
+</span><span id="line-346"></span><span>                    </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char# -&gt; Int#
+</span><a href="GHC.Prim.html#ord%23"><span class="hs-identifier hs-var">ord#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087504"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0x80#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#uncheckedIShiftL%23"><span class="hs-operator hs-var">`uncheckedIShiftL#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">12#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#%2B%23"><span class="hs-operator hs-var">+#</span></a></span><span>
+</span><span id="line-347"></span><span>                    </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char# -&gt; Int#
+</span><a href="GHC.Prim.html#ord%23"><span class="hs-identifier hs-var">ord#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087504"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">2#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0x80#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#uncheckedIShiftL%23"><span class="hs-operator hs-var">`uncheckedIShiftL#`</span></a></span><span>  </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">6#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#%2B%23"><span class="hs-operator hs-var">+#</span></a></span><span>
+</span><span id="line-348"></span><span>                     </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char# -&gt; Int#
+</span><a href="GHC.Prim.html#ord%23"><span class="hs-identifier hs-var">ord#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Char#
+</span><a href="GHC.Prim.html#indexCharOffAddr%23"><span class="hs-identifier hs-var">indexCharOffAddr#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679087504"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Int# -&gt; Addr#
+</span><a href="GHC.Prim.html#plusAddr%23"><span class="hs-operator hs-var">`plusAddr#`</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">3#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0x80#</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-349"></span></pre></body></html>

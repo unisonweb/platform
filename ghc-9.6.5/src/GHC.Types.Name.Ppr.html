@@ -1,0 +1,478 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Types.Name.Ppr</span><span>
+</span><span id="line-4"></span><span>   </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Types.Name.Ppr.html#mkNamePprCtx"><span class="hs-identifier">mkNamePprCtx</span></a></span><span>
+</span><span id="line-5"></span><span>   </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Types.Name.Ppr.html#mkQualModule"><span class="hs-identifier">mkQualModule</span></a></span><span>
+</span><span id="line-6"></span><span>   </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Types.Name.Ppr.html#mkQualPackage"><span class="hs-identifier">mkQualPackage</span></a></span><span>
+</span><span id="line-7"></span><span>   </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Types.Name.Ppr.html#pkgQual"><span class="hs-identifier">pkgQual</span></a></span><span>
+</span><span id="line-8"></span><span>   </span><span class="hs-special">)</span><span>
+</span><span id="line-9"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html"><span class="hs-identifier">GHC.Data.FastString</span></a></span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Unit.html"><span class="hs-identifier">GHC.Unit</span></a></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Unit.Env.html"><span class="hs-identifier">GHC.Unit.Env</span></a></span><span>
+</span><span id="line-16"></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Name.html"><span class="hs-identifier">GHC.Types.Name</span></a></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Name.Reader.html"><span class="hs-identifier">GHC.Types.Name.Reader</span></a></span><span>
+</span><span id="line-19"></span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html"><span class="hs-identifier">GHC.Utils.Outputable</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Panic.html"><span class="hs-identifier">GHC.Utils.Panic</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html"><span class="hs-identifier">GHC.Utils.Misc</span></a></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Builtin.Types.Prim.html"><span class="hs-identifier">GHC.Builtin.Types.Prim</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Builtin.Types.Prim.html#fUNTyConName"><span class="hs-identifier">fUNTyConName</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Builtin.Types.html"><span class="hs-identifier">GHC.Builtin.Types</span></a></span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span class="hs-comment">{-
+Note [Printing original names]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Deciding how to print names is pretty tricky.  We are given a name
+P:M.T, where P is the package name, M is the defining module, and T is
+the occurrence name, and we have to decide in which form to display
+the name given a GlobalRdrEnv describing the current scope.
+
+Ideally we want to display the name in the form in which it is in
+scope.  However, the name might not be in scope at all, and that's
+where it gets tricky.  Here are the cases:
+
+ 1. T uniquely maps to  P:M.T      ---&gt;  &quot;T&quot;      NameUnqual
+ 2. There is an X for which X.T
+       uniquely maps to  P:M.T     ---&gt;  &quot;X.T&quot;    NameQual X
+ 3. There is no binding for &quot;M.T&quot;  ---&gt;  &quot;M.T&quot;    NameNotInScope1
+ 4. Otherwise                      ---&gt;  &quot;P:M.T&quot;  NameNotInScope2
+
+(3) and (4) apply when the entity P:M.T is not in the GlobalRdrEnv at
+all. In these cases we still want to refer to the name as &quot;M.T&quot;, *but*
+&quot;M.T&quot; might mean something else in the current scope (e.g. if there's
+an &quot;import X as M&quot;), so to avoid confusion we avoid using &quot;M.T&quot; if
+there's already a binding for it.  Instead we write P:M.T.
+
+There's one further subtlety: in case (3), what if there are two
+things around, P1:M.T and P2:M.T?  Then we don't want to print both of
+them as M.T!  However only one of the modules P1:M and P2:M can be
+exposed (say P2), so we use M.T for that, and P1:M.T for the other one.
+This is handled by the qual_mod component of NamePprCtx, inside
+the (ppr mod) of case (3), in Name.pprModulePrefix
+
+Note [Printing unit ids]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In the old days, original names were tied to PackageIds, which directly
+corresponded to the entities that users wrote in Cabal files, and were perfectly
+suitable for printing when we need to disambiguate packages.  However, with
+instantiated units, the situation can be different: if the key is instantiated
+with some holes, we should try to give the user some more useful information.
+-}</span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- | Creates some functions that work out the best ways to format</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- names for the user according to a set of heuristics.</span><span>
+</span><span id="line-70"></span><span class="annot"><a href="GHC.Types.Name.Ppr.html#mkNamePprCtx"><span class="hs-identifier hs-type">mkNamePprCtx</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#PromotionTickContext"><span class="hs-identifier hs-type">PromotionTickContext</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Unit.Env.html#UnitEnv"><span class="hs-identifier hs-type">UnitEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Name.Reader.html#GlobalRdrEnv"><span class="hs-identifier hs-type">GlobalRdrEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#NamePprCtx"><span class="hs-identifier hs-type">NamePprCtx</span></a></span><span>
+</span><span id="line-71"></span><span id="mkNamePprCtx"><span class="annot"><span class="annottext">mkNamePprCtx :: PromotionTickContext -&gt; UnitEnv -&gt; GlobalRdrEnv -&gt; NamePprCtx
+</span><a href="GHC.Types.Name.Ppr.html#mkNamePprCtx"><span class="hs-identifier hs-var hs-var">mkNamePprCtx</span></a></span></span><span> </span><span id="local-6989586621681880246"><span class="annot"><span class="annottext">PromotionTickContext
+</span><a href="#local-6989586621681880246"><span class="hs-identifier hs-var">ptc</span></a></span></span><span> </span><span id="local-6989586621681880247"><span class="annot"><span class="annottext">UnitEnv
+</span><a href="#local-6989586621681880247"><span class="hs-identifier hs-var">unit_env</span></a></span></span><span> </span><span id="local-6989586621681880248"><span class="annot"><span class="annottext">GlobalRdrEnv
+</span><a href="#local-6989586621681880248"><span class="hs-identifier hs-var">env</span></a></span></span><span>
+</span><span id="line-72"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">QueryQualifyName
+-&gt; QueryQualifyModule
+-&gt; QueryQualifyPackage
+-&gt; QueryPromotionTick
+-&gt; NamePprCtx
+</span><a href="GHC.Utils.Outputable.html#QueryQualify"><span class="hs-identifier hs-var">QueryQualify</span></a></span><span>
+</span><span id="line-73"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">GlobalRdrEnv -&gt; QueryQualifyName
+</span><a href="GHC.Types.Name.Ppr.html#mkQualName"><span class="hs-identifier hs-var">mkQualName</span></a></span><span> </span><span class="annot"><span class="annottext">GlobalRdrEnv
+</span><a href="#local-6989586621681880248"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UnitState -&gt; Maybe HomeUnit -&gt; QueryQualifyModule
+</span><a href="GHC.Types.Name.Ppr.html#mkQualModule"><span class="hs-identifier hs-var">mkQualModule</span></a></span><span> </span><span class="annot"><span class="annottext">UnitState
+</span><a href="#local-6989586621681880251"><span class="hs-identifier hs-var">unit_state</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe HomeUnit
+</span><a href="#local-6989586621681880252"><span class="hs-identifier hs-var">home_unit</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-75"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UnitState -&gt; QueryQualifyPackage
+</span><a href="GHC.Types.Name.Ppr.html#mkQualPackage"><span class="hs-identifier hs-var">mkQualPackage</span></a></span><span> </span><span class="annot"><span class="annottext">UnitState
+</span><a href="#local-6989586621681880251"><span class="hs-identifier hs-var">unit_state</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-76"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PromotionTickContext -&gt; GlobalRdrEnv -&gt; QueryPromotionTick
+</span><a href="GHC.Types.Name.Ppr.html#mkPromTick"><span class="hs-identifier hs-var">mkPromTick</span></a></span><span> </span><span class="annot"><span class="annottext">PromotionTickContext
+</span><a href="#local-6989586621681880246"><span class="hs-identifier hs-var">ptc</span></a></span><span> </span><span class="annot"><span class="annottext">GlobalRdrEnv
+</span><a href="#local-6989586621681880248"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-78"></span><span>  </span><span id="local-6989586621681880251"><span class="annot"><span class="annottext">unit_state :: UnitState
+</span><a href="#local-6989586621681880251"><span class="hs-identifier hs-var hs-var">unit_state</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; UnitEnv -&gt; UnitState
+UnitEnv -&gt; UnitState
+</span><a href="GHC.Unit.Env.html#ue_units"><span class="hs-identifier hs-var">ue_units</span></a></span><span> </span><span class="annot"><span class="annottext">UnitEnv
+</span><a href="#local-6989586621681880247"><span class="hs-identifier hs-var">unit_env</span></a></span><span>
+</span><span id="line-79"></span><span>  </span><span id="local-6989586621681880252"><span class="annot"><span class="annottext">home_unit :: Maybe HomeUnit
+</span><a href="#local-6989586621681880252"><span class="hs-identifier hs-var hs-var">home_unit</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">UnitEnv -&gt; Maybe HomeUnit
+</span><a href="GHC.Unit.Env.html#ue_homeUnit"><span class="hs-identifier hs-var">ue_homeUnit</span></a></span><span> </span><span class="annot"><span class="annottext">UnitEnv
+</span><a href="#local-6989586621681880247"><span class="hs-identifier hs-var">unit_env</span></a></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span class="annot"><a href="GHC.Types.Name.Ppr.html#mkQualName"><span class="hs-identifier hs-type">mkQualName</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Name.Reader.html#GlobalRdrEnv"><span class="hs-identifier hs-type">GlobalRdrEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#QueryQualifyName"><span class="hs-identifier hs-type">QueryQualifyName</span></a></span><span>
+</span><span id="line-82"></span><span id="mkQualName"><span class="annot"><span class="annottext">mkQualName :: GlobalRdrEnv -&gt; QueryQualifyName
+</span><a href="GHC.Types.Name.Ppr.html#mkQualName"><span class="hs-identifier hs-var hs-var">mkQualName</span></a></span></span><span> </span><span id="local-6989586621681880256"><span class="annot"><span class="annottext">GlobalRdrEnv
+</span><a href="#local-6989586621681880256"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">QueryQualifyName
+</span><a href="#local-6989586621681880257"><span class="hs-identifier hs-var">qual_name</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-83"></span><span>  </span><span id="local-6989586621681880257"><span class="annot"><span class="annottext">qual_name :: QueryQualifyName
+</span><a href="#local-6989586621681880257"><span class="hs-identifier hs-var hs-var">qual_name</span></a></span></span><span> </span><span id="local-6989586621681880258"><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681880258"><span class="hs-identifier hs-var">mod</span></a></span></span><span> </span><span id="local-6989586621681880259"><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880259"><span class="hs-identifier hs-var">occ</span></a></span></span><span>
+</span><span id="line-84"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">[</span><span id="local-6989586621681880260"><span class="annot"><span class="annottext">GlobalRdrElt
+</span><a href="#local-6989586621681880260"><span class="hs-identifier hs-var">gre</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[GlobalRdrElt]
+</span><a href="#local-6989586621681880261"><span class="hs-identifier hs-var">unqual_gres</span></a></span><span>
+</span><span id="line-85"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">GlobalRdrElt -&gt; Bool
+</span><a href="#local-6989586621681880262"><span class="hs-identifier hs-var">right_name</span></a></span><span> </span><span class="annot"><span class="annottext">GlobalRdrElt
+</span><a href="#local-6989586621681880260"><span class="hs-identifier hs-var">gre</span></a></span><span>
+</span><span id="line-86"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">QualifyName
+</span><a href="GHC.Utils.Outputable.html#NameUnqual"><span class="hs-identifier hs-var">NameUnqual</span></a></span><span>   </span><span class="hs-comment">-- If there's a unique entity that's in scope</span><span>
+</span><span id="line-87"></span><span>                       </span><span class="hs-comment">-- unqualified with 'occ' AND that entity is</span><span>
+</span><span id="line-88"></span><span>                       </span><span class="hs-comment">-- the right one, then we can use the unqualified name</span><span>
+</span><span id="line-89"></span><span>
+</span><span id="line-90"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[GlobalRdrElt]
+</span><a href="#local-6989586621681880261"><span class="hs-identifier hs-var">unqual_gres</span></a></span><span>
+</span><span id="line-91"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681880264"><span class="hs-identifier hs-var">pretendNameIsInScopeForPpr</span></a></span><span>
+</span><span id="line-92"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OccName -&gt; Bool
+</span><a href="GHC.Types.Name.Occurrence.html#isDerivedOccName"><span class="hs-identifier hs-var">isDerivedOccName</span></a></span><span> </span><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880259"><span class="hs-identifier hs-var">occ</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">QualifyName
+</span><a href="GHC.Utils.Outputable.html#NameUnqual"><span class="hs-identifier hs-var">NameUnqual</span></a></span><span>   </span><span class="hs-comment">-- See Note [pretendNameIsInScopeForPpr]</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">[</span><span id="local-6989586621681880267"><span class="annot"><span class="annottext">GlobalRdrElt
+</span><a href="#local-6989586621681880267"><span class="hs-identifier hs-var">gre</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[GlobalRdrElt]
+</span><a href="#local-6989586621681880268"><span class="hs-identifier hs-var">qual_gres</span></a></span><span>
+</span><span id="line-96"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ModuleName -&gt; QualifyName
+</span><a href="GHC.Utils.Outputable.html#NameQual"><span class="hs-identifier hs-var">NameQual</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">GlobalRdrElt -&gt; ModuleName
+</span><a href="GHC.Types.Name.Reader.html#greQualModName"><span class="hs-identifier hs-var">greQualModName</span></a></span><span> </span><span class="annot"><span class="annottext">GlobalRdrElt
+</span><a href="#local-6989586621681880267"><span class="hs-identifier hs-var">gre</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>
+</span><span id="line-98"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">[GlobalRdrElt] -&gt; Bool
+forall a. [a] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#null/Data.Foldable.html#null"><span class="hs-identifier hs-var">null</span></a></span><span> </span><span class="annot"><span class="annottext">[GlobalRdrElt]
+</span><a href="#local-6989586621681880268"><span class="hs-identifier hs-var">qual_gres</span></a></span><span>
+</span><span id="line-99"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">[GlobalRdrElt] -&gt; Bool
+forall a. [a] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#null/Data.Foldable.html#null"><span class="hs-identifier hs-var">null</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">RdrName -&gt; GlobalRdrEnv -&gt; [GlobalRdrElt]
+</span><a href="GHC.Types.Name.Reader.html#lookupGRE_RdrName"><span class="hs-identifier hs-var">lookupGRE_RdrName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ModuleName -&gt; OccName -&gt; RdrName
+</span><a href="GHC.Types.Name.Reader.html#mkRdrQual"><span class="hs-identifier hs-var">mkRdrQual</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Module -&gt; ModuleName
+forall unit. GenModule unit -&gt; ModuleName
+</span><a href="GHC.Unit.Types.html#moduleName"><span class="hs-identifier hs-var">moduleName</span></a></span><span> </span><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681880258"><span class="hs-identifier hs-var">mod</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880259"><span class="hs-identifier hs-var">occ</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">GlobalRdrEnv
+</span><a href="#local-6989586621681880256"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span>          </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">QualifyName
+</span><a href="GHC.Utils.Outputable.html#NameNotInScope1"><span class="hs-identifier hs-var">NameNotInScope1</span></a></span><span>
+</span><span id="line-101"></span><span>          </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">QualifyName
+</span><a href="GHC.Utils.Outputable.html#NameNotInScope2"><span class="hs-identifier hs-var">NameNotInScope2</span></a></span><span>
+</span><span id="line-102"></span><span>
+</span><span id="line-103"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-104"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">QualifyName
+</span><a href="GHC.Utils.Outputable.html#NameNotInScope1"><span class="hs-identifier hs-var">NameNotInScope1</span></a></span><span>   </span><span class="hs-comment">-- Can happen if 'f' is bound twice in the module</span><span>
+</span><span id="line-105"></span><span>                            </span><span class="hs-comment">-- Eg  f = True; g = 0; f = False</span><span>
+</span><span id="line-106"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-107"></span><span>        </span><span class="annot"><a href="#local-6989586621681880277"><span class="hs-identifier hs-type">is_name</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Name.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-108"></span><span>        </span><span id="local-6989586621681880277"><span class="annot"><span class="annottext">is_name :: Name -&gt; Bool
+</span><a href="#local-6989586621681880277"><span class="hs-identifier hs-var hs-var">is_name</span></a></span></span><span> </span><span id="local-6989586621681880278"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621681880278"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; SDoc -&gt; Bool -&gt; Bool
+forall a. HasCallStack =&gt; Bool -&gt; SDoc -&gt; a -&gt; a
+</span><a href="GHC.Utils.Panic.html#assertPpr"><span class="hs-identifier hs-var">assertPpr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; Bool
+</span><a href="GHC.Types.Name.html#isExternalName"><span class="hs-identifier hs-var">isExternalName</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621681880278"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621681880278"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Bool) -&gt; Bool -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-109"></span><span>                       </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; Name -&gt; Module
+Name -&gt; Module
+</span><a href="GHC.Types.Name.html#nameModule"><span class="hs-identifier hs-var">nameModule</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621681880278"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Module -&gt; QueryQualifyModule
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681880258"><span class="hs-identifier hs-var">mod</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; OccName
+</span><a href="GHC.Types.Name.html#nameOccName"><span class="hs-identifier hs-var">nameOccName</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621681880278"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">OccName -&gt; OccName -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880259"><span class="hs-identifier hs-var">occ</span></a></span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span>        </span><span class="hs-comment">-- See Note [pretendNameIsInScopeForPpr]</span><span>
+</span><span id="line-112"></span><span>        </span><span class="annot"><a href="#local-6989586621681880264"><span class="hs-identifier hs-type">pretendNameIsInScopeForPpr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-113"></span><span>        </span><span id="local-6989586621681880264"><span class="annot"><span class="annottext">pretendNameIsInScopeForPpr :: Bool
+</span><a href="#local-6989586621681880264"><span class="hs-identifier hs-var hs-var">pretendNameIsInScopeForPpr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-114"></span><span>          </span><span class="annot"><span class="annottext">(Name -&gt; Bool) -&gt; [Name] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#any/Data.Foldable.html#any"><span class="hs-identifier hs-var">any</span></a></span><span> </span><span class="annot"><span class="annottext">Name -&gt; Bool
+</span><a href="#local-6989586621681880277"><span class="hs-identifier hs-var">is_name</span></a></span><span>
+</span><span id="line-115"></span><span>            </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="GHC.Builtin.Types.html#liftedTypeKindTyConName"><span class="hs-identifier hs-var">liftedTypeKindTyConName</span></a></span><span>
+</span><span id="line-116"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="GHC.Builtin.Types.html#constraintKindTyConName"><span class="hs-identifier hs-var">constraintKindTyConName</span></a></span><span>
+</span><span id="line-117"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="GHC.Builtin.Types.html#heqTyConName"><span class="hs-identifier hs-var">heqTyConName</span></a></span><span>
+</span><span id="line-118"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="GHC.Builtin.Types.html#coercibleTyConName"><span class="hs-identifier hs-var">coercibleTyConName</span></a></span><span>
+</span><span id="line-119"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="GHC.Builtin.Types.html#eqTyConName"><span class="hs-identifier hs-var">eqTyConName</span></a></span><span>
+</span><span id="line-120"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="GHC.Builtin.Types.Prim.html#tYPETyConName"><span class="hs-identifier hs-var">tYPETyConName</span></a></span><span>
+</span><span id="line-121"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="GHC.Builtin.Types.Prim.html#fUNTyConName"><span class="hs-identifier hs-var">fUNTyConName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="GHC.Builtin.Types.html#unrestrictedFunTyConName"><span class="hs-identifier hs-var">unrestrictedFunTyConName</span></a></span><span>
+</span><span id="line-122"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="GHC.Builtin.Types.html#oneDataConName"><span class="hs-identifier hs-var">oneDataConName</span></a></span><span>
+</span><span id="line-123"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="GHC.Builtin.Types.html#manyDataConName"><span class="hs-identifier hs-var">manyDataConName</span></a></span><span> </span><span class="hs-special">]</span><span>
+</span><span id="line-124"></span><span>
+</span><span id="line-125"></span><span>        </span><span id="local-6989586621681880262"><span class="annot"><span class="annottext">right_name :: GlobalRdrElt -&gt; Bool
+</span><a href="#local-6989586621681880262"><span class="hs-identifier hs-var hs-var">right_name</span></a></span></span><span> </span><span id="local-6989586621681880295"><span class="annot"><span class="annottext">GlobalRdrElt
+</span><a href="#local-6989586621681880295"><span class="hs-identifier hs-var">gre</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">GlobalRdrElt -&gt; Maybe Module
+</span><a href="GHC.Types.Name.Reader.html#greDefinitionModule"><span class="hs-identifier hs-var">greDefinitionModule</span></a></span><span> </span><span class="annot"><span class="annottext">GlobalRdrElt
+</span><a href="#local-6989586621681880295"><span class="hs-identifier hs-var">gre</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Module -&gt; Maybe Module -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Module -&gt; Maybe Module
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681880258"><span class="hs-identifier hs-var">mod</span></a></span><span>
+</span><span id="line-126"></span><span>
+</span><span id="line-127"></span><span>        </span><span id="local-6989586621681880261"><span class="annot"><span class="annottext">unqual_gres :: [GlobalRdrElt]
+</span><a href="#local-6989586621681880261"><span class="hs-identifier hs-var hs-var">unqual_gres</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RdrName -&gt; GlobalRdrEnv -&gt; [GlobalRdrElt]
+</span><a href="GHC.Types.Name.Reader.html#lookupGRE_RdrName"><span class="hs-identifier hs-var">lookupGRE_RdrName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OccName -&gt; RdrName
+</span><a href="GHC.Types.Name.Reader.html#mkRdrUnqual"><span class="hs-identifier hs-var">mkRdrUnqual</span></a></span><span> </span><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880259"><span class="hs-identifier hs-var">occ</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">GlobalRdrEnv
+</span><a href="#local-6989586621681880256"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-128"></span><span>        </span><span id="local-6989586621681880268"><span class="annot"><span class="annottext">qual_gres :: [GlobalRdrElt]
+</span><a href="#local-6989586621681880268"><span class="hs-identifier hs-var hs-var">qual_gres</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(GlobalRdrElt -&gt; Bool) -&gt; [GlobalRdrElt] -&gt; [GlobalRdrElt]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#filter/GHC.List.html#filter"><span class="hs-identifier hs-var">filter</span></a></span><span> </span><span class="annot"><span class="annottext">GlobalRdrElt -&gt; Bool
+</span><a href="#local-6989586621681880262"><span class="hs-identifier hs-var">right_name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">GlobalRdrEnv -&gt; OccName -&gt; [GlobalRdrElt]
+</span><a href="GHC.Types.Name.Reader.html#lookupGlobalRdrEnv"><span class="hs-identifier hs-var">lookupGlobalRdrEnv</span></a></span><span> </span><span class="annot"><span class="annottext">GlobalRdrEnv
+</span><a href="#local-6989586621681880256"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880259"><span class="hs-identifier hs-var">occ</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span>    </span><span class="hs-comment">-- we can mention a module P:M without the P: qualifier iff</span><span>
+</span><span id="line-131"></span><span>    </span><span class="hs-comment">-- &quot;import M&quot; would resolve unambiguously to P:M.  (if P is the</span><span>
+</span><span id="line-132"></span><span>    </span><span class="hs-comment">-- current package we can just assume it is unqualified).</span><span>
+</span><span id="line-133"></span><span>
+</span><span id="line-134"></span><span class="annot"><a href="GHC.Types.Name.Ppr.html#mkPromTick"><span class="hs-identifier hs-type">mkPromTick</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#PromotionTickContext"><span class="hs-identifier hs-type">PromotionTickContext</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Name.Reader.html#GlobalRdrEnv"><span class="hs-identifier hs-type">GlobalRdrEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#QueryPromotionTick"><span class="hs-identifier hs-type">QueryPromotionTick</span></a></span><span>
+</span><span id="line-135"></span><span id="mkPromTick"><span class="annot"><span class="annottext">mkPromTick :: PromotionTickContext -&gt; GlobalRdrEnv -&gt; QueryPromotionTick
+</span><a href="GHC.Types.Name.Ppr.html#mkPromTick"><span class="hs-identifier hs-var hs-var">mkPromTick</span></a></span></span><span> </span><span id="local-6989586621681880299"><span class="annot"><span class="annottext">PromotionTickContext
+</span><a href="#local-6989586621681880299"><span class="hs-identifier hs-var">ptc</span></a></span></span><span> </span><span id="local-6989586621681880300"><span class="annot"><span class="annottext">GlobalRdrEnv
+</span><a href="#local-6989586621681880300"><span class="hs-identifier hs-var">env</span></a></span></span><span>
+</span><span id="line-136"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">PromotionTickContext -&gt; Bool
+</span><a href="GHC.Utils.Outputable.html#ptcPrintRedundantPromTicks"><span class="hs-identifier hs-var">ptcPrintRedundantPromTicks</span></a></span><span> </span><span class="annot"><span class="annottext">PromotionTickContext
+</span><a href="#local-6989586621681880299"><span class="hs-identifier hs-var">ptc</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">QueryPromotionTick
+</span><a href="GHC.Utils.Outputable.html#alwaysPrintPromTick"><span class="hs-identifier hs-var">alwaysPrintPromTick</span></a></span><span>
+</span><span id="line-137"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>                      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">QueryPromotionTick
+</span><a href="#local-6989586621681880303"><span class="hs-identifier hs-var">print_prom_tick</span></a></span><span>
+</span><span id="line-138"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-139"></span><span>    </span><span id="local-6989586621681880303"><span class="annot"><span class="annottext">print_prom_tick :: QueryPromotionTick
+</span><a href="#local-6989586621681880303"><span class="hs-identifier hs-var hs-var">print_prom_tick</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.Outputable.html#PromotedItemListSyntax"><span class="hs-identifier hs-type">PromotedItemListSyntax</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.Outputable.html#IsEmptyOrSingleton"><span class="hs-identifier hs-type">IsEmptyOrSingleton</span></a></span><span> </span><span id="local-6989586621681880306"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681880306"><span class="hs-identifier hs-var">eos</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-140"></span><span>      </span><span class="hs-comment">-- Ticked: '[], '[x]</span><span>
+</span><span id="line-141"></span><span>      </span><span class="hs-comment">-- Unticked: [x,y], [x,y,z], and so on</span><span>
+</span><span id="line-142"></span><span>      </span><span class="annot"><span class="annottext">PromotionTickContext -&gt; Bool
+</span><a href="GHC.Utils.Outputable.html#ptcListTuplePuns"><span class="hs-identifier hs-var">ptcListTuplePuns</span></a></span><span> </span><span class="annot"><span class="annottext">PromotionTickContext
+</span><a href="#local-6989586621681880299"><span class="hs-identifier hs-var">ptc</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681880306"><span class="hs-identifier hs-var">eos</span></a></span><span>
+</span><span id="line-143"></span><span>    </span><span class="annot"><a href="#local-6989586621681880303"><span class="hs-identifier hs-var">print_prom_tick</span></a></span><span> </span><span class="annot"><span class="annottext">PromotedItem
+</span><a href="GHC.Utils.Outputable.html#PromotedItemTupleSyntax"><span class="hs-identifier hs-var">PromotedItemTupleSyntax</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-144"></span><span>      </span><span class="annot"><span class="annottext">PromotionTickContext -&gt; Bool
+</span><a href="GHC.Utils.Outputable.html#ptcListTuplePuns"><span class="hs-identifier hs-var">ptcListTuplePuns</span></a></span><span> </span><span class="annot"><span class="annottext">PromotionTickContext
+</span><a href="#local-6989586621681880299"><span class="hs-identifier hs-var">ptc</span></a></span><span>
+</span><span id="line-145"></span><span>    </span><span class="annot"><a href="#local-6989586621681880303"><span class="hs-identifier hs-var">print_prom_tick</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.Outputable.html#PromotedItemDataCon"><span class="hs-identifier hs-type">PromotedItemDataCon</span></a></span><span> </span><span id="local-6989586621681880310"><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880310"><span class="hs-identifier hs-var">occ</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-146"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">OccName -&gt; Bool
+</span><a href="GHC.Types.Name.Ppr.html#isPunnedDataConName"><span class="hs-identifier hs-var">isPunnedDataConName</span></a></span><span> </span><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880310"><span class="hs-identifier hs-var">occ</span></a></span><span>   </span><span class="hs-comment">-- '[], '(,), ''(,,)</span><span>
+</span><span id="line-147"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PromotionTickContext -&gt; Bool
+</span><a href="GHC.Utils.Outputable.html#ptcListTuplePuns"><span class="hs-identifier hs-var">ptcListTuplePuns</span></a></span><span> </span><span class="annot"><span class="annottext">PromotionTickContext
+</span><a href="#local-6989586621681880299"><span class="hs-identifier hs-var">ptc</span></a></span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681880312"><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880312"><span class="hs-identifier hs-var">occ'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">OccName -&gt; Maybe OccName
+</span><a href="GHC.Types.Name.Occurrence.html#promoteOccName"><span class="hs-identifier hs-var">promoteOccName</span></a></span><span> </span><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880310"><span class="hs-identifier hs-var">occ</span></a></span><span>
+</span><span id="line-150"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">RdrName -&gt; GlobalRdrEnv -&gt; [GlobalRdrElt]
+</span><a href="GHC.Types.Name.Reader.html#lookupGRE_RdrName"><span class="hs-identifier hs-var">lookupGRE_RdrName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OccName -&gt; RdrName
+</span><a href="GHC.Types.Name.Reader.html#mkRdrUnqual"><span class="hs-identifier hs-var">mkRdrUnqual</span></a></span><span> </span><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880312"><span class="hs-identifier hs-var">occ'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">GlobalRdrEnv
+</span><a href="#local-6989586621681880300"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-151"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-comment">-- Could not find a corresponding type name in the environment,</span><span>
+</span><span id="line-152"></span><span>        </span><span class="hs-comment">-- so the data name is unambiguous. Promotion tick not needed.</span><span>
+</span><span id="line-153"></span><span>        </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-154"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-155"></span><span>
+</span><span id="line-156"></span><span class="annot"><a href="GHC.Types.Name.Ppr.html#isPunnedDataConName"><span class="hs-identifier hs-type">isPunnedDataConName</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Name.Occurrence.html#OccName"><span class="hs-identifier hs-type">OccName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-157"></span><span id="isPunnedDataConName"><span class="annot"><span class="annottext">isPunnedDataConName :: OccName -&gt; Bool
+</span><a href="GHC.Types.Name.Ppr.html#isPunnedDataConName"><span class="hs-identifier hs-var hs-var">isPunnedDataConName</span></a></span></span><span> </span><span id="local-6989586621681880314"><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880314"><span class="hs-identifier hs-var">occ</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-158"></span><span>  </span><span class="annot"><span class="annottext">OccName -&gt; Bool
+</span><a href="GHC.Types.Name.Occurrence.html#isDataOcc"><span class="hs-identifier hs-var">isDataOcc</span></a></span><span> </span><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880314"><span class="hs-identifier hs-var">occ</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">FastString -&gt; String
+</span><a href="GHC.Data.FastString.html#unpackFS"><span class="hs-identifier hs-var">unpackFS</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OccName -&gt; FastString
+</span><a href="GHC.Types.Name.Occurrence.html#occNameFS"><span class="hs-identifier hs-var">occNameFS</span></a></span><span> </span><span class="annot"><span class="annottext">OccName
+</span><a href="#local-6989586621681880314"><span class="hs-identifier hs-var">occ</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-159"></span><span>    </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'['</span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-160"></span><span>    </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'('</span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-161"></span><span>    </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-162"></span><span>
+</span><span id="line-163"></span><span class="hs-comment">{- Note [pretendNameIsInScopeForPpr]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+c.f. Note [pretendNameIsInScope] in GHC.Builtin.Names
+Normally, a name is printed unqualified if it's in scope and unambiguous:
+  ghci&gt; :t not
+  not :: Bool -&gt; Bool
+
+Out of scope names are qualified:
+  ghci&gt; import Prelude hiding (Bool)
+  ghci&gt; :t not
+  not :: GHC.Types.Bool -&gt; GHC.Types.Bool
+
+And so are ambiguous names:
+  ghci&gt; data Bool
+  ghci&gt; :t not
+  not :: Prelude.Bool -&gt; Prelude.Bool
+
+However, these rules alone would lead to excessive qualification:
+  ghci&gt; :k Functor
+  Functor :: (GHC.Types.Type -&gt; GHC.Types.Type) -&gt; GHC.Types.Constraint
+
+Even if the user has not imported Data.Kind, we would rather print:
+  Functor :: (Type -&gt; Type) -&gt; Constraint
+
+So we maintain a list of names for which we only require that they are
+unambiguous. It reduces the amount of qualification in GHCi output and error
+messages thus improving readability.
+
+One potential problem here is that external tooling that relies on parsing GHCi
+output (e.g. Emacs mode for Haskell) requires names to be properly qualified to
+make sense of the output (see #11208). So extend this list with care.
+
+Side note (int-index):
+  This function is distinct from GHC.Bulitin.Names.pretendNameIsInScope (used
+  when filtering out instances), and perhaps we could unify them by taking a
+  union, but I have not looked into what that would entail.
+-}</span><span>
+</span><span id="line-200"></span><span>
+</span><span id="line-201"></span><span class="hs-comment">-- | Creates a function for formatting modules based on two heuristics:</span><span>
+</span><span id="line-202"></span><span class="hs-comment">-- (1) if the module is the current module, don't qualify, and (2) if there</span><span>
+</span><span id="line-203"></span><span class="hs-comment">-- is only one exposed package which exports this module, don't qualify.</span><span>
+</span><span id="line-204"></span><span class="annot"><a href="GHC.Types.Name.Ppr.html#mkQualModule"><span class="hs-identifier hs-type">mkQualModule</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Unit.State.html#UnitState"><span class="hs-identifier hs-type">UnitState</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="GHC.Unit.Home.html#HomeUnit"><span class="hs-identifier hs-type">HomeUnit</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#QueryQualifyModule"><span class="hs-identifier hs-type">QueryQualifyModule</span></a></span><span>
+</span><span id="line-205"></span><span id="mkQualModule"><span class="annot"><span class="annottext">mkQualModule :: UnitState -&gt; Maybe HomeUnit -&gt; QueryQualifyModule
+</span><a href="GHC.Types.Name.Ppr.html#mkQualModule"><span class="hs-identifier hs-var hs-var">mkQualModule</span></a></span></span><span> </span><span id="local-6989586621681880318"><span class="annot"><span class="annottext">UnitState
+</span><a href="#local-6989586621681880318"><span class="hs-identifier hs-var">unit_state</span></a></span></span><span> </span><span id="local-6989586621681880319"><span class="annot"><span class="annottext">Maybe HomeUnit
+</span><a href="#local-6989586621681880319"><span class="hs-identifier hs-var">mhome_unit</span></a></span></span><span> </span><span id="local-6989586621681880320"><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681880320"><span class="hs-identifier hs-var">mod</span></a></span></span><span>
+</span><span id="line-206"></span><span>     </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681880321"><span class="annot"><span class="annottext">HomeUnit
+</span><a href="#local-6989586621681880321"><span class="hs-identifier hs-var">home_unit</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe HomeUnit
+</span><a href="#local-6989586621681880319"><span class="hs-identifier hs-var">mhome_unit</span></a></span><span>
+</span><span id="line-207"></span><span>     </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">HomeUnit -&gt; QueryQualifyModule
+</span><a href="GHC.Unit.Home.html#isHomeModule"><span class="hs-identifier hs-var">isHomeModule</span></a></span><span> </span><span class="annot"><span class="annottext">HomeUnit
+</span><a href="#local-6989586621681880321"><span class="hs-identifier hs-var">home_unit</span></a></span><span> </span><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681880320"><span class="hs-identifier hs-var">mod</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-208"></span><span>
+</span><span id="line-209"></span><span>     </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Module
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681880323"><span class="annot"><span class="annottext">UnitInfo
+</span><a href="#local-6989586621681880323"><span class="hs-identifier hs-var">pkgconfig</span></a></span></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(Module, UnitInfo)]
+</span><a href="#local-6989586621681880324"><span class="hs-identifier hs-var">lookup</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-210"></span><span>       </span><span class="annot"><span class="annottext">UnitInfo -&gt; Unit
+</span><a href="GHC.Unit.Info.html#mkUnit"><span class="hs-identifier hs-var">mkUnit</span></a></span><span> </span><span class="annot"><span class="annottext">UnitInfo
+</span><a href="#local-6989586621681880323"><span class="hs-identifier hs-var">pkgconfig</span></a></span><span> </span><span class="annot"><span class="annottext">Unit -&gt; QueryQualifyPackage
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Module -&gt; Unit
+forall unit. GenModule unit -&gt; unit
+</span><a href="GHC.Unit.Types.html#moduleUnit"><span class="hs-identifier hs-var">moduleUnit</span></a></span><span> </span><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681880320"><span class="hs-identifier hs-var">mod</span></a></span><span>
+</span><span id="line-211"></span><span>        </span><span class="hs-comment">-- this says: we are given a module P:M, is there just one exposed package</span><span>
+</span><span id="line-212"></span><span>        </span><span class="hs-comment">-- that exposes a module M, and is it package P?</span><span>
+</span><span id="line-213"></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-214"></span><span>
+</span><span id="line-215"></span><span>     </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-216"></span><span>     </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621681880324"><span class="annot"><span class="annottext">lookup :: [(Module, UnitInfo)]
+</span><a href="#local-6989586621681880324"><span class="hs-identifier hs-var hs-var">lookup</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">UnitState -&gt; ModuleName -&gt; [(Module, UnitInfo)]
+</span><a href="GHC.Unit.State.html#lookupModuleInAllUnits"><span class="hs-identifier hs-var">lookupModuleInAllUnits</span></a></span><span> </span><span class="annot"><span class="annottext">UnitState
+</span><a href="#local-6989586621681880318"><span class="hs-identifier hs-var">unit_state</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Module -&gt; ModuleName
+forall unit. GenModule unit -&gt; ModuleName
+</span><a href="GHC.Unit.Types.html#moduleName"><span class="hs-identifier hs-var">moduleName</span></a></span><span> </span><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681880320"><span class="hs-identifier hs-var">mod</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-217"></span><span>
+</span><span id="line-218"></span><span class="hs-comment">-- | Creates a function for formatting packages based on two heuristics:</span><span>
+</span><span id="line-219"></span><span class="hs-comment">-- (1) don't qualify if the package in question is &quot;main&quot;, and (2) only qualify</span><span>
+</span><span id="line-220"></span><span class="hs-comment">-- with a unit id if the package ID would be ambiguous.</span><span>
+</span><span id="line-221"></span><span class="annot"><a href="GHC.Types.Name.Ppr.html#mkQualPackage"><span class="hs-identifier hs-type">mkQualPackage</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Unit.State.html#UnitState"><span class="hs-identifier hs-type">UnitState</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#QueryQualifyPackage"><span class="hs-identifier hs-type">QueryQualifyPackage</span></a></span><span>
+</span><span id="line-222"></span><span id="mkQualPackage"><span class="annot"><span class="annottext">mkQualPackage :: UnitState -&gt; QueryQualifyPackage
+</span><a href="GHC.Types.Name.Ppr.html#mkQualPackage"><span class="hs-identifier hs-var hs-var">mkQualPackage</span></a></span></span><span> </span><span id="local-6989586621681880328"><span class="annot"><span class="annottext">UnitState
+</span><a href="#local-6989586621681880328"><span class="hs-identifier hs-var">pkgs</span></a></span></span><span> </span><span id="local-6989586621681880329"><span class="annot"><span class="annottext">Unit
+</span><a href="#local-6989586621681880329"><span class="hs-identifier hs-var">uid</span></a></span></span><span>
+</span><span id="line-223"></span><span>     </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Unit
+</span><a href="#local-6989586621681880329"><span class="hs-identifier hs-var">uid</span></a></span><span> </span><span class="annot"><span class="annottext">Unit -&gt; QueryQualifyPackage
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Unit
+</span><a href="GHC.Unit.Types.html#mainUnit"><span class="hs-identifier hs-var">mainUnit</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Unit
+</span><a href="#local-6989586621681880329"><span class="hs-identifier hs-var">uid</span></a></span><span> </span><span class="annot"><span class="annottext">Unit -&gt; QueryQualifyPackage
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Unit
+</span><a href="GHC.Unit.Types.html#interactiveUnit"><span class="hs-identifier hs-var">interactiveUnit</span></a></span><span>
+</span><span id="line-224"></span><span>        </span><span class="hs-comment">-- Skip the lookup if it's main, since it won't be in the package</span><span>
+</span><span id="line-225"></span><span>        </span><span class="hs-comment">-- database!</span><span>
+</span><span id="line-226"></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-227"></span><span>     </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681880333"><span class="annot"><span class="annottext">PackageId
+</span><a href="#local-6989586621681880333"><span class="hs-identifier hs-var">pkgid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe PackageId
+</span><a href="#local-6989586621681880334"><span class="hs-identifier hs-var">mb_pkgid</span></a></span><span>
+</span><span id="line-228"></span><span>     </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">UnitState -&gt; PackageId -&gt; [UnitInfo]
+</span><a href="GHC.Unit.State.html#searchPackageId"><span class="hs-identifier hs-var">searchPackageId</span></a></span><span> </span><span class="annot"><span class="annottext">UnitState
+</span><a href="#local-6989586621681880328"><span class="hs-identifier hs-var">pkgs</span></a></span><span> </span><span class="annot"><span class="annottext">PackageId
+</span><a href="#local-6989586621681880333"><span class="hs-identifier hs-var">pkgid</span></a></span><span> </span><span class="annot"><span class="annottext">[UnitInfo] -&gt; Int -&gt; Bool
+forall a. [a] -&gt; Int -&gt; Bool
+</span><a href="GHC.Utils.Misc.html#lengthIs"><span class="hs-operator hs-var">`lengthIs`</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-229"></span><span>        </span><span class="hs-comment">-- this says: we are given a package pkg-0.1@MMM, are there only one</span><span>
+</span><span id="line-230"></span><span>        </span><span class="hs-comment">-- exposed packages whose package ID is pkg-0.1?</span><span>
+</span><span id="line-231"></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-232"></span><span>     </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-233"></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-234"></span><span>     </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621681880334"><span class="annot"><span class="annottext">mb_pkgid :: Maybe PackageId
+</span><a href="#local-6989586621681880334"><span class="hs-identifier hs-var hs-var">mb_pkgid</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(UnitInfo -&gt; PackageId) -&gt; Maybe UnitInfo -&gt; Maybe PackageId
+forall a b. (a -&gt; b) -&gt; Maybe a -&gt; Maybe b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#fmap/GHC.Base.html#fmap"><span class="hs-identifier hs-var">fmap</span></a></span><span> </span><span class="annot"><span class="annottext">UnitInfo -&gt; PackageId
+forall srcpkgid srcpkgname uid modulename mod.
+GenericUnitInfo srcpkgid srcpkgname uid modulename mod -&gt; srcpkgid
+</span><a href="../../ghc-boot-9.6.5/src/GHC.Unit.Database.html#unitPackageId/GHC.Unit.Database.html#unitPackageId"><span class="hs-identifier hs-var">unitPackageId</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UnitState -&gt; Unit -&gt; Maybe UnitInfo
+</span><a href="GHC.Unit.State.html#lookupUnit"><span class="hs-identifier hs-var">lookupUnit</span></a></span><span> </span><span class="annot"><span class="annottext">UnitState
+</span><a href="#local-6989586621681880328"><span class="hs-identifier hs-var">pkgs</span></a></span><span> </span><span class="annot"><span class="annottext">Unit
+</span><a href="#local-6989586621681880329"><span class="hs-identifier hs-var">uid</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-235"></span><span>
+</span><span id="line-236"></span><span class="hs-comment">-- | A function which only qualifies package names if necessary; but</span><span>
+</span><span id="line-237"></span><span class="hs-comment">-- qualifies all other identifiers.</span><span>
+</span><span id="line-238"></span><span class="annot"><a href="GHC.Types.Name.Ppr.html#pkgQual"><span class="hs-identifier hs-type">pkgQual</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Unit.State.html#UnitState"><span class="hs-identifier hs-type">UnitState</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#NamePprCtx"><span class="hs-identifier hs-type">NamePprCtx</span></a></span><span>
+</span><span id="line-239"></span><span id="pkgQual"><span class="annot"><span class="annottext">pkgQual :: UnitState -&gt; NamePprCtx
+</span><a href="GHC.Types.Name.Ppr.html#pkgQual"><span class="hs-identifier hs-var hs-var">pkgQual</span></a></span></span><span> </span><span id="local-6989586621681880339"><span class="annot"><span class="annottext">UnitState
+</span><a href="#local-6989586621681880339"><span class="hs-identifier hs-var">pkgs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NamePprCtx
+</span><a href="GHC.Utils.Outputable.html#alwaysQualify"><span class="hs-identifier hs-var">alwaysQualify</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#queryQualifyPackage"><span class="hs-identifier hs-var">queryQualifyPackage</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Types.Name.Ppr.html#mkQualPackage"><span class="hs-identifier hs-type">mkQualPackage</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681880339"><span class="hs-identifier hs-type">pkgs</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-240"></span></pre></body></html>

@@ -1,0 +1,905 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">{-
+(c) The AQUA Project, Glasgow University, 1994-1998
+
+\section[LiberateCase]{Unroll recursion to allow evals to be lifted from a loop}
+-}</span><span>
+</span><span id="line-6"></span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Core.Opt.LiberateCase</span><span>
+</span><span id="line-9"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseOpts"><span class="hs-identifier">LibCaseOpts</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-10"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#liberateCase"><span class="hs-identifier">liberateCase</span></a></span><span>
+</span><span id="line-11"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-12"></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-14"></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.html"><span class="hs-identifier">GHC.Core</span></a></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.Unfold.html"><span class="hs-identifier">GHC.Core.Unfold</span></a></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Builtin.Types.html"><span class="hs-identifier">GHC.Builtin.Types</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Builtin.Types.html#unitDataConId"><span class="hs-identifier">unitDataConId</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Id.html"><span class="hs-identifier">GHC.Types.Id</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Var.Env.html"><span class="hs-identifier">GHC.Types.Var.Env</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html"><span class="hs-identifier">GHC.Utils.Misc</span></a></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#notNull"><span class="hs-identifier">notNull</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="hs-comment">{-
+The liberate-case transformation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+This module walks over @Core@, and looks for @case@ on free variables.
+The criterion is:
+        if there is case on a free on the route to the recursive call,
+        then the recursive call is replaced with an unfolding.
+
+Example
+
+   f = \ t -&gt; case v of
+                 V a b -&gt; a : f t
+
+=&gt; the inner f is replaced.
+
+   f = \ t -&gt; case v of
+                 V a b -&gt; a : (letrec
+                                f =  \ t -&gt; case v of
+                                               V a b -&gt; a : f t
+                               in f) t
+(note the NEED for shadowing)
+
+=&gt; Simplify
+
+  f = \ t -&gt; case v of
+                 V a b -&gt; a : (letrec
+                                f = \ t -&gt; a : f t
+                               in f t)
+
+Better code, because 'a' is  free inside the inner letrec, rather
+than needing projection from v.
+
+Note that this deals with *free variables*.  SpecConstr deals with
+*arguments* that are of known form.  E.g.
+
+        last []     = error
+        last (x:[]) = x
+        last (x:xs) = last xs
+
+
+Note [Scrutinee with cast]
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+Consider this:
+    f = \ t -&gt; case (v `cast` co) of
+                 V a b -&gt; a : f t
+
+Exactly the same optimisation (unrolling one call to f) will work here,
+despite the cast.  See mk_alt_env in the Case branch of libCase.
+
+
+To think about (Apr 94)
+~~~~~~~~~~~~~~
+Main worry: duplicating code excessively.  At the moment we duplicate
+the entire binding group once at each recursive call.  But there may
+be a group of recursive calls which share a common set of evaluated
+free variables, in which case the duplication is a plain waste.
+
+Another thing we could consider adding is some unfold-threshold thing,
+so that we'll only duplicate if the size of the group rhss isn't too
+big.
+
+Data types
+~~~~~~~~~~
+The ``level'' of a binder tells how many
+recursive defns lexically enclose the binding
+A recursive defn &quot;encloses&quot; its RHS, not its
+scope.  For example:
+\begin{verbatim}
+        letrec f = let g = ... in ...
+        in
+        let h = ...
+        in ...
+\end{verbatim}
+Here, the level of @f@ is zero, the level of @g@ is one,
+and the level of @h@ is zero (NB not one).
+
+
+************************************************************************
+*                                                                      *
+         Top-level code
+*                                                                      *
+************************************************************************
+-}</span><span>
+</span><span id="line-105"></span><span>
+</span><span id="line-106"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#liberateCase"><span class="hs-identifier hs-type">liberateCase</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseOpts"><span class="hs-identifier hs-type">LibCaseOpts</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreProgram"><span class="hs-identifier hs-type">CoreProgram</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreProgram"><span class="hs-identifier hs-type">CoreProgram</span></a></span><span>
+</span><span id="line-107"></span><span id="liberateCase"><span class="annot"><span class="annottext">liberateCase :: LibCaseOpts -&gt; CoreProgram -&gt; CoreProgram
+</span><a href="GHC.Core.Opt.LiberateCase.html#liberateCase"><span class="hs-identifier hs-var hs-var">liberateCase</span></a></span></span><span> </span><span id="local-6989586621681791577"><span class="annot"><span class="annottext">LibCaseOpts
+</span><a href="#local-6989586621681791577"><span class="hs-identifier hs-var">opts</span></a></span></span><span> </span><span id="local-6989586621681791578"><span class="annot"><span class="annottext">CoreProgram
+</span><a href="#local-6989586621681791578"><span class="hs-identifier hs-var">binds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; CoreProgram -&gt; CoreProgram
+</span><a href="#local-6989586621681791579"><span class="hs-identifier hs-var">do_prog</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseOpts -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#initLiberateCaseEnv"><span class="hs-identifier hs-var">initLiberateCaseEnv</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseOpts
+</span><a href="#local-6989586621681791577"><span class="hs-identifier hs-var">opts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreProgram
+</span><a href="#local-6989586621681791578"><span class="hs-identifier hs-var">binds</span></a></span><span>
+</span><span id="line-108"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-109"></span><span>    </span><span id="local-6989586621681791579"><span class="annot"><span class="annottext">do_prog :: LibCaseEnv -&gt; CoreProgram -&gt; CoreProgram
+</span><a href="#local-6989586621681791579"><span class="hs-identifier hs-var hs-var">do_prog</span></a></span></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><span class="hs-identifier">_</span></span><span>   </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-110"></span><span>    </span><span class="annot"><a href="#local-6989586621681791579"><span class="hs-identifier hs-var">do_prog</span></a></span><span> </span><span id="local-6989586621681791581"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791581"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681791582"><span class="annot"><span class="annottext">CoreBind
+</span><a href="#local-6989586621681791582"><span class="hs-identifier hs-var">bind</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621681791583"><span class="annot"><span class="annottext">CoreProgram
+</span><a href="#local-6989586621681791583"><span class="hs-identifier hs-var">binds</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreBind
+</span><a href="#local-6989586621681791584"><span class="hs-identifier hs-var">bind'</span></a></span><span> </span><span class="annot"><span class="annottext">CoreBind -&gt; CoreProgram -&gt; CoreProgram
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; CoreProgram -&gt; CoreProgram
+</span><a href="#local-6989586621681791579"><span class="hs-identifier hs-var">do_prog</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791585"><span class="hs-identifier hs-var">env'</span></a></span><span> </span><span class="annot"><span class="annottext">CoreProgram
+</span><a href="#local-6989586621681791583"><span class="hs-identifier hs-var">binds</span></a></span><span>
+</span><span id="line-111"></span><span>                             </span><span class="hs-keyword">where</span><span>
+</span><span id="line-112"></span><span>                               </span><span class="hs-special">(</span><span id="local-6989586621681791585"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791585"><span class="hs-identifier hs-var">env'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681791584"><span class="annot"><span class="annottext">CoreBind
+</span><a href="#local-6989586621681791584"><span class="hs-identifier hs-var">bind'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; CoreBind -&gt; (LibCaseEnv, CoreBind)
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCaseBind"><span class="hs-identifier hs-var">libCaseBind</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791581"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">CoreBind
+</span><a href="#local-6989586621681791582"><span class="hs-identifier hs-var">bind</span></a></span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#initLiberateCaseEnv"><span class="hs-identifier hs-type">initLiberateCaseEnv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseOpts"><span class="hs-identifier hs-type">LibCaseOpts</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span>
+</span><span id="line-115"></span><span id="initLiberateCaseEnv"><span class="annot"><span class="annottext">initLiberateCaseEnv :: LibCaseOpts -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#initLiberateCaseEnv"><span class="hs-identifier hs-var hs-var">initLiberateCaseEnv</span></a></span></span><span> </span><span id="local-6989586621681791587"><span class="annot"><span class="annottext">LibCaseOpts
+</span><a href="#local-6989586621681791587"><span class="hs-identifier hs-var">opts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span>
+</span><span id="line-116"></span><span>   </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">lc_opts :: LibCaseOpts
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_opts"><span class="hs-identifier hs-var">lc_opts</span></a></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseOpts
+</span><a href="#local-6989586621681791587"><span class="hs-identifier hs-var">opts</span></a></span><span>
+</span><span id="line-117"></span><span>   </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">lc_lvl :: LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl"><span class="hs-identifier hs-var">lc_lvl</span></a></span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-118"></span><span>   </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">lc_lvl_env :: IdEnv LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl_env"><span class="hs-identifier hs-var">lc_lvl_env</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IdEnv LibCaseLevel
+forall a. VarEnv a
+</span><a href="GHC.Types.Var.Env.html#emptyVarEnv"><span class="hs-identifier hs-var">emptyVarEnv</span></a></span><span>
+</span><span id="line-119"></span><span>   </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">lc_rec_env :: IdEnv CoreBind
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_rec_env"><span class="hs-identifier hs-var">lc_rec_env</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IdEnv CoreBind
+forall a. VarEnv a
+</span><a href="GHC.Types.Var.Env.html#emptyVarEnv"><span class="hs-identifier hs-var">emptyVarEnv</span></a></span><span>
+</span><span id="line-120"></span><span>   </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">lc_scruts :: [(Id, LibCaseLevel, LibCaseLevel)]
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_scruts"><span class="hs-identifier hs-var">lc_scruts</span></a></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-121"></span><span>   </span><span class="hs-special">}</span><span>
+</span><span id="line-122"></span><span>
+</span><span id="line-123"></span><span class="hs-comment">{-
+************************************************************************
+*                                                                      *
+         Main payload
+*                                                                      *
+************************************************************************
+
+Bindings
+~~~~~~~~
+-}</span><span>
+</span><span id="line-133"></span><span>
+</span><span id="line-134"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCaseBind"><span class="hs-identifier hs-type">libCaseBind</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreBind"><span class="hs-identifier hs-type">CoreBind</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreBind"><span class="hs-identifier hs-type">CoreBind</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span id="libCaseBind"><span class="annot"><span class="annottext">libCaseBind :: LibCaseEnv -&gt; CoreBind -&gt; (LibCaseEnv, CoreBind)
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCaseBind"><span class="hs-identifier hs-var hs-var">libCaseBind</span></a></span></span><span> </span><span id="local-6989586621681791595"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791595"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#NonRec"><span class="hs-identifier hs-type">NonRec</span></a></span><span> </span><span id="local-6989586621681791597"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791597"><span class="hs-identifier hs-var">binder</span></a></span></span><span> </span><span id="local-6989586621681791598"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791598"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-137"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; [Id] -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#addBinders"><span class="hs-identifier hs-var">addBinders</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791595"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791597"><span class="hs-identifier hs-var">binder</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Id -&gt; Expr Id -&gt; CoreBind
+forall b. b -&gt; Expr b -&gt; Bind b
+</span><a href="GHC.Core.html#NonRec"><span class="hs-identifier hs-var">NonRec</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791597"><span class="hs-identifier hs-var">binder</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791595"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791598"><span class="hs-identifier hs-var">rhs</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-138"></span><span>
+</span><span id="line-139"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCaseBind"><span class="hs-identifier hs-var">libCaseBind</span></a></span><span> </span><span id="local-6989586621681791601"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791601"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-type">Rec</span></a></span><span> </span><span id="local-6989586621681791603"><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791603"><span class="hs-identifier hs-var">pairs</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-140"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791604"><span class="hs-identifier hs-var">env_body</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)] -&gt; CoreBind
+forall b. [(b, Expr b)] -&gt; Bind b
+</span><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-var">Rec</span></a></span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791605"><span class="hs-identifier hs-var">pairs'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-141"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-142"></span><span>    </span><span id="local-6989586621681791606"><span class="annot"><span class="annottext">binders :: [Id]
+</span><a href="#local-6989586621681791606"><span class="hs-identifier hs-var hs-var">binders</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((Id, Expr Id) -&gt; Id) -&gt; [(Id, Expr Id)] -&gt; [Id]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">(Id, Expr Id) -&gt; Id
+forall a b. (a, b) -&gt; a
+</span><a href="../../base-4.18.2.1/src/Data.Tuple.html#fst/Data.Tuple.html#fst"><span class="hs-identifier hs-var">fst</span></a></span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791603"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-143"></span><span>
+</span><span id="line-144"></span><span>    </span><span id="local-6989586621681791604"><span class="annot"><span class="annottext">env_body :: LibCaseEnv
+</span><a href="#local-6989586621681791604"><span class="hs-identifier hs-var hs-var">env_body</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; [Id] -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#addBinders"><span class="hs-identifier hs-var">addBinders</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791601"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681791606"><span class="hs-identifier hs-var">binders</span></a></span><span>
+</span><span id="line-145"></span><span>
+</span><span id="line-146"></span><span>    </span><span id="local-6989586621681791605"><span class="annot"><span class="annottext">pairs' :: [(Id, Expr Id)]
+</span><a href="#local-6989586621681791605"><span class="hs-identifier hs-var hs-var">pairs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791608"><span class="hs-identifier hs-var">binder</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791609"><span class="hs-identifier hs-var">env_rhs</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791610"><span class="hs-identifier hs-var">rhs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681791608"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791608"><span class="hs-identifier hs-var">binder</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681791610"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791610"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791603"><span class="hs-identifier hs-var">pairs</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span>        </span><span class="hs-comment">-- We extend the rec-env by binding each Id to its rhs, first</span><span>
+</span><span id="line-149"></span><span>        </span><span class="hs-comment">-- processing the rhs with an *un-extended* environment, so</span><span>
+</span><span id="line-150"></span><span>        </span><span class="hs-comment">-- that the same process doesn't occur for ever!</span><span>
+</span><span id="line-151"></span><span>    </span><span id="local-6989586621681791609"><span class="annot"><span class="annottext">env_rhs :: LibCaseEnv
+</span><a href="#local-6989586621681791609"><span class="hs-identifier hs-var hs-var">env_rhs</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681791611"><span class="hs-identifier hs-var">is_dupable_bind</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; [(Id, Expr Id)] -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#addRecBinds"><span class="hs-identifier hs-var">addRecBinds</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791601"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791613"><span class="hs-identifier hs-var">dup_pairs</span></a></span><span>
+</span><span id="line-152"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791601"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-153"></span><span>
+</span><span id="line-154"></span><span>    </span><span id="local-6989586621681791613"><span class="annot"><span class="annottext">dup_pairs :: [(Id, Expr Id)]
+</span><a href="#local-6989586621681791613"><span class="hs-identifier hs-var hs-var">dup_pairs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; Id
+</span><a href="GHC.Types.Id.html#localiseId"><span class="hs-identifier hs-var">localiseId</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791615"><span class="hs-identifier hs-var">binder</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791604"><span class="hs-identifier hs-var">env_body</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791616"><span class="hs-identifier hs-var">rhs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-155"></span><span>                </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681791615"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791615"><span class="hs-identifier hs-var">binder</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681791616"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791616"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791603"><span class="hs-identifier hs-var">pairs</span></a></span><span> </span><span class="hs-special">]</span><span>
+</span><span id="line-156"></span><span>        </span><span class="hs-comment">-- localiseID : see Note [Need to localiseId in libCaseBind]</span><span>
+</span><span id="line-157"></span><span>
+</span><span id="line-158"></span><span>    </span><span id="local-6989586621681791611"><span class="annot"><span class="annottext">is_dupable_bind :: Bool
+</span><a href="#local-6989586621681791611"><span class="hs-identifier hs-var hs-var">is_dupable_bind</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681791617"><span class="hs-identifier hs-var">small_enough</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">((Id, Expr Id) -&gt; Bool) -&gt; [(Id, Expr Id)] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#all/Data.Foldable.html#all"><span class="hs-identifier hs-var">all</span></a></span><span> </span><span class="annot"><span class="annottext">(Id, Expr Id) -&gt; Bool
+forall {b}. (Id, b) -&gt; Bool
+</span><a href="#local-6989586621681791620"><span class="hs-identifier hs-var">ok_pair</span></a></span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791603"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-159"></span><span>
+</span><span id="line-160"></span><span>    </span><span class="hs-comment">-- Size: we are going to duplicate dup_pairs; to find their</span><span>
+</span><span id="line-161"></span><span>    </span><span class="hs-comment">--       size, build a fake binding (let { dup_pairs } in (),</span><span>
+</span><span id="line-162"></span><span>    </span><span class="hs-comment">--       and find the size of that</span><span>
+</span><span id="line-163"></span><span>    </span><span class="hs-comment">-- See Note [Small enough]</span><span>
+</span><span id="line-164"></span><span>    </span><span id="local-6989586621681791617"><span class="annot"><span class="annottext">small_enough :: Bool
+</span><a href="#local-6989586621681791617"><span class="hs-identifier hs-var hs-var">small_enough</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Maybe LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_threshold"><span class="hs-identifier hs-var">lc_threshold</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791601"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-165"></span><span>                      </span><span class="annot"><span class="annottext">Maybe LibCaseLevel
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>   </span><span class="hs-comment">-- Infinity</span><span>
+</span><span id="line-166"></span><span>                      </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681791622"><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791622"><span class="hs-identifier hs-var">size</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">UnfoldingOpts -&gt; LibCaseLevel -&gt; Expr Id -&gt; Bool
+</span><a href="GHC.Core.Unfold.html#couldBeSmallEnoughToInline"><span class="hs-identifier hs-var">couldBeSmallEnoughToInline</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; UnfoldingOpts
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_uf_opts"><span class="hs-identifier hs-var">lc_uf_opts</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791601"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791622"><span class="hs-identifier hs-var">size</span></a></span><span> </span><span class="annot"><span class="annottext">(Expr Id -&gt; Bool) -&gt; Expr Id -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-167"></span><span>                                   </span><span class="annot"><span class="annottext">CoreBind -&gt; Expr Id -&gt; Expr Id
+forall b. Bind b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(Id, Expr Id)] -&gt; CoreBind
+forall b. [(b, Expr b)] -&gt; Bind b
+</span><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-var">Rec</span></a></span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791613"><span class="hs-identifier hs-var">dup_pairs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; Expr Id
+forall b. Id -&gt; Expr b
+</span><a href="GHC.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="GHC.Builtin.Types.html#unitDataConId"><span class="hs-identifier hs-var">unitDataConId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-168"></span><span>
+</span><span id="line-169"></span><span>    </span><span id="local-6989586621681791620"><span class="annot"><span class="annottext">ok_pair :: (Id, b) -&gt; Bool
+</span><a href="#local-6989586621681791620"><span class="hs-identifier hs-var hs-var">ok_pair</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681791629"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791629"><span class="hs-identifier hs-var">id</span></a></span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">b
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-170"></span><span>        </span><span class="hs-glyph">=</span><span>  </span><span class="annot"><span class="annottext">Id -&gt; LibCaseLevel
+</span><a href="GHC.Types.Id.html#idArity"><span class="hs-identifier hs-var">idArity</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791629"><span class="hs-identifier hs-var">id</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel -&gt; LibCaseLevel -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><span class="hs-number">0</span></span><span>       </span><span class="hs-comment">-- Note [Only functions!]</span><span>
+</span><span id="line-171"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; Bool
+</span><a href="GHC.Types.Id.html#isDeadEndId"><span class="hs-identifier hs-var">isDeadEndId</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791629"><span class="hs-identifier hs-var">id</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-comment">-- Note [Not bottoming Ids]</span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span class="hs-comment">{- Note [Not bottoming Ids]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Do not specialise error-functions (this is unusual, but I once saw it,
+(actually in Data.Typeable.Internal)
+
+Note [Only functions!]
+~~~~~~~~~~~~~~~~~~~~~~
+Consider the following code
+
+       f = g (case v of V a b -&gt; a : t f)
+
+where g is expensive. If we aren't careful, liberate case will turn this into
+
+       f = g (case v of
+               V a b -&gt; a : t (letrec f = g (case v of V a b -&gt; a : f t)
+                                in f)
+             )
+
+Yikes! We evaluate g twice. This leads to a O(2^n) explosion
+if g calls back to the same code recursively.
+
+Solution: make sure that we only do the liberate-case thing on *functions*
+
+Note [Small enough]
+~~~~~~~~~~~~~~~~~~~
+Consider
+  \fv. letrec
+         f = \x. BIG...(case fv of { (a,b) -&gt; ...g.. })...
+         g = \y. SMALL...f...
+
+Then we *can* in principle do liberate-case on 'g' (small RHS) but not
+for 'f' (too big).  But doing so is not profitable, because duplicating
+'g' at its call site in 'f' doesn't get rid of any cases.  So we just
+ask for the whole group to be small enough.
+
+Note [Need to localiseId in libCaseBind]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The call to localiseId is needed for two subtle reasons
+(a)  Reset the export flags on the binders so
+        that we don't get name clashes on exported things if the
+        local binding floats out to top level.  This is most unlikely
+        to happen, since the whole point concerns free variables.
+        But resetting the export flag is right regardless.
+
+(b)  Make the name an Internal one.  External Names should never be
+        nested; if it were floated to the top level, we'd get a name
+        clash at code generation time.
+
+Expressions
+~~~~~~~~~~~
+-}</span><span>
+</span><span id="line-224"></span><span>
+</span><span id="line-225"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-type">libCase</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span>
+</span><span id="line-226"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span>
+</span><span id="line-227"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span>
+</span><span id="line-228"></span><span>
+</span><span id="line-229"></span><span id="libCase"><span class="annot"><span class="annottext">libCase :: LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var hs-var">libCase</span></a></span></span><span> </span><span id="local-6989586621681791635"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791635"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621681791636"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791636"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span>             </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Id -&gt; [Expr Id] -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCaseApp"><span class="hs-identifier hs-var">libCaseApp</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791635"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791636"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-230"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><span class="hs-identifier">_</span></span><span>   </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Lit"><span class="hs-identifier hs-type">Lit</span></a></span><span> </span><span id="local-6989586621681791639"><span class="annot"><span class="annottext">Literal
+</span><a href="#local-6989586621681791639"><span class="hs-identifier hs-var">lit</span></a></span></span><span class="hs-special">)</span><span>           </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Literal -&gt; Expr Id
+forall b. Literal -&gt; Expr b
+</span><a href="GHC.Core.html#Lit"><span class="hs-identifier hs-var">Lit</span></a></span><span> </span><span class="annot"><span class="annottext">Literal
+</span><a href="#local-6989586621681791639"><span class="hs-identifier hs-var">lit</span></a></span><span>
+</span><span id="line-231"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><span class="hs-identifier">_</span></span><span>   </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span> </span><span id="local-6989586621681791641"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681791641"><span class="hs-identifier hs-var">ty</span></a></span></span><span class="hs-special">)</span><span>           </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Type -&gt; Expr Id
+forall b. Type -&gt; Expr b
+</span><a href="GHC.Core.html#Type"><span class="hs-identifier hs-var">Type</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681791641"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-232"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><span class="hs-identifier">_</span></span><span>   </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Coercion"><span class="hs-identifier hs-type">Coercion</span></a></span><span> </span><span id="local-6989586621681791643"><span class="annot"><span class="annottext">Coercion
+</span><a href="#local-6989586621681791643"><span class="hs-identifier hs-var">co</span></a></span></span><span class="hs-special">)</span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Coercion -&gt; Expr Id
+forall b. Coercion -&gt; Expr b
+</span><a href="GHC.Core.html#Coercion"><span class="hs-identifier hs-var">Coercion</span></a></span><span> </span><span class="annot"><span class="annottext">Coercion
+</span><a href="#local-6989586621681791643"><span class="hs-identifier hs-var">co</span></a></span><span>
+</span><span id="line-233"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span id="local-6989586621681791644"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791644"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span id="local-6989586621681791645"><span class="annot"><span class="annottext">e :: Expr Id
+</span><a href="#local-6989586621681791645"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#App"><span class="hs-identifier hs-type">App</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681791647"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791647"><span class="hs-identifier hs-var">fun</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681791648"><span class="annot"><span class="annottext">[Expr Id]
+</span><a href="#local-6989586621681791648"><span class="hs-identifier hs-var">args</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Expr Id -&gt; (Expr Id, [Expr Id])
+forall b. Expr b -&gt; (Expr b, [Expr b])
+</span><a href="GHC.Core.html#collectArgs"><span class="hs-identifier hs-var">collectArgs</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791645"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-234"></span><span>                                </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621681791650"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791650"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791647"><span class="hs-identifier hs-var">fun</span></a></span><span>
+</span><span id="line-235"></span><span>                                </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Id -&gt; [Expr Id] -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCaseApp"><span class="hs-identifier hs-var">libCaseApp</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791644"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791650"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">[Expr Id]
+</span><a href="#local-6989586621681791648"><span class="hs-identifier hs-var">args</span></a></span><span>
+</span><span id="line-236"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span id="local-6989586621681791651"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791651"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#App"><span class="hs-identifier hs-type">App</span></a></span><span> </span><span id="local-6989586621681791652"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791652"><span class="hs-identifier hs-var">fun</span></a></span></span><span> </span><span id="local-6989586621681791653"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791653"><span class="hs-identifier hs-var">arg</span></a></span></span><span class="hs-special">)</span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Expr Id -&gt; Expr Id -&gt; Expr Id
+forall b. Expr b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#App"><span class="hs-identifier hs-var">App</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791651"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791652"><span class="hs-identifier hs-var">fun</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791651"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791653"><span class="hs-identifier hs-var">arg</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-237"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span id="local-6989586621681791654"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791654"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Tick"><span class="hs-identifier hs-type">Tick</span></a></span><span> </span><span id="local-6989586621681791656"><span class="annot"><span class="annottext">CoreTickish
+</span><a href="#local-6989586621681791656"><span class="hs-identifier hs-var">tickish</span></a></span></span><span> </span><span id="local-6989586621681791657"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791657"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreTickish -&gt; Expr Id -&gt; Expr Id
+forall b. CoreTickish -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Tick"><span class="hs-identifier hs-var">Tick</span></a></span><span> </span><span class="annot"><span class="annottext">CoreTickish
+</span><a href="#local-6989586621681791656"><span class="hs-identifier hs-var">tickish</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791654"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791657"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-238"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span id="local-6989586621681791658"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791658"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Cast"><span class="hs-identifier hs-type">Cast</span></a></span><span> </span><span id="local-6989586621681791660"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791660"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681791661"><span class="annot"><span class="annottext">Coercion
+</span><a href="#local-6989586621681791661"><span class="hs-identifier hs-var">co</span></a></span></span><span class="hs-special">)</span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Expr Id -&gt; Coercion -&gt; Expr Id
+forall b. Expr b -&gt; Coercion -&gt; Expr b
+</span><a href="GHC.Core.html#Cast"><span class="hs-identifier hs-var">Cast</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791658"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791660"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Coercion
+</span><a href="#local-6989586621681791661"><span class="hs-identifier hs-var">co</span></a></span><span>
+</span><span id="line-239"></span><span>
+</span><span id="line-240"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span id="local-6989586621681791662"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791662"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Lam"><span class="hs-identifier hs-type">Lam</span></a></span><span> </span><span id="local-6989586621681791664"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791664"><span class="hs-identifier hs-var">binder</span></a></span></span><span> </span><span id="local-6989586621681791665"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791665"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-241"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Id -&gt; Expr Id -&gt; Expr Id
+forall b. b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Lam"><span class="hs-identifier hs-var">Lam</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791664"><span class="hs-identifier hs-var">binder</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; [Id] -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#addBinders"><span class="hs-identifier hs-var">addBinders</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791662"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791664"><span class="hs-identifier hs-var">binder</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791665"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-242"></span><span>
+</span><span id="line-243"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span id="local-6989586621681791666"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791666"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621681791667"><span class="annot"><span class="annottext">CoreBind
+</span><a href="#local-6989586621681791667"><span class="hs-identifier hs-var">bind</span></a></span></span><span> </span><span id="local-6989586621681791668"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791668"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-244"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreBind -&gt; Expr Id -&gt; Expr Id
+forall b. Bind b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">CoreBind
+</span><a href="#local-6989586621681791669"><span class="hs-identifier hs-var">bind'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791670"><span class="hs-identifier hs-var">env_body</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791668"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-245"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-246"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621681791670"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791670"><span class="hs-identifier hs-var">env_body</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681791669"><span class="annot"><span class="annottext">CoreBind
+</span><a href="#local-6989586621681791669"><span class="hs-identifier hs-var">bind'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; CoreBind -&gt; (LibCaseEnv, CoreBind)
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCaseBind"><span class="hs-identifier hs-var">libCaseBind</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791666"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">CoreBind
+</span><a href="#local-6989586621681791667"><span class="hs-identifier hs-var">bind</span></a></span><span>
+</span><span id="line-247"></span><span>
+</span><span id="line-248"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span id="local-6989586621681791671"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791671"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Case"><span class="hs-identifier hs-type">Case</span></a></span><span> </span><span id="local-6989586621681791673"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791673"><span class="hs-identifier hs-var">scrut</span></a></span></span><span> </span><span id="local-6989586621681791674"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791674"><span class="hs-identifier hs-var">bndr</span></a></span></span><span> </span><span id="local-6989586621681791675"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681791675"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span id="local-6989586621681791676"><span class="annot"><span class="annottext">[Alt Id]
+</span><a href="#local-6989586621681791676"><span class="hs-identifier hs-var">alts</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-249"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Expr Id -&gt; Id -&gt; Type -&gt; [Alt Id] -&gt; Expr Id
+forall b. Expr b -&gt; b -&gt; Type -&gt; [Alt b] -&gt; Expr b
+</span><a href="GHC.Core.html#Case"><span class="hs-identifier hs-var">Case</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791671"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791673"><span class="hs-identifier hs-var">scrut</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791674"><span class="hs-identifier hs-var">bndr</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681791675"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Alt Id -&gt; Alt Id) -&gt; [Alt Id] -&gt; [Alt Id]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Alt Id -&gt; Alt Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCaseAlt"><span class="hs-identifier hs-var">libCaseAlt</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791678"><span class="hs-identifier hs-var">env_alts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Alt Id]
+</span><a href="#local-6989586621681791676"><span class="hs-identifier hs-var">alts</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-250"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-251"></span><span>    </span><span id="local-6989586621681791678"><span class="annot"><span class="annottext">env_alts :: LibCaseEnv
+</span><a href="#local-6989586621681791678"><span class="hs-identifier hs-var hs-var">env_alts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; [Id] -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#addBinders"><span class="hs-identifier hs-var">addBinders</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Expr Id -&gt; LibCaseEnv
+</span><a href="#local-6989586621681791679"><span class="hs-identifier hs-var">mk_alt_env</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791673"><span class="hs-identifier hs-var">scrut</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791674"><span class="hs-identifier hs-var">bndr</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-252"></span><span>    </span><span id="local-6989586621681791679"><span class="annot"><span class="annottext">mk_alt_env :: Expr Id -&gt; LibCaseEnv
+</span><a href="#local-6989586621681791679"><span class="hs-identifier hs-var hs-var">mk_alt_env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621681791680"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791680"><span class="hs-identifier hs-var">scrut_var</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Id -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#addScrutedVar"><span class="hs-identifier hs-var">addScrutedVar</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791671"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791680"><span class="hs-identifier hs-var">scrut_var</span></a></span><span>
+</span><span id="line-253"></span><span>    </span><span class="annot"><a href="#local-6989586621681791679"><span class="hs-identifier hs-var">mk_alt_env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Cast"><span class="hs-identifier hs-type">Cast</span></a></span><span> </span><span id="local-6989586621681791682"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791682"><span class="hs-identifier hs-var">scrut</span></a></span></span><span> </span><span class="annot"><span class="annottext">Coercion
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Expr Id -&gt; LibCaseEnv
+</span><a href="#local-6989586621681791679"><span class="hs-identifier hs-var">mk_alt_env</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791682"><span class="hs-identifier hs-var">scrut</span></a></span><span>       </span><span class="hs-comment">-- Note [Scrutinee with cast]</span><span>
+</span><span id="line-254"></span><span>    </span><span class="annot"><a href="#local-6989586621681791679"><span class="hs-identifier hs-var">mk_alt_env</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><span class="hs-identifier">_</span></span><span>               </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791671"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-255"></span><span>
+</span><span id="line-256"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCaseAlt"><span class="hs-identifier hs-type">libCaseAlt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#Alt"><span class="hs-identifier hs-type">Alt</span></a></span><span> </span><span class="annot"><a href="GHC.Core.html#CoreBndr"><span class="hs-identifier hs-type">CoreBndr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#Alt"><span class="hs-identifier hs-type">Alt</span></a></span><span> </span><span class="annot"><a href="GHC.Core.html#CoreBndr"><span class="hs-identifier hs-type">CoreBndr</span></a></span><span>
+</span><span id="line-257"></span><span id="libCaseAlt"><span class="annot"><span class="annottext">libCaseAlt :: LibCaseEnv -&gt; Alt Id -&gt; Alt Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCaseAlt"><span class="hs-identifier hs-var hs-var">libCaseAlt</span></a></span></span><span> </span><span id="local-6989586621681791684"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791684"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Alt"><span class="hs-identifier hs-type">Alt</span></a></span><span> </span><span id="local-6989586621681791686"><span class="annot"><span class="annottext">AltCon
+</span><a href="#local-6989586621681791686"><span class="hs-identifier hs-var">con</span></a></span></span><span> </span><span id="local-6989586621681791687"><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681791687"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span id="local-6989586621681791688"><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791688"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AltCon -&gt; [Id] -&gt; Expr Id -&gt; Alt Id
+forall b. AltCon -&gt; [b] -&gt; Expr b -&gt; Alt b
+</span><a href="GHC.Core.html#Alt"><span class="hs-identifier hs-var">Alt</span></a></span><span> </span><span class="annot"><span class="annottext">AltCon
+</span><a href="#local-6989586621681791686"><span class="hs-identifier hs-var">con</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681791687"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; [Id] -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#addBinders"><span class="hs-identifier hs-var">addBinders</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791684"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681791687"><span class="hs-identifier hs-var">args</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791688"><span class="hs-identifier hs-var">rhs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-258"></span><span>
+</span><span id="line-259"></span><span class="hs-comment">{-
+Ids
+~~~
+
+To unfold, we can't just wrap the id itself in its binding if it's a join point:
+
+  jump j a b c  =&gt;  (joinrec j x y z = ... in jump j) a b c -- wrong!!!
+
+Every jump must provide all arguments, so we have to be careful to wrap the
+whole jump instead:
+
+  jump j a b c  =&gt;  joinrec j x y z = ... in jump j a b c -- right
+
+-}</span><span>
+</span><span id="line-273"></span><span>
+</span><span id="line-274"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#libCaseApp"><span class="hs-identifier hs-type">libCaseApp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span>
+</span><span id="line-275"></span><span id="libCaseApp"><span class="annot"><span class="annottext">libCaseApp :: LibCaseEnv -&gt; Id -&gt; [Expr Id] -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCaseApp"><span class="hs-identifier hs-var hs-var">libCaseApp</span></a></span></span><span> </span><span id="local-6989586621681791689"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791689"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span id="local-6989586621681791690"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791690"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621681791691"><span class="annot"><span class="annottext">[Expr Id]
+</span><a href="#local-6989586621681791691"><span class="hs-identifier hs-var">args</span></a></span></span><span>
+</span><span id="line-276"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681791692"><span class="annot"><span class="annottext">CoreBind
+</span><a href="#local-6989586621681791692"><span class="hs-identifier hs-var">the_bind</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Id -&gt; Maybe CoreBind
+</span><a href="GHC.Core.Opt.LiberateCase.html#lookupRecId"><span class="hs-identifier hs-var">lookupRecId</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791689"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791690"><span class="hs-identifier hs-var">v</span></a></span><span>  </span><span class="hs-comment">-- It's a use of a recursive thing</span><span>
+</span><span id="line-277"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Id] -&gt; Bool
+forall (f :: * -&gt; *) a. Foldable f =&gt; f a -&gt; Bool
+</span><a href="GHC.Utils.Misc.html#notNull"><span class="hs-identifier hs-var">notNull</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681791694"><span class="hs-identifier hs-var">free_scruts</span></a></span><span>                 </span><span class="hs-comment">-- with free vars scrutinised in RHS</span><span>
+</span><span id="line-278"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreBind -&gt; Expr Id -&gt; Expr Id
+forall b. Bind b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">CoreBind
+</span><a href="#local-6989586621681791692"><span class="hs-identifier hs-var">the_bind</span></a></span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791695"><span class="hs-identifier hs-var">expr'</span></a></span><span>
+</span><span id="line-279"></span><span>
+</span><span id="line-280"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-281"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Expr Id
+</span><a href="#local-6989586621681791695"><span class="hs-identifier hs-var">expr'</span></a></span><span>
+</span><span id="line-282"></span><span>
+</span><span id="line-283"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-284"></span><span>    </span><span id="local-6989586621681791696"><span class="annot"><span class="annottext">rec_id_level :: LibCaseLevel
+</span><a href="#local-6989586621681791696"><span class="hs-identifier hs-var hs-var">rec_id_level</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Id -&gt; LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lookupLevel"><span class="hs-identifier hs-var">lookupLevel</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791689"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791690"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-285"></span><span>    </span><span id="local-6989586621681791694"><span class="annot"><span class="annottext">free_scruts :: [Id]
+</span><a href="#local-6989586621681791694"><span class="hs-identifier hs-var hs-var">free_scruts</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; LibCaseLevel -&gt; [Id]
+</span><a href="GHC.Core.Opt.LiberateCase.html#freeScruts"><span class="hs-identifier hs-var">freeScruts</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791689"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791696"><span class="hs-identifier hs-var">rec_id_level</span></a></span><span>
+</span><span id="line-286"></span><span>    </span><span id="local-6989586621681791695"><span class="annot"><span class="annottext">expr' :: Expr Id
+</span><a href="#local-6989586621681791695"><span class="hs-identifier hs-var hs-var">expr'</span></a></span></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Expr Id -&gt; [Expr Id] -&gt; Expr Id
+forall b. Expr b -&gt; [Expr b] -&gt; Expr b
+</span><a href="GHC.Core.html#mkApps"><span class="hs-identifier hs-var">mkApps</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; Expr Id
+forall b. Id -&gt; Expr b
+</span><a href="GHC.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791690"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Expr Id -&gt; Expr Id) -&gt; [Expr Id] -&gt; [Expr Id]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; Expr Id -&gt; Expr Id
+</span><a href="GHC.Core.Opt.LiberateCase.html#libCase"><span class="hs-identifier hs-var">libCase</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791689"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Expr Id]
+</span><a href="#local-6989586621681791691"><span class="hs-identifier hs-var">args</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-287"></span><span>
+</span><span id="line-288"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#freeScruts"><span class="hs-identifier hs-type">freeScruts</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span>
+</span><span id="line-289"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseLevel"><span class="hs-identifier hs-type">LibCaseLevel</span></a></span><span>      </span><span class="hs-comment">-- Level of the recursive Id</span><span>
+</span><span id="line-290"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span class="hs-special">]</span><span>              </span><span class="hs-comment">-- Ids that are scrutinised between the binding</span><span>
+</span><span id="line-291"></span><span>                                </span><span class="hs-comment">-- of the recursive Id and here</span><span>
+</span><span id="line-292"></span><span id="freeScruts"><span class="annot"><span class="annottext">freeScruts :: LibCaseEnv -&gt; LibCaseLevel -&gt; [Id]
+</span><a href="GHC.Core.Opt.LiberateCase.html#freeScruts"><span class="hs-identifier hs-var hs-var">freeScruts</span></a></span></span><span> </span><span id="local-6989586621681791700"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791700"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span id="local-6989586621681791701"><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791701"><span class="hs-identifier hs-var">rec_bind_lvl</span></a></span></span><span>
+</span><span id="line-293"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791702"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681791702"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791702"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681791703"><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791703"><span class="hs-identifier hs-var">scrut_bind_lvl</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681791704"><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791704"><span class="hs-identifier hs-var">scrut_at_lvl</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; [(Id, LibCaseLevel, LibCaseLevel)]
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_scruts"><span class="hs-identifier hs-var">lc_scruts</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791700"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-294"></span><span>       </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791703"><span class="hs-identifier hs-var">scrut_bind_lvl</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel -&gt; LibCaseLevel -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791701"><span class="hs-identifier hs-var">rec_bind_lvl</span></a></span><span>
+</span><span id="line-295"></span><span>       </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791704"><span class="hs-identifier hs-var">scrut_at_lvl</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel -&gt; LibCaseLevel -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791701"><span class="hs-identifier hs-var">rec_bind_lvl</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-296"></span><span>        </span><span class="hs-comment">-- Note [When to specialise]</span><span>
+</span><span id="line-297"></span><span>        </span><span class="hs-comment">-- Note [Avoiding fruitless liberate-case]</span><span>
+</span><span id="line-298"></span><span>
+</span><span id="line-299"></span><span class="hs-comment">{-
+Note [When to specialise]
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Consider
+  f = \x. letrec g = \y. case x of
+                           True  -&gt; ... (f a) ...
+                           False -&gt; ... (g b) ...
+
+We get the following levels
+          f  0
+          x  1
+          g  1
+          y  2
+
+Then 'x' is being scrutinised at a deeper level than its binding, so
+it's added to lc_sruts:  [(x,1)]
+
+We do *not* want to specialise the call to 'f', because 'x' is not free
+in 'f'.  So here the bind-level of 'x' (=1) is not &lt;= the bind-level of 'f' (=0).
+
+We *do* want to specialise the call to 'g', because 'x' is free in g.
+Here the bind-level of 'x' (=1) is &lt;= the bind-level of 'g' (=1).
+
+Note [Avoiding fruitless liberate-case]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Consider also:
+  f = \x. case top_lvl_thing of
+                I# _ -&gt; let g = \y. ... g ...
+                        in ...
+
+Here, top_lvl_thing is scrutinised at a level (1) deeper than its
+binding site (0).  Nevertheless, we do NOT want to specialise the call
+to 'g' because all the structure in its free variables is already
+visible at the definition site for g.  Hence, when considering specialising
+an occurrence of 'g', we want to check that there's a scruted-var v st
+
+   a) v's binding site is *outside* g
+   b) v's scrutinisation site is *inside* g
+
+
+************************************************************************
+*                                                                      *
+        Utility functions
+*                                                                      *
+************************************************************************
+-}</span><span>
+</span><span id="line-345"></span><span>
+</span><span id="line-346"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#addBinders"><span class="hs-identifier hs-type">addBinders</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Core.html#CoreBndr"><span class="hs-identifier hs-type">CoreBndr</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span>
+</span><span id="line-347"></span><span id="addBinders"><span class="annot"><span class="annottext">addBinders :: LibCaseEnv -&gt; [Id] -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#addBinders"><span class="hs-identifier hs-var hs-var">addBinders</span></a></span></span><span> </span><span id="local-6989586621681791706"><span class="annot"><span class="annottext">env :: LibCaseEnv
+</span><a href="#local-6989586621681791706"><span class="hs-identifier hs-var">env</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">lc_lvl :: LibCaseEnv -&gt; LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl"><span class="hs-identifier hs-var">lc_lvl</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621681791707"><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791707"><span class="hs-identifier hs-var">lvl</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">lc_lvl_env :: LibCaseEnv -&gt; IdEnv LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl_env"><span class="hs-identifier hs-var">lc_lvl_env</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621681791708"><span class="annot"><span class="annottext">IdEnv LibCaseLevel
+</span><a href="#local-6989586621681791708"><span class="hs-identifier hs-var">lvl_env</span></a></span></span><span> </span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span id="local-6989586621681791709"><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681791709"><span class="hs-identifier hs-var">binders</span></a></span></span><span>
+</span><span id="line-348"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791706"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl_env"><span class="hs-identifier hs-var">lc_lvl_env</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621681791710"><span class="hs-identifier hs-type">lvl_env'</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-349"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-350"></span><span>    </span><span id="local-6989586621681791710"><span class="annot"><span class="annottext">lvl_env' :: IdEnv LibCaseLevel
+</span><a href="#local-6989586621681791710"><span class="hs-identifier hs-var hs-var">lvl_env'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IdEnv LibCaseLevel -&gt; [(Id, LibCaseLevel)] -&gt; IdEnv LibCaseLevel
+forall a. VarEnv a -&gt; [(Id, a)] -&gt; VarEnv a
+</span><a href="GHC.Types.Var.Env.html#extendVarEnvList"><span class="hs-identifier hs-var">extendVarEnvList</span></a></span><span> </span><span class="annot"><span class="annottext">IdEnv LibCaseLevel
+</span><a href="#local-6989586621681791708"><span class="hs-identifier hs-var">lvl_env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681791709"><span class="hs-identifier hs-var">binders</span></a></span><span> </span><span class="annot"><span class="annottext">[Id] -&gt; [LibCaseLevel] -&gt; [(Id, LibCaseLevel)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#zip/GHC.List.html#zip"><span class="hs-operator hs-var">`zip`</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel -&gt; [LibCaseLevel]
+forall a. a -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#repeat/GHC.List.html#repeat"><span class="hs-identifier hs-var">repeat</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791707"><span class="hs-identifier hs-var">lvl</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-351"></span><span>
+</span><span id="line-352"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#addRecBinds"><span class="hs-identifier hs-type">addRecBinds</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span>
+</span><span id="line-353"></span><span id="addRecBinds"><span class="annot"><span class="annottext">addRecBinds :: LibCaseEnv -&gt; [(Id, Expr Id)] -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#addRecBinds"><span class="hs-identifier hs-var hs-var">addRecBinds</span></a></span></span><span> </span><span id="local-6989586621681791713"><span class="annot"><span class="annottext">env :: LibCaseEnv
+</span><a href="#local-6989586621681791713"><span class="hs-identifier hs-var">env</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">lc_lvl :: LibCaseEnv -&gt; LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl"><span class="hs-identifier hs-var">lc_lvl</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621681791714"><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791714"><span class="hs-identifier hs-var">lvl</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">lc_lvl_env :: LibCaseEnv -&gt; IdEnv LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl_env"><span class="hs-identifier hs-var">lc_lvl_env</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621681791715"><span class="annot"><span class="annottext">IdEnv LibCaseLevel
+</span><a href="#local-6989586621681791715"><span class="hs-identifier hs-var">lvl_env</span></a></span></span><span class="hs-special">,</span><span>
+</span><span id="line-354"></span><span>                             </span><span class="annot"><span class="annottext">lc_rec_env :: LibCaseEnv -&gt; IdEnv CoreBind
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_rec_env"><span class="hs-identifier hs-var">lc_rec_env</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621681791716"><span class="annot"><span class="annottext">IdEnv CoreBind
+</span><a href="#local-6989586621681791716"><span class="hs-identifier hs-var">rec_env</span></a></span></span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span id="local-6989586621681791717"><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791717"><span class="hs-identifier hs-var">pairs</span></a></span></span><span>
+</span><span id="line-355"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791713"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl"><span class="hs-identifier hs-var">lc_lvl</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621681791718"><span class="hs-identifier hs-type">lvl'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl_env"><span class="hs-identifier hs-var">lc_lvl_env</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621681791719"><span class="hs-identifier hs-type">lvl_env'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#lc_rec_env"><span class="hs-identifier hs-var">lc_rec_env</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621681791720"><span class="hs-identifier hs-type">rec_env'</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-356"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-357"></span><span>    </span><span id="local-6989586621681791718"><span class="annot"><span class="annottext">lvl' :: LibCaseLevel
+</span><a href="#local-6989586621681791718"><span class="hs-identifier hs-var hs-var">lvl'</span></a></span></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791714"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel -&gt; LibCaseLevel -&gt; LibCaseLevel
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-358"></span><span>    </span><span id="local-6989586621681791719"><span class="annot"><span class="annottext">lvl_env' :: IdEnv LibCaseLevel
+</span><a href="#local-6989586621681791719"><span class="hs-identifier hs-var hs-var">lvl_env'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IdEnv LibCaseLevel -&gt; [(Id, LibCaseLevel)] -&gt; IdEnv LibCaseLevel
+forall a. VarEnv a -&gt; [(Id, a)] -&gt; VarEnv a
+</span><a href="GHC.Types.Var.Env.html#extendVarEnvList"><span class="hs-identifier hs-var">extendVarEnvList</span></a></span><span> </span><span class="annot"><span class="annottext">IdEnv LibCaseLevel
+</span><a href="#local-6989586621681791715"><span class="hs-identifier hs-var">lvl_env</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791722"><span class="hs-identifier hs-var">binder</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791714"><span class="hs-identifier hs-var">lvl</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681791722"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791722"><span class="hs-identifier hs-var">binder</span></a></span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Expr Id
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791717"><span class="hs-identifier hs-var">pairs</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-359"></span><span>    </span><span id="local-6989586621681791720"><span class="annot"><span class="annottext">rec_env' :: IdEnv CoreBind
+</span><a href="#local-6989586621681791720"><span class="hs-identifier hs-var hs-var">rec_env'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IdEnv CoreBind -&gt; [(Id, CoreBind)] -&gt; IdEnv CoreBind
+forall a. VarEnv a -&gt; [(Id, a)] -&gt; VarEnv a
+</span><a href="GHC.Types.Var.Env.html#extendVarEnvList"><span class="hs-identifier hs-var">extendVarEnvList</span></a></span><span> </span><span class="annot"><span class="annottext">IdEnv CoreBind
+</span><a href="#local-6989586621681791716"><span class="hs-identifier hs-var">rec_env</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791723"><span class="hs-identifier hs-var">binder</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)] -&gt; CoreBind
+forall b. [(b, Expr b)] -&gt; Bind b
+</span><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-var">Rec</span></a></span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791717"><span class="hs-identifier hs-var">pairs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681791723"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791723"><span class="hs-identifier hs-var">binder</span></a></span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Expr Id
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(Id, Expr Id)]
+</span><a href="#local-6989586621681791717"><span class="hs-identifier hs-var">pairs</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-360"></span><span>
+</span><span id="line-361"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#addScrutedVar"><span class="hs-identifier hs-type">addScrutedVar</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span>
+</span><span id="line-362"></span><span>              </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span>             </span><span class="hs-comment">-- This Id is being scrutinised by a case expression</span><span>
+</span><span id="line-363"></span><span>              </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span>
+</span><span id="line-364"></span><span>
+</span><span id="line-365"></span><span id="addScrutedVar"><span class="annot"><span class="annottext">addScrutedVar :: LibCaseEnv -&gt; Id -&gt; LibCaseEnv
+</span><a href="GHC.Core.Opt.LiberateCase.html#addScrutedVar"><span class="hs-identifier hs-var hs-var">addScrutedVar</span></a></span></span><span> </span><span id="local-6989586621681791724"><span class="annot"><span class="annottext">env :: LibCaseEnv
+</span><a href="#local-6989586621681791724"><span class="hs-identifier hs-var">env</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">lc_lvl :: LibCaseEnv -&gt; LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl"><span class="hs-identifier hs-var">lc_lvl</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621681791725"><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791725"><span class="hs-identifier hs-var">lvl</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">lc_lvl_env :: LibCaseEnv -&gt; IdEnv LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl_env"><span class="hs-identifier hs-var">lc_lvl_env</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621681791726"><span class="annot"><span class="annottext">IdEnv LibCaseLevel
+</span><a href="#local-6989586621681791726"><span class="hs-identifier hs-var">lvl_env</span></a></span></span><span class="hs-special">,</span><span>
+</span><span id="line-366"></span><span>                                </span><span class="annot"><span class="annottext">lc_scruts :: LibCaseEnv -&gt; [(Id, LibCaseLevel, LibCaseLevel)]
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_scruts"><span class="hs-identifier hs-var">lc_scruts</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621681791727"><span class="annot"><span class="annottext">[(Id, LibCaseLevel, LibCaseLevel)]
+</span><a href="#local-6989586621681791727"><span class="hs-identifier hs-var">scruts</span></a></span></span><span> </span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span id="local-6989586621681791728"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791728"><span class="hs-identifier hs-var">scrut_var</span></a></span></span><span>
+</span><span id="line-367"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791729"><span class="hs-identifier hs-var">bind_lvl</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel -&gt; LibCaseLevel -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791725"><span class="hs-identifier hs-var">lvl</span></a></span><span>
+</span><span id="line-368"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791724"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#lc_scruts"><span class="hs-identifier hs-var">lc_scruts</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621681791731"><span class="hs-identifier hs-type">scruts'</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-369"></span><span>        </span><span class="hs-comment">-- Add to scruts iff the scrut_var is being scrutinised at</span><span>
+</span><span id="line-370"></span><span>        </span><span class="hs-comment">-- a deeper level than its defn</span><span>
+</span><span id="line-371"></span><span>
+</span><span id="line-372"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791724"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-373"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-374"></span><span>    </span><span id="local-6989586621681791731"><span class="annot"><span class="annottext">scruts' :: [(Id, LibCaseLevel, LibCaseLevel)]
+</span><a href="#local-6989586621681791731"><span class="hs-identifier hs-var hs-var">scruts'</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791728"><span class="hs-identifier hs-var">scrut_var</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791729"><span class="hs-identifier hs-var">bind_lvl</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791725"><span class="hs-identifier hs-var">lvl</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Id, LibCaseLevel, LibCaseLevel)
+-&gt; [(Id, LibCaseLevel, LibCaseLevel)]
+-&gt; [(Id, LibCaseLevel, LibCaseLevel)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[(Id, LibCaseLevel, LibCaseLevel)]
+</span><a href="#local-6989586621681791727"><span class="hs-identifier hs-var">scruts</span></a></span><span>
+</span><span id="line-375"></span><span>    </span><span id="local-6989586621681791729"><span class="annot"><span class="annottext">bind_lvl :: LibCaseLevel
+</span><a href="#local-6989586621681791729"><span class="hs-identifier hs-var hs-var">bind_lvl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">IdEnv LibCaseLevel -&gt; Id -&gt; Maybe LibCaseLevel
+forall a. VarEnv a -&gt; Id -&gt; Maybe a
+</span><a href="GHC.Types.Var.Env.html#lookupVarEnv"><span class="hs-identifier hs-var">lookupVarEnv</span></a></span><span> </span><span class="annot"><span class="annottext">IdEnv LibCaseLevel
+</span><a href="#local-6989586621681791726"><span class="hs-identifier hs-var">lvl_env</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791728"><span class="hs-identifier hs-var">scrut_var</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-376"></span><span>                 </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681791733"><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791733"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791733"><span class="hs-identifier hs-var">lvl</span></a></span><span>
+</span><span id="line-377"></span><span>                 </span><span class="annot"><span class="annottext">Maybe LibCaseLevel
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#topLevel"><span class="hs-identifier hs-var">topLevel</span></a></span><span>
+</span><span id="line-378"></span><span>
+</span><span id="line-379"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#lookupRecId"><span class="hs-identifier hs-type">lookupRecId</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="GHC.Core.html#CoreBind"><span class="hs-identifier hs-type">CoreBind</span></a></span><span>
+</span><span id="line-380"></span><span id="lookupRecId"><span class="annot"><span class="annottext">lookupRecId :: LibCaseEnv -&gt; Id -&gt; Maybe CoreBind
+</span><a href="GHC.Core.Opt.LiberateCase.html#lookupRecId"><span class="hs-identifier hs-var hs-var">lookupRecId</span></a></span></span><span> </span><span id="local-6989586621681791735"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791735"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span id="local-6989586621681791736"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791736"><span class="hs-identifier hs-var">id</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IdEnv CoreBind -&gt; Id -&gt; Maybe CoreBind
+forall a. VarEnv a -&gt; Id -&gt; Maybe a
+</span><a href="GHC.Types.Var.Env.html#lookupVarEnv"><span class="hs-identifier hs-var">lookupVarEnv</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; IdEnv CoreBind
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_rec_env"><span class="hs-identifier hs-var">lc_rec_env</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791735"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791736"><span class="hs-identifier hs-var">id</span></a></span><span>
+</span><span id="line-381"></span><span>
+</span><span id="line-382"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#lookupLevel"><span class="hs-identifier hs-type">lookupLevel</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseLevel"><span class="hs-identifier hs-type">LibCaseLevel</span></a></span><span>
+</span><span id="line-383"></span><span id="lookupLevel"><span class="annot"><span class="annottext">lookupLevel :: LibCaseEnv -&gt; Id -&gt; LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lookupLevel"><span class="hs-identifier hs-var hs-var">lookupLevel</span></a></span></span><span> </span><span id="local-6989586621681791737"><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791737"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span id="local-6989586621681791738"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791738"><span class="hs-identifier hs-var">id</span></a></span></span><span>
+</span><span id="line-384"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">IdEnv LibCaseLevel -&gt; Id -&gt; Maybe LibCaseLevel
+forall a. VarEnv a -&gt; Id -&gt; Maybe a
+</span><a href="GHC.Types.Var.Env.html#lookupVarEnv"><span class="hs-identifier hs-var">lookupVarEnv</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LibCaseEnv -&gt; IdEnv LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl_env"><span class="hs-identifier hs-var">lc_lvl_env</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv
+</span><a href="#local-6989586621681791737"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681791738"><span class="hs-identifier hs-var">id</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-385"></span><span>      </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681791739"><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791739"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="#local-6989586621681791739"><span class="hs-identifier hs-var">lvl</span></a></span><span>
+</span><span id="line-386"></span><span>      </span><span class="annot"><span class="annottext">Maybe LibCaseLevel
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#topLevel"><span class="hs-identifier hs-var">topLevel</span></a></span><span>
+</span><span id="line-387"></span><span>
+</span><span id="line-388"></span><span class="hs-comment">{-
+************************************************************************
+*                                                                      *
+         Options
+*                                                                      *
+************************************************************************
+-}</span><span>
+</span><span id="line-395"></span><span>
+</span><span id="line-396"></span><span class="annot"><span class="hs-comment">-- | Options for the liberate case pass.</span></span><span>
+</span><span id="line-397"></span><span class="hs-keyword">data</span><span> </span><span id="LibCaseOpts"><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseOpts"><span class="hs-identifier hs-var">LibCaseOpts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="LibCaseOpts"><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseOpts"><span class="hs-identifier hs-var">LibCaseOpts</span></a></span></span><span>
+</span><span id="line-398"></span><span>  </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="hs-comment">-- | Bomb-out size for deciding if potential liberatees are too big.</span></span><span>
+</span><span id="line-399"></span><span>    </span><span id="lco_threshold"><span class="annot"><span class="annottext">LibCaseOpts -&gt; Maybe LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lco_threshold"><span class="hs-identifier hs-var hs-var">lco_threshold</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>
+</span><span id="line-400"></span><span>  </span><span class="annot"><span class="hs-comment">-- | Unfolding options</span></span><span>
+</span><span id="line-401"></span><span>  </span><span class="hs-special">,</span><span> </span><span id="lco_unfolding_opts"><span class="annot"><span class="annottext">LibCaseOpts -&gt; UnfoldingOpts
+</span><a href="GHC.Core.Opt.LiberateCase.html#lco_unfolding_opts"><span class="hs-identifier hs-var hs-var">lco_unfolding_opts</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="GHC.Core.Unfold.html#UnfoldingOpts"><span class="hs-identifier hs-type">UnfoldingOpts</span></a></span><span>
+</span><span id="line-402"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-403"></span><span>
+</span><span id="line-404"></span><span class="hs-comment">{-
+************************************************************************
+*                                                                      *
+         The environment
+*                                                                      *
+************************************************************************
+-}</span><span>
+</span><span id="line-411"></span><span>
+</span><span id="line-412"></span><span class="hs-keyword">type</span><span> </span><span id="LibCaseLevel"><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseLevel"><span class="hs-identifier hs-var">LibCaseLevel</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-413"></span><span>
+</span><span id="line-414"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#topLevel"><span class="hs-identifier hs-type">topLevel</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseLevel"><span class="hs-identifier hs-type">LibCaseLevel</span></a></span><span>
+</span><span id="line-415"></span><span id="topLevel"><span class="annot"><span class="annottext">topLevel :: LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#topLevel"><span class="hs-identifier hs-var hs-var">topLevel</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseLevel
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-416"></span><span>
+</span><span id="line-417"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#lc_threshold"><span class="hs-identifier hs-type">lc_threshold</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-418"></span><span id="lc_threshold"><span class="annot"><span class="annottext">lc_threshold :: LibCaseEnv -&gt; Maybe LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_threshold"><span class="hs-identifier hs-var hs-var">lc_threshold</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseOpts -&gt; Maybe LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lco_threshold"><span class="hs-identifier hs-var">lco_threshold</span></a></span><span> </span><span class="annot"><span class="annottext">(LibCaseOpts -&gt; Maybe LibCaseLevel)
+-&gt; (LibCaseEnv -&gt; LibCaseOpts) -&gt; LibCaseEnv -&gt; Maybe LibCaseLevel
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; LibCaseOpts
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_opts"><span class="hs-identifier hs-var">lc_opts</span></a></span><span>
+</span><span id="line-419"></span><span>
+</span><span id="line-420"></span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#lc_uf_opts"><span class="hs-identifier hs-type">lc_uf_opts</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-type">LibCaseEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Unfold.html#UnfoldingOpts"><span class="hs-identifier hs-type">UnfoldingOpts</span></a></span><span>
+</span><span id="line-421"></span><span id="lc_uf_opts"><span class="annot"><span class="annottext">lc_uf_opts :: LibCaseEnv -&gt; UnfoldingOpts
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_uf_opts"><span class="hs-identifier hs-var hs-var">lc_uf_opts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LibCaseOpts -&gt; UnfoldingOpts
+</span><a href="GHC.Core.Opt.LiberateCase.html#lco_unfolding_opts"><span class="hs-identifier hs-var">lco_unfolding_opts</span></a></span><span> </span><span class="annot"><span class="annottext">(LibCaseOpts -&gt; UnfoldingOpts)
+-&gt; (LibCaseEnv -&gt; LibCaseOpts) -&gt; LibCaseEnv -&gt; UnfoldingOpts
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">LibCaseEnv -&gt; LibCaseOpts
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_opts"><span class="hs-identifier hs-var">lc_opts</span></a></span><span>
+</span><span id="line-422"></span><span>
+</span><span id="line-423"></span><span class="hs-keyword">data</span><span> </span><span id="LibCaseEnv"><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-var">LibCaseEnv</span></a></span></span><span>
+</span><span id="line-424"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="LibCaseEnv"><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseEnv"><span class="hs-identifier hs-var">LibCaseEnv</span></a></span></span><span> </span><span class="hs-special">{</span><span>
+</span><span id="line-425"></span><span>        </span><span id="lc_opts"><span class="annot"><span class="annottext">LibCaseEnv -&gt; LibCaseOpts
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_opts"><span class="hs-identifier hs-var hs-var">lc_opts</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseOpts"><span class="hs-identifier hs-type">LibCaseOpts</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-426"></span><span>                </span><span class="annot"><span class="hs-comment">-- ^ liberate case options</span></span><span>
+</span><span id="line-427"></span><span>
+</span><span id="line-428"></span><span>        </span><span id="lc_lvl"><span class="annot"><span class="annottext">LibCaseEnv -&gt; LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl"><span class="hs-identifier hs-var hs-var">lc_lvl</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseLevel"><span class="hs-identifier hs-type">LibCaseLevel</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-comment">-- ^ Current level</span><span>
+</span><span id="line-429"></span><span>                </span><span class="hs-comment">-- The level is incremented when (and only when) going</span><span>
+</span><span id="line-430"></span><span>                </span><span class="hs-comment">-- inside the RHS of a (sufficiently small) recursive</span><span>
+</span><span id="line-431"></span><span>                </span><span class="hs-comment">-- function.</span><span>
+</span><span id="line-432"></span><span>
+</span><span id="line-433"></span><span>        </span><span id="lc_lvl_env"><span class="annot"><span class="annottext">LibCaseEnv -&gt; IdEnv LibCaseLevel
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_lvl_env"><span class="hs-identifier hs-var hs-var">lc_lvl_env</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Var.Env.html#IdEnv"><span class="hs-identifier hs-type">IdEnv</span></a></span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseLevel"><span class="hs-identifier hs-type">LibCaseLevel</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-434"></span><span>                </span><span class="hs-comment">-- ^ Binds all non-top-level in-scope Ids (top-level and</span><span>
+</span><span id="line-435"></span><span>                </span><span class="hs-comment">-- imported things have a level of zero)</span><span>
+</span><span id="line-436"></span><span>
+</span><span id="line-437"></span><span>        </span><span id="lc_rec_env"><span class="annot"><span class="annottext">LibCaseEnv -&gt; IdEnv CoreBind
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_rec_env"><span class="hs-identifier hs-var hs-var">lc_rec_env</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Var.Env.html#IdEnv"><span class="hs-identifier hs-type">IdEnv</span></a></span><span> </span><span class="annot"><a href="GHC.Core.html#CoreBind"><span class="hs-identifier hs-type">CoreBind</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-438"></span><span>                </span><span class="hs-comment">-- ^ Binds *only* recursively defined ids, to their own</span><span>
+</span><span id="line-439"></span><span>                </span><span class="hs-comment">-- binding group, and *only* in their own RHSs</span><span>
+</span><span id="line-440"></span><span>
+</span><span id="line-441"></span><span>        </span><span id="lc_scruts"><span class="annot"><span class="annottext">LibCaseEnv -&gt; [(Id, LibCaseLevel, LibCaseLevel)]
+</span><a href="GHC.Core.Opt.LiberateCase.html#lc_scruts"><span class="hs-identifier hs-var hs-var">lc_scruts</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseLevel"><span class="hs-identifier hs-type">LibCaseLevel</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Opt.LiberateCase.html#LibCaseLevel"><span class="hs-identifier hs-type">LibCaseLevel</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-442"></span><span>                </span><span class="hs-comment">-- ^ Each of these Ids was scrutinised by an enclosing</span><span>
+</span><span id="line-443"></span><span>                </span><span class="hs-comment">-- case expression, at a level deeper than its binding</span><span>
+</span><span id="line-444"></span><span>                </span><span class="hs-comment">-- level.</span><span>
+</span><span id="line-445"></span><span>                </span><span class="hs-comment">--</span><span>
+</span><span id="line-446"></span><span>                </span><span class="hs-comment">-- The first LibCaseLevel is the *binding level* of</span><span>
+</span><span id="line-447"></span><span>                </span><span class="hs-comment">--   the scrutinised Id,</span><span>
+</span><span id="line-448"></span><span>                </span><span class="hs-comment">-- The second is the level *at which it was scrutinised*.</span><span>
+</span><span id="line-449"></span><span>                </span><span class="hs-comment">--   (see Note [Avoiding fruitless liberate-case])</span><span>
+</span><span id="line-450"></span><span>                </span><span class="hs-comment">-- The former is a bit redundant, since you could always</span><span>
+</span><span id="line-451"></span><span>                </span><span class="hs-comment">-- look it up in lc_lvl_env, but it's just cached here</span><span>
+</span><span id="line-452"></span><span>                </span><span class="hs-comment">--</span><span>
+</span><span id="line-453"></span><span>                </span><span class="hs-comment">-- The order is insignificant; it's a bag really</span><span>
+</span><span id="line-454"></span><span>                </span><span class="hs-comment">--</span><span>
+</span><span id="line-455"></span><span>                </span><span class="hs-comment">-- There's one element per scrutinisation;</span><span>
+</span><span id="line-456"></span><span>                </span><span class="hs-comment">--    in principle the same Id may appear multiple times,</span><span>
+</span><span id="line-457"></span><span>                </span><span class="hs-comment">--    although that'd be unusual:</span><span>
+</span><span id="line-458"></span><span>                </span><span class="hs-comment">--       case x of { (a,b) -&gt; ....(case x of ...) .. }</span><span>
+</span><span id="line-459"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-460"></span></pre></body></html>

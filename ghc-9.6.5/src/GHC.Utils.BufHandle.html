@@ -1,0 +1,523 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE MagicHash #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-5"></span><span class="hs-comment">--</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Fast write-buffered Handles</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- (c) The University of Glasgow 2005-2006</span><span>
+</span><span id="line-9"></span><span class="hs-comment">--</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- This is a simple abstraction over Handles that offers very fast write</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- buffering, but without the thread safety that Handles provide.  It's used</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- to save time in GHC.Utils.Ppr.printDoc.</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Utils.BufHandle</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-17"></span><span>        </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier">BufHandle</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-18"></span><span>        </span><span class="annot"><a href="GHC.Utils.BufHandle.html#newBufHandle"><span class="hs-identifier">newBufHandle</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>        </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutChar"><span class="hs-identifier">bPutChar</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>        </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutStr"><span class="hs-identifier">bPutStr</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>        </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutFS"><span class="hs-identifier">bPutFS</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>        </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutFZS"><span class="hs-identifier">bPutFZS</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-23"></span><span>        </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutPtrString"><span class="hs-identifier">bPutPtrString</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-24"></span><span>        </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutReplicate"><span class="hs-identifier">bPutReplicate</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>        </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bFlush"><span class="hs-identifier">bFlush</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-26"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.Basic.html"><span class="hs-identifier">GHC.Prelude.Basic</span></a></span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html"><span class="hs-identifier">GHC.Data.FastString</span></a></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Data.FastMutInt.html"><span class="hs-identifier">GHC.Data.FastMutInt</span></a></span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.html#/Control.Monad.html"><span class="hs-identifier">Control.Monad</span></a></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#when/GHC.Base.html#when"><span class="hs-identifier">when</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#/Data.ByteString.html"><span class="hs-identifier">Data.ByteString</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier">ByteString</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Unsafe.html#/Data.ByteString.Unsafe.html"><span class="hs-identifier">Data.ByteString.Unsafe</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BS</span></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Char.html#/Data.Char.html"><span class="hs-identifier">Data.Char</span></a></span><span>        </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#ord/GHC.Base.html#ord"><span class="hs-identifier">ord</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Foreign.html#/Foreign.html"><span class="hs-identifier">Foreign</span></a></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Foreign.C.String.html#/Foreign.C.String.html"><span class="hs-identifier">Foreign.C.String</span></a></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/System.IO.html#/System.IO.html"><span class="hs-identifier">System.IO</span></a></span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- for RULES</span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Exts.html#/GHC.Exts.html"><span class="hs-identifier">GHC.Exts</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unpackCString#</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">unpackNBytes#</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Int</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Ptr.html#/GHC.Ptr.html"><span class="hs-identifier">GHC.Ptr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Ptr.html#Ptr/GHC.Ptr.html#Ptr"><span class="hs-identifier">Ptr</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- -----------------------------------------------------------------------------</span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">data</span><span> </span><span id="BufHandle"><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-var">BufHandle</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="BufHandle"><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-var">BufHandle</span></a></span></span><span> </span><span class="hs-pragma">{-#UNPACK</span><span class="hs-pragma">#-}</span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Ptr.html#Ptr/GHC.Ptr.html#Ptr"><span class="hs-identifier hs-type">Ptr</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Word.html#Word8/GHC.Word.html#Word8"><span class="hs-identifier hs-type">Word8</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span>                           </span><span class="hs-pragma">{-#UNPACK</span><span class="hs-pragma">#-}</span><span class="hs-glyph">!</span><span class="annot"><a href="GHC.Data.FastMutInt.html#FastMutInt"><span class="hs-identifier hs-type">FastMutInt</span></a></span><span>
+</span><span id="line-49"></span><span>                           </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle/GHC.IO.Handle.Types.html#Handle"><span class="hs-identifier hs-type">Handle</span></a></span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#newBufHandle"><span class="hs-identifier hs-type">newBufHandle</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle/GHC.IO.Handle.Types.html#Handle"><span class="hs-identifier hs-type">Handle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span>
+</span><span id="line-52"></span><span id="newBufHandle"><span class="annot"><span class="annottext">newBufHandle :: Handle -&gt; IO BufHandle
+</span><a href="GHC.Utils.BufHandle.html#newBufHandle"><span class="hs-identifier hs-var hs-var">newBufHandle</span></a></span></span><span> </span><span id="local-6989586621681488414"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488414"><span class="hs-identifier hs-var">hdl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>  </span><span id="local-6989586621681488415"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488415"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (Ptr Word8)
+forall a. Int -&gt; IO (Ptr a)
+</span><a href="../../base-4.18.2.1/src/Foreign.Marshal.Alloc.html#mallocBytes/Foreign.Marshal.Alloc.html#mallocBytes"><span class="hs-identifier hs-var">mallocBytes</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span>
+</span><span id="line-54"></span><span>  </span><span id="local-6989586621681488418"><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488418"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO FastMutInt
+</span><a href="GHC.Data.FastMutInt.html#newFastMutInt"><span class="hs-identifier hs-var">newFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-55"></span><span>  </span><span class="annot"><span class="annottext">BufHandle -&gt; IO BufHandle
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; FastMutInt -&gt; Handle -&gt; BufHandle
+</span><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-var">BufHandle</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488415"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488418"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488414"><span class="hs-identifier hs-var">hdl</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span>
+</span><span id="line-57"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-type">buf_size</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-58"></span><span id="buf_size"><span class="annot"><span class="annottext">buf_size :: Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var hs-var">buf_size</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8192</span></span><span>
+</span><span id="line-59"></span><span>
+</span><span id="line-60"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutChar"><span class="hs-identifier hs-type">bPutChar</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Char</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span id="bPutChar"><span class="annot"><span class="annottext">bPutChar :: BufHandle -&gt; Char -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutChar"><span class="hs-identifier hs-var hs-var">bPutChar</span></a></span></span><span> </span><span id="local-6989586621681488420"><span class="annot"><span class="annottext">b :: BufHandle
+</span><a href="#local-6989586621681488420"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span id="local-6989586621681488421"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488421"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621681488422"><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488422"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621681488423"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488423"><span class="hs-identifier hs-var">hdl</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621681488424"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681488424"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-62"></span><span>  </span><span id="local-6989586621681488425"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488425"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FastMutInt -&gt; IO Int
+</span><a href="GHC.Data.FastMutInt.html#readFastMutInt"><span class="hs-identifier hs-var">readFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488422"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-63"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488425"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall a. Handle -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Text.html#hPutBuf/GHC.IO.Handle.Text.html#hPutBuf"><span class="hs-identifier hs-var">hPutBuf</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488423"><span class="hs-identifier hs-var">hdl</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488421"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span>
+</span><span id="line-65"></span><span>                </span><span class="annot"><span class="annottext">FastMutInt -&gt; Int -&gt; IO ()
+</span><a href="GHC.Data.FastMutInt.html#writeFastMutInt"><span class="hs-identifier hs-var">writeFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488422"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-66"></span><span>                </span><span class="annot"><span class="annottext">BufHandle -&gt; Char -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutChar"><span class="hs-identifier hs-var">bPutChar</span></a></span><span> </span><span class="annot"><span class="annottext">BufHandle
+</span><a href="#local-6989586621681488420"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681488424"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-67"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; a -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/Foreign.Storable.html#pokeElemOff/Foreign.Storable.html#pokeElemOff"><span class="hs-identifier hs-var">pokeElemOff</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488421"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488425"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#fromIntegral/GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#ord/GHC.Base.html#ord"><span class="hs-identifier hs-var">ord</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681488424"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Word.html#Word8/GHC.Word.html#Word8"><span class="hs-identifier hs-type">Word8</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>                </span><span class="annot"><span class="annottext">FastMutInt -&gt; Int -&gt; IO ()
+</span><a href="GHC.Data.FastMutInt.html#writeFastMutInt"><span class="hs-identifier hs-var">writeFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488422"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488425"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- Equivalent of the text/str, text/unpackNBytes#, text/[] rules</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- in GHC.Utils.Ppr.</span><span>
+</span><span id="line-72"></span><span class="hs-pragma">{-# RULES</span><span> </span><span class="annot"><span class="hs-pragma">&quot;hdoc/str&quot;</span></span><span>
+</span><span id="line-73"></span><span>    </span><span class="hs-pragma">forall</span><span> </span><span id="local-6989586621681488431"><span class="annot"><a href="#local-6989586621681488431"><span class="hs-pragma hs-var">a</span></a></span></span><span> </span><span id="local-6989586621681488432"><span class="annot"><a href="#local-6989586621681488432"><span class="hs-pragma hs-var">h</span></a></span></span><span class="hs-pragma">.</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutStr"><span class="hs-pragma hs-type">bPutStr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681488432"><span class="hs-pragma hs-type">h</span></a></span><span> </span><span class="hs-pragma">(</span><span class="annot"><span class="hs-pragma hs-type">unpackCString#</span></span><span> </span><span class="annot"><a href="#local-6989586621681488431"><span class="hs-pragma hs-type">a</span></a></span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">=</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutPtrString"><span class="hs-pragma hs-type">bPutPtrString</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681488432"><span class="hs-pragma hs-type">h</span></a></span><span> </span><span class="hs-pragma">(</span><span class="annot"><a href="GHC.Data.FastString.html#mkPtrString%23"><span class="hs-pragma hs-type">mkPtrString#</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681488431"><span class="hs-pragma hs-type">a</span></a></span><span class="hs-pragma">)</span><span>
+</span><span id="line-74"></span><span>  </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-75"></span><span class="hs-pragma">{-# RULES</span><span> </span><span class="annot"><span class="hs-pragma">&quot;hdoc/unpackNBytes#&quot;</span></span><span>
+</span><span id="line-76"></span><span>    </span><span class="hs-pragma">forall</span><span> </span><span id="local-6989586621681488434"><span class="annot"><a href="#local-6989586621681488434"><span class="hs-pragma hs-var">p</span></a></span></span><span> </span><span id="local-6989586621681488435"><span class="annot"><a href="#local-6989586621681488435"><span class="hs-pragma hs-var">n</span></a></span></span><span> </span><span id="local-6989586621681488436"><span class="annot"><a href="#local-6989586621681488436"><span class="hs-pragma hs-var">h</span></a></span></span><span class="hs-pragma">.</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutStr"><span class="hs-pragma hs-type">bPutStr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681488436"><span class="hs-pragma hs-type">h</span></a></span><span> </span><span class="hs-pragma">(</span><span class="annot"><span class="hs-pragma hs-type">unpackNBytes#</span></span><span> </span><span class="annot"><a href="#local-6989586621681488434"><span class="hs-pragma hs-type">p</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681488435"><span class="hs-pragma hs-type">n</span></a></span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">=</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutPtrString"><span class="hs-pragma hs-type">bPutPtrString</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681488436"><span class="hs-pragma hs-type">h</span></a></span><span> </span><span class="hs-pragma">(</span><span class="annot"><a href="GHC.Data.FastString.html#PtrString"><span class="hs-pragma hs-type">PtrString</span></a></span><span> </span><span class="hs-pragma">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Ptr.html#Ptr/GHC.Ptr.html#Ptr"><span class="hs-pragma hs-type">Ptr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681488434"><span class="hs-pragma hs-type">p</span></a></span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">(</span><span class="annot"><span class="hs-pragma hs-type">I#</span></span><span> </span><span class="annot"><a href="#local-6989586621681488435"><span class="hs-pragma hs-type">n</span></a></span><span class="hs-pragma">)</span><span class="hs-pragma">)</span><span>
+</span><span id="line-77"></span><span>  </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-78"></span><span class="hs-pragma">{-# RULES</span><span> </span><span class="annot"><span class="hs-pragma">&quot;hdoc/[]#&quot;</span></span><span>
+</span><span id="line-79"></span><span>    </span><span class="hs-pragma">forall</span><span> </span><span id="local-6989586621681488439"><span class="annot"><a href="#local-6989586621681488439"><span class="hs-pragma hs-var">h</span></a></span></span><span class="hs-pragma">.</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutStr"><span class="hs-pragma hs-type">bPutStr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681488439"><span class="hs-pragma hs-type">h</span></a></span><span> </span><span class="hs-pragma">[</span><span class="hs-pragma">]</span><span> </span><span class="hs-pragma">=</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-pragma hs-type">return</span></a></span><span> </span><span class="hs-pragma">(</span><span class="hs-pragma">)</span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-81"></span><span>
+</span><span id="line-82"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutStr"><span class="hs-pragma hs-type">bPutStr</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>  </span><span class="hs-comment">-- Give the RULE a chance to fire</span><span>
+</span><span id="line-83"></span><span>                              </span><span class="hs-comment">-- It must wait till after phase 1 when</span><span>
+</span><span id="line-84"></span><span>                              </span><span class="hs-comment">-- the unpackCString first is manifested</span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutStr"><span class="hs-identifier hs-type">bPutStr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#String/GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-87"></span><span id="bPutStr"><span class="annot"><span class="annottext">bPutStr :: BufHandle -&gt; String -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutStr"><span class="hs-identifier hs-var hs-var">bPutStr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span id="local-6989586621681488440"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488440"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621681488441"><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488441"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621681488442"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488442"><span class="hs-identifier hs-var">hdl</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621681488443"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681488443"><span class="hs-identifier hs-var">str</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-88"></span><span>  </span><span id="local-6989586621681488444"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488444"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FastMutInt -&gt; IO Int
+</span><a href="GHC.Data.FastMutInt.html#readFastMutInt"><span class="hs-identifier hs-var">readFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488441"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-89"></span><span>  </span><span class="annot"><span class="annottext">String -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621681488445"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681488443"><span class="hs-identifier hs-var">str</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488444"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-90"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621681488445"><span class="annot"><span class="annottext">loop :: String -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621681488445"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621681488446"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488446"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="annot"><span class="annottext">FastMutInt -&gt; Int -&gt; IO ()
+</span><a href="GHC.Data.FastMutInt.html#writeFastMutInt"><span class="hs-identifier hs-var">writeFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488441"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488446"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-91"></span><span>        </span><span class="annot"><a href="#local-6989586621681488445"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681488447"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681488447"><span class="hs-identifier hs-var">c</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621681488448"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681488448"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621681488449"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488449"><span class="hs-identifier hs-var">i</span></a></span></span><span>
+</span><span id="line-92"></span><span>           </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488449"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-93"></span><span>                </span><span class="annot"><span class="annottext">Handle -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall a. Handle -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Text.html#hPutBuf/GHC.IO.Handle.Text.html#hPutBuf"><span class="hs-identifier hs-var">hPutBuf</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488442"><span class="hs-identifier hs-var">hdl</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488440"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span>
+</span><span id="line-94"></span><span>                </span><span class="annot"><span class="annottext">String -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621681488445"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681488447"><span class="hs-identifier hs-var">c</span></a></span><span class="annot"><span class="annottext">Char -&gt; String -&gt; String
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681488448"><span class="hs-identifier hs-var">cs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-95"></span><span>           </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-96"></span><span>                </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; a -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/Foreign.Storable.html#pokeElemOff/Foreign.Storable.html#pokeElemOff"><span class="hs-identifier hs-var">pokeElemOff</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488440"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488449"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#fromIntegral/GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#ord/GHC.Base.html#ord"><span class="hs-identifier hs-var">ord</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681488447"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>                </span><span class="annot"><span class="annottext">String -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621681488445"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681488448"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488449"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutFS"><span class="hs-identifier hs-type">bPutFS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span id="bPutFS"><span class="annot"><span class="annottext">bPutFS :: BufHandle -&gt; FastString -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutFS"><span class="hs-identifier hs-var hs-var">bPutFS</span></a></span></span><span> </span><span id="local-6989586621681488450"><span class="annot"><span class="annottext">BufHandle
+</span><a href="#local-6989586621681488450"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621681488451"><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681488451"><span class="hs-identifier hs-var">fs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BufHandle -&gt; ByteString -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutBS"><span class="hs-identifier hs-var">bPutBS</span></a></span><span> </span><span class="annot"><span class="annottext">BufHandle
+</span><a href="#local-6989586621681488450"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ()) -&gt; ByteString -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">FastString -&gt; ByteString
+</span><a href="GHC.Data.FastString.html#bytesFS"><span class="hs-identifier hs-var">bytesFS</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681488451"><span class="hs-identifier hs-var">fs</span></a></span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutFZS"><span class="hs-identifier hs-type">bPutFZS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastZString"><span class="hs-identifier hs-type">FastZString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-103"></span><span id="bPutFZS"><span class="annot"><span class="annottext">bPutFZS :: BufHandle -&gt; FastZString -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutFZS"><span class="hs-identifier hs-var hs-var">bPutFZS</span></a></span></span><span> </span><span id="local-6989586621681488454"><span class="annot"><span class="annottext">BufHandle
+</span><a href="#local-6989586621681488454"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621681488455"><span class="annot"><span class="annottext">FastZString
+</span><a href="#local-6989586621681488455"><span class="hs-identifier hs-var">fs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BufHandle -&gt; ByteString -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutBS"><span class="hs-identifier hs-var">bPutBS</span></a></span><span> </span><span class="annot"><span class="annottext">BufHandle
+</span><a href="#local-6989586621681488454"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ()) -&gt; ByteString -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">FastZString -&gt; ByteString
+</span><a href="GHC.Data.FastString.html#fastZStringToByteString"><span class="hs-identifier hs-var">fastZStringToByteString</span></a></span><span> </span><span class="annot"><span class="annottext">FastZString
+</span><a href="#local-6989586621681488455"><span class="hs-identifier hs-var">fs</span></a></span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutBS"><span class="hs-identifier hs-type">bPutBS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-106"></span><span id="bPutBS"><span class="annot"><span class="annottext">bPutBS :: BufHandle -&gt; ByteString -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutBS"><span class="hs-identifier hs-var hs-var">bPutBS</span></a></span></span><span> </span><span id="local-6989586621681488457"><span class="annot"><span class="annottext">BufHandle
+</span><a href="#local-6989586621681488457"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621681488458"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681488458"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; (CStringLen -&gt; IO ()) -&gt; IO ()
+forall a. ByteString -&gt; (CStringLen -&gt; IO a) -&gt; IO a
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Unsafe.html#unsafeUseAsCStringLen/Data.ByteString.Unsafe.html#unsafeUseAsCStringLen"><span class="hs-identifier hs-var">BS.unsafeUseAsCStringLen</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681488458"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">((CStringLen -&gt; IO ()) -&gt; IO ()) -&gt; (CStringLen -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">BufHandle -&gt; CStringLen -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutCStringLen"><span class="hs-identifier hs-var">bPutCStringLen</span></a></span><span> </span><span class="annot"><span class="annottext">BufHandle
+</span><a href="#local-6989586621681488457"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutCStringLen"><span class="hs-identifier hs-type">bPutCStringLen</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Foreign.html#CStringLen/GHC.Foreign.html#CStringLen"><span class="hs-identifier hs-type">CStringLen</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-109"></span><span id="bPutCStringLen"><span class="annot"><span class="annottext">bPutCStringLen :: BufHandle -&gt; CStringLen -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutCStringLen"><span class="hs-identifier hs-var hs-var">bPutCStringLen</span></a></span></span><span> </span><span id="local-6989586621681488461"><span class="annot"><span class="annottext">b :: BufHandle
+</span><a href="#local-6989586621681488461"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span id="local-6989586621681488462"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488462"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621681488463"><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488463"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621681488464"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488464"><span class="hs-identifier hs-var">hdl</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621681488465"><span class="annot"><span class="annottext">cstr :: CStringLen
+</span><a href="#local-6989586621681488465"><span class="hs-identifier hs-var">cstr</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span id="local-6989586621681488466"><span class="annot"><span class="annottext">Ptr CChar
+</span><a href="#local-6989586621681488466"><span class="hs-identifier hs-var">ptr</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681488467"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488467"><span class="hs-identifier hs-var">len</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-110"></span><span>  </span><span id="local-6989586621681488468"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488468"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FastMutInt -&gt; IO Int
+</span><a href="GHC.Data.FastMutInt.html#readFastMutInt"><span class="hs-identifier hs-var">readFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488463"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-111"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488468"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488467"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span>
+</span><span id="line-112"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall a. Handle -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Text.html#hPutBuf/GHC.IO.Handle.Text.html#hPutBuf"><span class="hs-identifier hs-var">hPutBuf</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488464"><span class="hs-identifier hs-var">hdl</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488462"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488468"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-113"></span><span>                </span><span class="annot"><span class="annottext">FastMutInt -&gt; Int -&gt; IO ()
+</span><a href="GHC.Data.FastMutInt.html#writeFastMutInt"><span class="hs-identifier hs-var">writeFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488463"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-114"></span><span>                </span><span class="hs-keyword">if</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488467"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-115"></span><span>                    </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Ptr CChar -&gt; Int -&gt; IO ()
+forall a. Handle -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Text.html#hPutBuf/GHC.IO.Handle.Text.html#hPutBuf"><span class="hs-identifier hs-var">hPutBuf</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488464"><span class="hs-identifier hs-var">hdl</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CChar
+</span><a href="#local-6989586621681488466"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488467"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-116"></span><span>                    </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">BufHandle -&gt; CStringLen -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutCStringLen"><span class="hs-identifier hs-var">bPutCStringLen</span></a></span><span> </span><span class="annot"><span class="annottext">BufHandle
+</span><a href="#local-6989586621681488461"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">CStringLen
+</span><a href="#local-6989586621681488465"><span class="hs-identifier hs-var">cstr</span></a></span><span>
+</span><span id="line-117"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-118"></span><span>                </span><span class="annot"><span class="annottext">Ptr CChar -&gt; Ptr CChar -&gt; Int -&gt; IO ()
+forall a. Ptr a -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/Foreign.Marshal.Utils.html#copyBytes/Foreign.Marshal.Utils.html#copyBytes"><span class="hs-identifier hs-var">copyBytes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488462"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr CChar
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><a href="../../base-4.18.2.1/src/GHC.Ptr.html#plusPtr/GHC.Ptr.html#plusPtr"><span class="hs-operator hs-var">`plusPtr`</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488468"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr CChar
+</span><a href="#local-6989586621681488466"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488467"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-119"></span><span>                </span><span class="annot"><span class="annottext">FastMutInt -&gt; Int -&gt; IO ()
+</span><a href="GHC.Data.FastMutInt.html#writeFastMutInt"><span class="hs-identifier hs-var">writeFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488463"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488468"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488467"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutPtrString"><span class="hs-identifier hs-type">bPutPtrString</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#PtrString"><span class="hs-identifier hs-type">PtrString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-122"></span><span id="bPutPtrString"><span class="annot"><span class="annottext">bPutPtrString :: BufHandle -&gt; PtrString -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutPtrString"><span class="hs-identifier hs-var hs-var">bPutPtrString</span></a></span></span><span> </span><span id="local-6989586621681488471"><span class="annot"><span class="annottext">b :: BufHandle
+</span><a href="#local-6989586621681488471"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span id="local-6989586621681488472"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488472"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621681488473"><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488473"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621681488474"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488474"><span class="hs-identifier hs-var">hdl</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621681488475"><span class="annot"><span class="annottext">l :: PtrString
+</span><a href="#local-6989586621681488475"><span class="hs-identifier hs-var">l</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Data.FastString.html#PtrString"><span class="hs-identifier hs-type">PtrString</span></a></span><span> </span><span id="local-6989586621681488476"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488476"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621681488477"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488477"><span class="hs-identifier hs-var">len</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PtrString
+</span><a href="#local-6989586621681488475"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">PtrString -&gt; IO () -&gt; IO ()
+forall a b. a -&gt; b -&gt; b
+</span><span class="hs-operator hs-var">`seq`</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-123"></span><span>  </span><span id="local-6989586621681488478"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488478"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FastMutInt -&gt; IO Int
+</span><a href="GHC.Data.FastMutInt.html#readFastMutInt"><span class="hs-identifier hs-var">readFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488473"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-124"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488478"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488477"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span>
+</span><span id="line-125"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall a. Handle -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Text.html#hPutBuf/GHC.IO.Handle.Text.html#hPutBuf"><span class="hs-identifier hs-var">hPutBuf</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488474"><span class="hs-identifier hs-var">hdl</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488472"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488478"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-126"></span><span>                </span><span class="annot"><span class="annottext">FastMutInt -&gt; Int -&gt; IO ()
+</span><a href="GHC.Data.FastMutInt.html#writeFastMutInt"><span class="hs-identifier hs-var">writeFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488473"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-127"></span><span>                </span><span class="hs-keyword">if</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488477"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-128"></span><span>                    </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall a. Handle -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Text.html#hPutBuf/GHC.IO.Handle.Text.html#hPutBuf"><span class="hs-identifier hs-var">hPutBuf</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488474"><span class="hs-identifier hs-var">hdl</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488476"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488477"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-129"></span><span>                    </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">BufHandle -&gt; PtrString -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutPtrString"><span class="hs-identifier hs-var">bPutPtrString</span></a></span><span> </span><span class="annot"><span class="annottext">BufHandle
+</span><a href="#local-6989586621681488471"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">PtrString
+</span><a href="#local-6989586621681488475"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-130"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-131"></span><span>                </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall a. Ptr a -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/Foreign.Marshal.Utils.html#copyBytes/Foreign.Marshal.Utils.html#copyBytes"><span class="hs-identifier hs-var">copyBytes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488472"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><a href="../../base-4.18.2.1/src/GHC.Ptr.html#plusPtr/GHC.Ptr.html#plusPtr"><span class="hs-operator hs-var">`plusPtr`</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488478"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488476"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488477"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-132"></span><span>                </span><span class="annot"><span class="annottext">FastMutInt -&gt; Int -&gt; IO ()
+</span><a href="GHC.Data.FastMutInt.html#writeFastMutInt"><span class="hs-identifier hs-var">writeFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488473"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488478"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488477"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-133"></span><span>
+</span><span id="line-134"></span><span class="annot"><span class="hs-comment">-- | Replicate an 8-bit character</span></span><span>
+</span><span id="line-135"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#bPutReplicate"><span class="hs-identifier hs-type">bPutReplicate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Char</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-136"></span><span id="bPutReplicate"><span class="annot"><span class="annottext">bPutReplicate :: BufHandle -&gt; Int -&gt; Char -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bPutReplicate"><span class="hs-identifier hs-var hs-var">bPutReplicate</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span id="local-6989586621681488479"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488479"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621681488480"><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488480"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621681488481"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488481"><span class="hs-identifier hs-var">hdl</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621681488482"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488482"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span id="local-6989586621681488483"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681488483"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-137"></span><span>  </span><span id="local-6989586621681488484"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488484"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FastMutInt -&gt; IO Int
+</span><a href="GHC.Data.FastMutInt.html#readFastMutInt"><span class="hs-identifier hs-var">readFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488480"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-138"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681488485"><span class="annot"><span class="annottext">oc :: Word8
+</span><a href="#local-6989586621681488485"><span class="hs-identifier hs-var hs-var">oc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#fromIntegral/GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#ord/GHC.Base.html#ord"><span class="hs-identifier hs-var">ord</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681488483"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488484"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488482"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span>
+</span><span id="line-140"></span><span>    </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-141"></span><span>      </span><span class="annot"><span class="annottext">Ptr Any -&gt; Word8 -&gt; Int -&gt; IO ()
+forall a. Ptr a -&gt; Word8 -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/Foreign.Marshal.Utils.html#fillBytes/Foreign.Marshal.Utils.html#fillBytes"><span class="hs-identifier hs-var">fillBytes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488479"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Any
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><a href="../../base-4.18.2.1/src/GHC.Ptr.html#plusPtr/GHC.Ptr.html#plusPtr"><span class="hs-operator hs-var">`plusPtr`</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488484"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621681488485"><span class="hs-identifier hs-var">oc</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488482"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-142"></span><span>      </span><span class="annot"><span class="annottext">FastMutInt -&gt; Int -&gt; IO ()
+</span><a href="GHC.Data.FastMutInt.html#writeFastMutInt"><span class="hs-identifier hs-var">writeFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488480"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488484"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488482"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-143"></span><span>    </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-144"></span><span>      </span><span class="hs-comment">-- flush the current buffer</span><span>
+</span><span id="line-145"></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#when/GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488484"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall a. Handle -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Text.html#hPutBuf/GHC.IO.Handle.Text.html#hPutBuf"><span class="hs-identifier hs-var">hPutBuf</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488481"><span class="hs-identifier hs-var">hdl</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488479"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488484"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-146"></span><span>      </span><span class="hs-keyword">if</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488482"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-148"></span><span>          </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; Int -&gt; IO ()
+forall a. Ptr a -&gt; Word8 -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/Foreign.Marshal.Utils.html#fillBytes/Foreign.Marshal.Utils.html#fillBytes"><span class="hs-identifier hs-var">fillBytes</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488479"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621681488485"><span class="hs-identifier hs-var">oc</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488482"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-149"></span><span>          </span><span class="annot"><span class="annottext">FastMutInt -&gt; Int -&gt; IO ()
+</span><a href="GHC.Data.FastMutInt.html#writeFastMutInt"><span class="hs-identifier hs-var">writeFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488480"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488482"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-150"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-151"></span><span>          </span><span class="hs-comment">-- fill a full buffer</span><span>
+</span><span id="line-152"></span><span>          </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; Int -&gt; IO ()
+forall a. Ptr a -&gt; Word8 -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/Foreign.Marshal.Utils.html#fillBytes/Foreign.Marshal.Utils.html#fillBytes"><span class="hs-identifier hs-var">fillBytes</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488479"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621681488485"><span class="hs-identifier hs-var">oc</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span>
+</span><span id="line-153"></span><span>          </span><span class="hs-comment">-- flush it as many times as necessary</span><span>
+</span><span id="line-154"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681488489"><span class="annot"><span class="annottext">go :: Int -&gt; IO ()
+</span><a href="#local-6989586621681488489"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621681488490"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488490"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488490"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-155"></span><span>                                       </span><span class="annot"><span class="annottext">Handle -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall a. Handle -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Text.html#hPutBuf/GHC.IO.Handle.Text.html#hPutBuf"><span class="hs-identifier hs-var">hPutBuf</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488481"><span class="hs-identifier hs-var">hdl</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488479"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span>
+</span><span id="line-156"></span><span>                                       </span><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><a href="#local-6989586621681488489"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488490"><span class="hs-identifier hs-var">n</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#-/GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span class="annot"><span class="annottext">Int
+</span><a href="GHC.Utils.BufHandle.html#buf_size"><span class="hs-identifier hs-var">buf_size</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-157"></span><span>                   </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FastMutInt -&gt; Int -&gt; IO ()
+</span><a href="GHC.Data.FastMutInt.html#writeFastMutInt"><span class="hs-identifier hs-var">writeFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488480"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488490"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-158"></span><span>          </span><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><a href="#local-6989586621681488489"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488482"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-159"></span><span>
+</span><span id="line-160"></span><span class="annot"><a href="GHC.Utils.BufHandle.html#bFlush"><span class="hs-identifier hs-type">bFlush</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-161"></span><span id="bFlush"><span class="annot"><span class="annottext">bFlush :: BufHandle -&gt; IO ()
+</span><a href="GHC.Utils.BufHandle.html#bFlush"><span class="hs-identifier hs-var hs-var">bFlush</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.BufHandle.html#BufHandle"><span class="hs-identifier hs-type">BufHandle</span></a></span><span> </span><span id="local-6989586621681488491"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488491"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621681488492"><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488492"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621681488493"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488493"><span class="hs-identifier hs-var">hdl</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-162"></span><span>  </span><span id="local-6989586621681488494"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488494"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FastMutInt -&gt; IO Int
+</span><a href="GHC.Data.FastMutInt.html#readFastMutInt"><span class="hs-identifier hs-var">readFastMutInt</span></a></span><span> </span><span class="annot"><span class="annottext">FastMutInt
+</span><a href="#local-6989586621681488492"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-163"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#when/GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488494"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall a. Handle -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Text.html#hPutBuf/GHC.IO.Handle.Text.html#hPutBuf"><span class="hs-identifier hs-var">hPutBuf</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621681488493"><span class="hs-identifier hs-var">hdl</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488491"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681488494"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-164"></span><span>  </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ()
+forall a. Ptr a -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/Foreign.Marshal.Alloc.html#free/Foreign.Marshal.Alloc.html#free"><span class="hs-identifier hs-var">free</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621681488491"><span class="hs-identifier hs-var">buf</span></a></span><span>
+</span><span id="line-165"></span><span>  </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-166"></span></pre></body></html>

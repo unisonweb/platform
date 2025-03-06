@@ -1,0 +1,593 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE RankNTypes #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- | A thread manager.</span><span>
+</span><span id="line-5"></span><span class="hs-comment">--   The manager has responsibility to spawn and kill</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--   worker threads.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.HTTP2.H2.Manager</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier">Manager</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Action"><span class="hs-identifier">Action</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#start"><span class="hs-identifier">start</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#setAction"><span class="hs-identifier">setAction</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#stopAfter"><span class="hs-identifier">stopAfter</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#spawnAction"><span class="hs-identifier">spawnAction</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#forkManaged"><span class="hs-identifier">forkManaged</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#forkManagedUnmask"><span class="hs-identifier">forkManagedUnmask</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#timeoutKillThread"><span class="hs-identifier">timeoutKillThread</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#timeoutClose"><span class="hs-identifier">timeoutClose</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#KilledByHttp2ThreadManager"><span class="hs-identifier">KilledByHttp2ThreadManager</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#incCounter"><span class="hs-identifier">incCounter</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#decCounter"><span class="hs-identifier">decCounter</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>    </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#waitCounter0"><span class="hs-identifier">waitCounter0</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Foldable</span></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Set</span></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Set</span></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">System.TimeManager</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">UnliftIO.Concurrent</span></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">UnliftIO.Exception</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">E</span></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">UnliftIO.STM</span></span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Imports.html"><span class="hs-identifier">Imports</span></a></span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="annot"><span class="hs-comment">-- | Action to be spawned by the manager.</span></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">type</span><span> </span><span id="Action"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Action"><span class="hs-identifier hs-var">Action</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#noAction"><span class="hs-identifier hs-type">noAction</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Action"><span class="hs-identifier hs-type">Action</span></a></span><span>
+</span><span id="line-42"></span><span id="noAction"><span class="annot"><span class="annottext">noAction :: Action
+</span><a href="Network.HTTP2.H2.Manager.html#noAction"><span class="hs-identifier hs-var hs-var">noAction</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; Action
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">data</span><span> </span><span id="Command"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Command"><span class="hs-identifier hs-var">Command</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Stop"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Stop"><span class="hs-identifier hs-var">Stop</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">SomeException</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span id="Spawn"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Spawn"><span class="hs-identifier hs-var">Spawn</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="Add"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Add"><span class="hs-identifier hs-var">Add</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="Delete"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Delete"><span class="hs-identifier hs-var">Delete</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span class="annot"><span class="hs-comment">-- | Manager to manage the thread and the timer.</span></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">data</span><span> </span><span id="Manager"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-var">Manager</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Manager"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-var">Manager</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">TQueue</span></span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Command"><span class="hs-identifier hs-type">Command</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Action"><span class="hs-identifier hs-type">Action</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">TVar</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Manager</span></span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- | Starting a thread manager.</span><span>
+</span><span id="line-50"></span><span class="hs-comment">--   Its action is initially set to 'return ()' and should be set</span><span>
+</span><span id="line-51"></span><span class="hs-comment">--   by 'setAction'. This allows that the action can include</span><span>
+</span><span id="line-52"></span><span class="hs-comment">--   the manager itself.</span><span>
+</span><span id="line-53"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#start"><span class="hs-identifier hs-type">start</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Manager</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span>
+</span><span id="line-54"></span><span id="start"><span class="annot"><span class="annottext">start :: Manager -&gt; IO Manager
+</span><a href="Network.HTTP2.H2.Manager.html#start"><span class="hs-identifier hs-var hs-var">start</span></a></span></span><span> </span><span id="local-6989586621679115393"><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115393"><span class="hs-identifier hs-var">timmgr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-55"></span><span>    </span><span id="local-6989586621679115394"><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115394"><span class="hs-identifier hs-var">q</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO (TQueue Command)
+forall (m :: * -&gt; *) a. MonadIO m =&gt; m (TQueue a)
+</span><span class="hs-identifier hs-var">newTQueueIO</span></span><span>
+</span><span id="line-56"></span><span>    </span><span id="local-6989586621679115396"><span class="annot"><span class="annottext">IORef Action
+</span><a href="#local-6989586621679115396"><span class="hs-identifier hs-var">ref</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Action -&gt; IO (IORef Action)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Action
+</span><a href="Network.HTTP2.H2.Manager.html#noAction"><span class="hs-identifier hs-var">noAction</span></a></span><span>
+</span><span id="line-57"></span><span>    </span><span id="local-6989586621679115398"><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621679115398"><span class="hs-identifier hs-var">cnt</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (TVar Int)
+forall (m :: * -&gt; *) a. MonadIO m =&gt; a -&gt; m (TVar a)
+</span><span class="hs-identifier hs-var">newTVarIO</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-58"></span><span>    </span><span class="annot"><span class="annottext">IO ThreadId -&gt; Action
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO ThreadId -&gt; Action) -&gt; IO ThreadId -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Action -&gt; IO ThreadId
+forall (m :: * -&gt; *). MonadUnliftIO m =&gt; m () -&gt; m ThreadId
+</span><span class="hs-identifier hs-var">forkIO</span></span><span> </span><span class="annot"><span class="annottext">(Action -&gt; IO ThreadId) -&gt; Action -&gt; IO ThreadId
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command -&gt; Set ThreadId -&gt; IORef Action -&gt; Action
+forall {a}.
+TQueue Command -&gt; Set ThreadId -&gt; IORef (IO a) -&gt; Action
+</span><a href="#local-6989586621679115402"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115394"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+forall a. Set a
+</span><span class="hs-identifier hs-var">Set.empty</span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><a href="#local-6989586621679115396"><span class="hs-identifier hs-var">ref</span></a></span><span>
+</span><span id="line-59"></span><span>    </span><span class="annot"><span class="annottext">Manager -&gt; IO Manager
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Manager -&gt; IO Manager) -&gt; Manager -&gt; IO Manager
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command -&gt; IORef Action -&gt; TVar Int -&gt; Manager -&gt; Manager
+</span><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-var">Manager</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115394"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><a href="#local-6989586621679115396"><span class="hs-identifier hs-var">ref</span></a></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621679115398"><span class="hs-identifier hs-var">cnt</span></a></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115393"><span class="hs-identifier hs-var">timmgr</span></a></span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-61"></span><span>    </span><span id="local-6989586621679115402"><span class="annot"><span class="annottext">go :: TQueue Command -&gt; Set ThreadId -&gt; IORef (IO a) -&gt; Action
+</span><a href="#local-6989586621679115402"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679115406"><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115406"><span class="hs-identifier hs-var">q</span></a></span></span><span> </span><span id="local-6989586621679115407"><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115407"><span class="hs-identifier hs-var">tset0</span></a></span></span><span> </span><span id="local-6989586621679115408"><span class="annot"><span class="annottext">IORef (IO a)
+</span><a href="#local-6989586621679115408"><span class="hs-identifier hs-var">ref</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-62"></span><span>        </span><span id="local-6989586621679115409"><span class="annot"><span class="annottext">Command
+</span><a href="#local-6989586621679115409"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">STM Command -&gt; IO Command
+forall (m :: * -&gt; *) a. MonadIO m =&gt; STM a -&gt; m a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM Command -&gt; IO Command) -&gt; STM Command -&gt; IO Command
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command -&gt; STM Command
+forall a. TQueue a -&gt; STM a
+</span><span class="hs-identifier hs-var">readTQueue</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115406"><span class="hs-identifier hs-var">q</span></a></span><span>
+</span><span id="line-63"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Command
+</span><a href="#local-6989586621679115409"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-64"></span><span>            </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Stop"><span class="hs-identifier hs-type">Stop</span></a></span><span> </span><span id="local-6989586621679115412"><span class="annot"><span class="annottext">Maybe SomeException
+</span><a href="#local-6989586621679115412"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Set ThreadId -&gt; Maybe SomeException -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#kill"><span class="hs-identifier hs-var">kill</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115407"><span class="hs-identifier hs-var">tset0</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe SomeException
+</span><a href="#local-6989586621679115412"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-65"></span><span>            </span><span class="annot"><span class="annottext">Command
+</span><a href="Network.HTTP2.H2.Manager.html#Spawn"><span class="hs-identifier hs-var">Spawn</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Set ThreadId -&gt; Action
+</span><a href="#local-6989586621679115414"><span class="hs-identifier hs-var">next</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115407"><span class="hs-identifier hs-var">tset0</span></a></span><span>
+</span><span id="line-66"></span><span>            </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Add"><span class="hs-identifier hs-type">Add</span></a></span><span> </span><span id="local-6989586621679115415"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115415"><span class="hs-identifier hs-var">newtid</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-67"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679115416"><span class="annot"><span class="annottext">tset :: Set ThreadId
+</span><a href="#local-6989586621679115416"><span class="hs-identifier hs-var hs-var">tset</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; Set ThreadId -&gt; Set ThreadId
+</span><a href="Network.HTTP2.H2.Manager.html#add"><span class="hs-identifier hs-var">add</span></a></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115415"><span class="hs-identifier hs-var">newtid</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115407"><span class="hs-identifier hs-var">tset0</span></a></span><span>
+</span><span id="line-68"></span><span>                 </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">TQueue Command -&gt; Set ThreadId -&gt; IORef (IO a) -&gt; Action
+</span><a href="#local-6989586621679115402"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115406"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115416"><span class="hs-identifier hs-var">tset</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (IO a)
+</span><a href="#local-6989586621679115408"><span class="hs-identifier hs-var">ref</span></a></span><span>
+</span><span id="line-69"></span><span>            </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Delete"><span class="hs-identifier hs-type">Delete</span></a></span><span> </span><span id="local-6989586621679115418"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115418"><span class="hs-identifier hs-var">oldtid</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-70"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679115419"><span class="annot"><span class="annottext">tset :: Set ThreadId
+</span><a href="#local-6989586621679115419"><span class="hs-identifier hs-var hs-var">tset</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; Set ThreadId -&gt; Set ThreadId
+</span><a href="Network.HTTP2.H2.Manager.html#del"><span class="hs-identifier hs-var">del</span></a></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115418"><span class="hs-identifier hs-var">oldtid</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115407"><span class="hs-identifier hs-var">tset0</span></a></span><span>
+</span><span id="line-71"></span><span>                 </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">TQueue Command -&gt; Set ThreadId -&gt; IORef (IO a) -&gt; Action
+</span><a href="#local-6989586621679115402"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115406"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115419"><span class="hs-identifier hs-var">tset</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (IO a)
+</span><a href="#local-6989586621679115408"><span class="hs-identifier hs-var">ref</span></a></span><span>
+</span><span id="line-72"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-73"></span><span>        </span><span id="local-6989586621679115414"><span class="annot"><span class="annottext">next :: Set ThreadId -&gt; Action
+</span><a href="#local-6989586621679115414"><span class="hs-identifier hs-var hs-var">next</span></a></span></span><span> </span><span id="local-6989586621679115427"><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115427"><span class="hs-identifier hs-var">tset</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-74"></span><span>            </span><span id="local-6989586621679115428"><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679115428"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef (IO a) -&gt; IO (IO a)
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (IO a)
+</span><a href="#local-6989586621679115408"><span class="hs-identifier hs-var">ref</span></a></span><span>
+</span><span id="line-75"></span><span>            </span><span id="local-6989586621679115430"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115430"><span class="hs-identifier hs-var">newtid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; (Either SomeException a -&gt; Action) -&gt; IO ThreadId
+forall (m :: * -&gt; *) a.
+MonadUnliftIO m =&gt;
+m a -&gt; (Either SomeException a -&gt; m ()) -&gt; m ThreadId
+</span><span class="hs-identifier hs-var">forkFinally</span></span><span> </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679115428"><span class="hs-identifier hs-var">action</span></a></span><span> </span><span class="annot"><span class="annottext">((Either SomeException a -&gt; Action) -&gt; IO ThreadId)
+-&gt; (Either SomeException a -&gt; Action) -&gt; IO ThreadId
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">Either SomeException a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-76"></span><span>                </span><span id="local-6989586621679115432"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115432"><span class="hs-identifier hs-var">mytid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO ThreadId
+forall (m :: * -&gt; *). MonadIO m =&gt; m ThreadId
+</span><span class="hs-identifier hs-var">myThreadId</span></span><span>
+</span><span id="line-77"></span><span>                </span><span class="annot"><span class="annottext">STM () -&gt; Action
+forall (m :: * -&gt; *) a. MonadIO m =&gt; STM a -&gt; m a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM () -&gt; Action) -&gt; STM () -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command -&gt; Command -&gt; STM ()
+forall a. TQueue a -&gt; a -&gt; STM ()
+</span><span class="hs-identifier hs-var">writeTQueue</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115406"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">(Command -&gt; STM ()) -&gt; Command -&gt; STM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; Command
+</span><a href="Network.HTTP2.H2.Manager.html#Delete"><span class="hs-identifier hs-var">Delete</span></a></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115432"><span class="hs-identifier hs-var">mytid</span></a></span><span>
+</span><span id="line-78"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679115435"><span class="annot"><span class="annottext">tset' :: Set ThreadId
+</span><a href="#local-6989586621679115435"><span class="hs-identifier hs-var hs-var">tset'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; Set ThreadId -&gt; Set ThreadId
+</span><a href="Network.HTTP2.H2.Manager.html#add"><span class="hs-identifier hs-var">add</span></a></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115430"><span class="hs-identifier hs-var">newtid</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115427"><span class="hs-identifier hs-var">tset</span></a></span><span>
+</span><span id="line-79"></span><span>            </span><span class="annot"><span class="annottext">TQueue Command -&gt; Set ThreadId -&gt; IORef (IO a) -&gt; Action
+</span><a href="#local-6989586621679115402"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115406"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115435"><span class="hs-identifier hs-var">tset'</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (IO a)
+</span><a href="#local-6989586621679115408"><span class="hs-identifier hs-var">ref</span></a></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span class="annot"><span class="hs-comment">-- | Setting the action to be spawned.</span></span><span>
+</span><span id="line-82"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#setAction"><span class="hs-identifier hs-type">setAction</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Action"><span class="hs-identifier hs-type">Action</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-83"></span><span id="setAction"><span class="annot"><span class="annottext">setAction :: Manager -&gt; Action -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#setAction"><span class="hs-identifier hs-var hs-var">setAction</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679115436"><span class="annot"><span class="annottext">IORef Action
+</span><a href="#local-6989586621679115436"><span class="hs-identifier hs-var">ref</span></a></span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679115437"><span class="annot"><span class="annottext">Action
+</span><a href="#local-6989586621679115437"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef Action -&gt; Action -&gt; Action
+forall a. IORef a -&gt; a -&gt; Action
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><a href="#local-6989586621679115436"><span class="hs-identifier hs-var">ref</span></a></span><span> </span><span class="annot"><span class="annottext">Action
+</span><a href="#local-6989586621679115437"><span class="hs-identifier hs-var">action</span></a></span><span>
+</span><span id="line-84"></span><span>
+</span><span id="line-85"></span><span class="annot"><span class="hs-comment">-- | Stopping the manager.</span></span><span>
+</span><span id="line-86"></span><span id="local-6989586621679115282"><span id="local-6989586621679115283"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#stopAfter"><span class="hs-identifier hs-type">stopAfter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679115282"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">SomeException</span></span><span> </span><span class="annot"><a href="#local-6989586621679115282"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679115283"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679115283"><span class="hs-identifier hs-type">b</span></a></span></span></span><span>
+</span><span id="line-87"></span><span id="stopAfter"><span class="annot"><span class="annottext">stopAfter :: forall a b.
+Manager -&gt; IO a -&gt; (Either SomeException a -&gt; IO b) -&gt; IO b
+</span><a href="Network.HTTP2.H2.Manager.html#stopAfter"><span class="hs-identifier hs-var hs-var">stopAfter</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span id="local-6989586621679115443"><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115443"><span class="hs-identifier hs-var">q</span></a></span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679115444"><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679115444"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span id="local-6989586621679115445"><span class="annot"><span class="annottext">Either SomeException a -&gt; IO b
+</span><a href="#local-6989586621679115445"><span class="hs-identifier hs-var">cleanup</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-88"></span><span>    </span><span class="annot"><span class="annottext">((forall a. IO a -&gt; IO a) -&gt; IO b) -&gt; IO b
+forall b. ((forall a. IO a -&gt; IO a) -&gt; IO b) -&gt; IO b
+</span><span class="hs-identifier hs-var">mask</span></span><span> </span><span class="annot"><span class="annottext">(((forall a. IO a -&gt; IO a) -&gt; IO b) -&gt; IO b)
+-&gt; ((forall a. IO a -&gt; IO a) -&gt; IO b) -&gt; IO b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679115447"><span class="annot"><span class="annottext">forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679115447"><span class="hs-identifier hs-var">unmask</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-89"></span><span>        </span><span id="local-6989586621679115448"><span class="annot"><span class="annottext">Either SomeException a
+</span><a href="#local-6989586621679115448"><span class="hs-identifier hs-var">ma</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; IO (Either SomeException a)
+forall e a. Exception e =&gt; IO a -&gt; IO (Either e a)
+</span><span class="hs-identifier hs-var">try</span></span><span> </span><span class="annot"><span class="annottext">(IO a -&gt; IO (Either SomeException a))
+-&gt; IO a -&gt; IO (Either SomeException a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IO a -&gt; IO a
+forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679115447"><span class="hs-identifier hs-var">unmask</span></a></span><span> </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679115444"><span class="hs-identifier hs-var">action</span></a></span><span>
+</span><span id="line-90"></span><span>        </span><span class="annot"><span class="annottext">STM () -&gt; Action
+forall (m :: * -&gt; *) a. MonadIO m =&gt; STM a -&gt; m a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM () -&gt; Action) -&gt; STM () -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command -&gt; Command -&gt; STM ()
+forall a. TQueue a -&gt; a -&gt; STM ()
+</span><span class="hs-identifier hs-var">writeTQueue</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115443"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">(Command -&gt; STM ()) -&gt; Command -&gt; STM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Maybe SomeException -&gt; Command
+</span><a href="Network.HTTP2.H2.Manager.html#Stop"><span class="hs-identifier hs-var">Stop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SomeException -&gt; Maybe SomeException)
+-&gt; (a -&gt; Maybe SomeException)
+-&gt; Either SomeException a
+-&gt; Maybe SomeException
+forall a c b. (a -&gt; c) -&gt; (b -&gt; c) -&gt; Either a b -&gt; c
+</span><span class="hs-identifier hs-var">either</span></span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; Maybe SomeException
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe SomeException -&gt; a -&gt; Maybe SomeException
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">Maybe SomeException
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Either SomeException a
+</span><a href="#local-6989586621679115448"><span class="hs-identifier hs-var">ma</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-91"></span><span>        </span><span class="annot"><span class="annottext">Either SomeException a -&gt; IO b
+</span><a href="#local-6989586621679115445"><span class="hs-identifier hs-var">cleanup</span></a></span><span> </span><span class="annot"><span class="annottext">Either SomeException a
+</span><a href="#local-6989586621679115448"><span class="hs-identifier hs-var">ma</span></a></span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span class="annot"><span class="hs-comment">-- | Spawning the action.</span></span><span>
+</span><span id="line-94"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#spawnAction"><span class="hs-identifier hs-type">spawnAction</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-95"></span><span id="spawnAction"><span class="annot"><span class="annottext">spawnAction :: Manager -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#spawnAction"><span class="hs-identifier hs-var hs-var">spawnAction</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span id="local-6989586621679115452"><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115452"><span class="hs-identifier hs-var">q</span></a></span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">STM () -&gt; Action
+forall (m :: * -&gt; *) a. MonadIO m =&gt; STM a -&gt; m a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM () -&gt; Action) -&gt; STM () -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command -&gt; Command -&gt; STM ()
+forall a. TQueue a -&gt; a -&gt; STM ()
+</span><span class="hs-identifier hs-var">writeTQueue</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115452"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">Command
+</span><a href="Network.HTTP2.H2.Manager.html#Spawn"><span class="hs-identifier hs-var">Spawn</span></a></span><span>
+</span><span id="line-96"></span><span>
+</span><span id="line-97"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span class="hs-comment">-- | Fork managed thread</span><span>
+</span><span id="line-100"></span><span class="hs-comment">--</span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- This guarantees that the thread ID is added to the manager's queue before</span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- the thread starts, and is removed again when the thread terminates</span><span>
+</span><span id="line-103"></span><span class="hs-comment">-- (normally or abnormally).</span><span>
+</span><span id="line-104"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#forkManaged"><span class="hs-identifier hs-type">forkManaged</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span id="forkManaged"><span class="annot"><span class="annottext">forkManaged :: Manager -&gt; Action -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#forkManaged"><span class="hs-identifier hs-var hs-var">forkManaged</span></a></span></span><span> </span><span id="local-6989586621679115453"><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115453"><span class="hs-identifier hs-var">mgr</span></a></span></span><span> </span><span id="local-6989586621679115454"><span class="annot"><span class="annottext">Action
+</span><a href="#local-6989586621679115454"><span class="hs-identifier hs-var">io</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-106"></span><span>    </span><span class="annot"><span class="annottext">Manager -&gt; ((forall a. IO a -&gt; IO a) -&gt; Action) -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#forkManagedUnmask"><span class="hs-identifier hs-var">forkManagedUnmask</span></a></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115453"><span class="hs-identifier hs-var">mgr</span></a></span><span> </span><span class="annot"><span class="annottext">(((forall a. IO a -&gt; IO a) -&gt; Action) -&gt; Action)
+-&gt; ((forall a. IO a -&gt; IO a) -&gt; Action) -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679115455"><span class="annot"><span class="annottext">forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679115455"><span class="hs-identifier hs-var">unmask</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Action -&gt; Action
+forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679115455"><span class="hs-identifier hs-var">unmask</span></a></span><span> </span><span class="annot"><span class="annottext">Action
+</span><a href="#local-6989586621679115454"><span class="hs-identifier hs-var">io</span></a></span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="annot"><span class="hs-comment">-- | Like 'forkManaged', but run action with exceptions masked</span></span><span>
+</span><span id="line-109"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#forkManagedUnmask"><span class="hs-identifier hs-type">forkManagedUnmask</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679115456"><span class="annot"><a href="#local-6989586621679115456"><span class="hs-identifier hs-type">x</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679115456"><span class="hs-identifier hs-type">x</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679115456"><span class="hs-identifier hs-type">x</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-110"></span><span id="forkManagedUnmask"><span class="annot"><span class="annottext">forkManagedUnmask :: Manager -&gt; ((forall a. IO a -&gt; IO a) -&gt; Action) -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#forkManagedUnmask"><span class="hs-identifier hs-var hs-var">forkManagedUnmask</span></a></span></span><span> </span><span id="local-6989586621679115457"><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115457"><span class="hs-identifier hs-var">mgr</span></a></span></span><span> </span><span id="local-6989586621679115458"><span class="annot"><span class="annottext">(forall a. IO a -&gt; IO a) -&gt; Action
+</span><a href="#local-6989586621679115458"><span class="hs-identifier hs-var">io</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-111"></span><span>    </span><span class="annot"><span class="annottext">IO ThreadId -&gt; Action
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO ThreadId -&gt; Action) -&gt; IO ThreadId -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IO ThreadId -&gt; IO ThreadId
+forall a. IO a -&gt; IO a
+</span><span class="hs-identifier hs-var">mask_</span></span><span> </span><span class="annot"><span class="annottext">(IO ThreadId -&gt; IO ThreadId) -&gt; IO ThreadId -&gt; IO ThreadId
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">((forall a. IO a -&gt; IO a) -&gt; Action) -&gt; IO ThreadId
+forall (m :: * -&gt; *).
+MonadUnliftIO m =&gt;
+((forall a. m a -&gt; m a) -&gt; m ()) -&gt; m ThreadId
+</span><span class="hs-identifier hs-var">forkIOWithUnmask</span></span><span> </span><span class="annot"><span class="annottext">(((forall a. IO a -&gt; IO a) -&gt; Action) -&gt; IO ThreadId)
+-&gt; ((forall a. IO a -&gt; IO a) -&gt; Action) -&gt; IO ThreadId
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679115461"><span class="annot"><span class="annottext">forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679115461"><span class="hs-identifier hs-var">unmask</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-112"></span><span>        </span><span class="annot"><span class="annottext">Manager -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#addMyId"><span class="hs-identifier hs-var">addMyId</span></a></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115457"><span class="hs-identifier hs-var">mgr</span></a></span><span>
+</span><span id="line-113"></span><span>        </span><span class="hs-comment">-- We catch the exception and do not rethrow it: we don't want the</span><span>
+</span><span id="line-114"></span><span>        </span><span class="hs-comment">-- exception printed to stderr.</span><span>
+</span><span id="line-115"></span><span>        </span><span class="annot"><span class="annottext">(forall a. IO a -&gt; IO a) -&gt; Action
+</span><a href="#local-6989586621679115458"><span class="hs-identifier hs-var">io</span></a></span><span> </span><span class="annot"><span class="annottext">IO x -&gt; IO x
+forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679115461"><span class="hs-identifier hs-var">unmask</span></a></span><span> </span><span class="annot"><span class="annottext">Action -&gt; (SomeException -&gt; Action) -&gt; Action
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><span class="hs-operator hs-var">`catch`</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621679115464"><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679115464"><span class="hs-identifier hs-var">_e</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SomeException</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; Action
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span>        </span><span class="annot"><span class="annottext">Manager -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#deleteMyId"><span class="hs-identifier hs-var">deleteMyId</span></a></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115457"><span class="hs-identifier hs-var">mgr</span></a></span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span class="hs-comment">-- | Adding my thread id to the kill-thread list on stopping.</span><span>
+</span><span id="line-119"></span><span class="hs-comment">--</span><span>
+</span><span id="line-120"></span><span class="hs-comment">-- This is not part of the public API; see 'forkManaged' instead.</span><span>
+</span><span id="line-121"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#addMyId"><span class="hs-identifier hs-type">addMyId</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-122"></span><span id="addMyId"><span class="annot"><span class="annottext">addMyId :: Manager -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#addMyId"><span class="hs-identifier hs-var hs-var">addMyId</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span id="local-6989586621679115466"><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115466"><span class="hs-identifier hs-var">q</span></a></span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-123"></span><span>    </span><span id="local-6989586621679115467"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115467"><span class="hs-identifier hs-var">tid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO ThreadId
+forall (m :: * -&gt; *). MonadIO m =&gt; m ThreadId
+</span><span class="hs-identifier hs-var">myThreadId</span></span><span>
+</span><span id="line-124"></span><span>    </span><span class="annot"><span class="annottext">STM () -&gt; Action
+forall (m :: * -&gt; *) a. MonadIO m =&gt; STM a -&gt; m a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM () -&gt; Action) -&gt; STM () -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command -&gt; Command -&gt; STM ()
+forall a. TQueue a -&gt; a -&gt; STM ()
+</span><span class="hs-identifier hs-var">writeTQueue</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115466"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">(Command -&gt; STM ()) -&gt; Command -&gt; STM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; Command
+</span><a href="Network.HTTP2.H2.Manager.html#Add"><span class="hs-identifier hs-var">Add</span></a></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115467"><span class="hs-identifier hs-var">tid</span></a></span><span>
+</span><span id="line-125"></span><span>
+</span><span id="line-126"></span><span class="hs-comment">-- | Deleting my thread id from the kill-thread list on stopping.</span><span>
+</span><span id="line-127"></span><span class="hs-comment">--</span><span>
+</span><span id="line-128"></span><span class="hs-comment">-- This is /only/ necessary when you want to remove the thread's ID from</span><span>
+</span><span id="line-129"></span><span class="hs-comment">-- the manager /before/ the thread terminates (thereby assuming responsibility</span><span>
+</span><span id="line-130"></span><span class="hs-comment">-- for thread cleanup yourself).</span><span>
+</span><span id="line-131"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#deleteMyId"><span class="hs-identifier hs-type">deleteMyId</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-132"></span><span id="deleteMyId"><span class="annot"><span class="annottext">deleteMyId :: Manager -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#deleteMyId"><span class="hs-identifier hs-var hs-var">deleteMyId</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span id="local-6989586621679115468"><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115468"><span class="hs-identifier hs-var">q</span></a></span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-133"></span><span>    </span><span id="local-6989586621679115469"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115469"><span class="hs-identifier hs-var">tid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO ThreadId
+forall (m :: * -&gt; *). MonadIO m =&gt; m ThreadId
+</span><span class="hs-identifier hs-var">myThreadId</span></span><span>
+</span><span id="line-134"></span><span>    </span><span class="annot"><span class="annottext">STM () -&gt; Action
+forall (m :: * -&gt; *) a. MonadIO m =&gt; STM a -&gt; m a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM () -&gt; Action) -&gt; STM () -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command -&gt; Command -&gt; STM ()
+forall a. TQueue a -&gt; a -&gt; STM ()
+</span><span class="hs-identifier hs-var">writeTQueue</span></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><a href="#local-6989586621679115468"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">(Command -&gt; STM ()) -&gt; Command -&gt; STM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; Command
+</span><a href="Network.HTTP2.H2.Manager.html#Delete"><span class="hs-identifier hs-var">Delete</span></a></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115469"><span class="hs-identifier hs-var">tid</span></a></span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-137"></span><span>
+</span><span id="line-138"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#add"><span class="hs-identifier hs-type">add</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Set</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Set</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span>
+</span><span id="line-139"></span><span id="add"><span class="annot"><span class="annottext">add :: ThreadId -&gt; Set ThreadId -&gt; Set ThreadId
+</span><a href="Network.HTTP2.H2.Manager.html#add"><span class="hs-identifier hs-var hs-var">add</span></a></span></span><span> </span><span id="local-6989586621679115470"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115470"><span class="hs-identifier hs-var">tid</span></a></span></span><span> </span><span id="local-6989586621679115471"><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115471"><span class="hs-identifier hs-var">set</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115472"><span class="hs-identifier hs-var">set'</span></a></span><span>
+</span><span id="line-140"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-141"></span><span>    </span><span id="local-6989586621679115472"><span class="annot"><span class="annottext">set' :: Set ThreadId
+</span><a href="#local-6989586621679115472"><span class="hs-identifier hs-var hs-var">set'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; Set ThreadId -&gt; Set ThreadId
+forall a. Ord a =&gt; a -&gt; Set a -&gt; Set a
+</span><span class="hs-identifier hs-var">Set.insert</span></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115470"><span class="hs-identifier hs-var">tid</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115471"><span class="hs-identifier hs-var">set</span></a></span><span>
+</span><span id="line-142"></span><span>
+</span><span id="line-143"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#del"><span class="hs-identifier hs-type">del</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Set</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Set</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span>
+</span><span id="line-144"></span><span id="del"><span class="annot"><span class="annottext">del :: ThreadId -&gt; Set ThreadId -&gt; Set ThreadId
+</span><a href="Network.HTTP2.H2.Manager.html#del"><span class="hs-identifier hs-var hs-var">del</span></a></span></span><span> </span><span id="local-6989586621679115476"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115476"><span class="hs-identifier hs-var">tid</span></a></span></span><span> </span><span id="local-6989586621679115477"><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115477"><span class="hs-identifier hs-var">set</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115478"><span class="hs-identifier hs-var">set'</span></a></span><span>
+</span><span id="line-145"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-146"></span><span>    </span><span id="local-6989586621679115478"><span class="annot"><span class="annottext">set' :: Set ThreadId
+</span><a href="#local-6989586621679115478"><span class="hs-identifier hs-var hs-var">set'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; Set ThreadId -&gt; Set ThreadId
+forall a. Ord a =&gt; a -&gt; Set a -&gt; Set a
+</span><span class="hs-identifier hs-var">Set.delete</span></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115476"><span class="hs-identifier hs-var">tid</span></a></span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115477"><span class="hs-identifier hs-var">set</span></a></span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#kill"><span class="hs-identifier hs-type">kill</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Set</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">SomeException</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-149"></span><span id="kill"><span class="annot"><span class="annottext">kill :: Set ThreadId -&gt; Maybe SomeException -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#kill"><span class="hs-identifier hs-var hs-var">kill</span></a></span></span><span> </span><span id="local-6989586621679115481"><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115481"><span class="hs-identifier hs-var">set</span></a></span></span><span> </span><span id="local-6989586621679115482"><span class="annot"><span class="annottext">Maybe SomeException
+</span><a href="#local-6989586621679115482"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(ThreadId -&gt; Action) -&gt; Set ThreadId -&gt; Action
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Foldable t, Applicative f) =&gt;
+(a -&gt; f b) -&gt; t a -&gt; f ()
+</span><span class="hs-identifier hs-var">traverse_</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679115484"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115484"><span class="hs-identifier hs-var">tid</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; KilledByHttp2ThreadManager -&gt; Action
+forall e (m :: * -&gt; *).
+(Exception e, MonadIO m) =&gt;
+ThreadId -&gt; e -&gt; m ()
+</span><span class="hs-identifier hs-var">E.throwTo</span></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679115484"><span class="hs-identifier hs-var">tid</span></a></span><span> </span><span class="annot"><span class="annottext">(KilledByHttp2ThreadManager -&gt; Action)
+-&gt; KilledByHttp2ThreadManager -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Maybe SomeException -&gt; KilledByHttp2ThreadManager
+</span><a href="Network.HTTP2.H2.Manager.html#KilledByHttp2ThreadManager"><span class="hs-identifier hs-var">KilledByHttp2ThreadManager</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe SomeException
+</span><a href="#local-6989586621679115482"><span class="hs-identifier hs-var">err</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Set ThreadId
+</span><a href="#local-6989586621679115481"><span class="hs-identifier hs-var">set</span></a></span><span>
+</span><span id="line-150"></span><span>
+</span><span id="line-151"></span><span class="annot"><span class="hs-comment">-- | Killing the IO action of the second argument on timeout.</span></span><span>
+</span><span id="line-152"></span><span id="local-6989586621679115309"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#timeoutKillThread"><span class="hs-identifier hs-type">timeoutKillThread</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">T.Handle</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679115309"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679115309"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-153"></span><span id="timeoutKillThread"><span class="annot"><span class="annottext">timeoutKillThread :: forall a. Manager -&gt; (Handle -&gt; IO a) -&gt; IO a
+</span><a href="Network.HTTP2.H2.Manager.html#timeoutKillThread"><span class="hs-identifier hs-var hs-var">timeoutKillThread</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679115488"><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115488"><span class="hs-identifier hs-var">tmgr</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679115489"><span class="annot"><span class="annottext">Handle -&gt; IO a
+</span><a href="#local-6989586621679115489"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Handle -&gt; (Handle -&gt; Action) -&gt; (Handle -&gt; IO a) -&gt; IO a
+forall (m :: * -&gt; *) a b c.
+MonadUnliftIO m =&gt;
+m a -&gt; (a -&gt; m b) -&gt; (a -&gt; m c) -&gt; m c
+</span><span class="hs-identifier hs-var">E.bracket</span></span><span> </span><span class="annot"><span class="annottext">IO Handle
+</span><a href="#local-6989586621679115491"><span class="hs-identifier hs-var">register</span></a></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Action
+</span><span class="hs-identifier hs-var">T.cancel</span></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; IO a
+</span><a href="#local-6989586621679115489"><span class="hs-identifier hs-var">action</span></a></span><span>
+</span><span id="line-154"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-155"></span><span>    </span><span id="local-6989586621679115491"><span class="annot"><span class="annottext">register :: IO Handle
+</span><a href="#local-6989586621679115491"><span class="hs-identifier hs-var hs-var">register</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Manager -&gt; Action -&gt; IO Handle
+</span><span class="hs-identifier hs-var">T.registerKillThread</span></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115488"><span class="hs-identifier hs-var">tmgr</span></a></span><span> </span><span class="annot"><span class="annottext">Action
+</span><a href="Network.HTTP2.H2.Manager.html#noAction"><span class="hs-identifier hs-var">noAction</span></a></span><span>
+</span><span id="line-156"></span><span>
+</span><span id="line-157"></span><span class="hs-comment">-- | Registering closer for a resource and</span><span>
+</span><span id="line-158"></span><span class="hs-comment">--   returning a timer refresher.</span><span>
+</span><span id="line-159"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#timeoutClose"><span class="hs-identifier hs-type">timeoutClose</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-160"></span><span id="timeoutClose"><span class="annot"><span class="annottext">timeoutClose :: Manager -&gt; Action -&gt; IO Action
+</span><a href="Network.HTTP2.H2.Manager.html#timeoutClose"><span class="hs-identifier hs-var hs-var">timeoutClose</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679115494"><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115494"><span class="hs-identifier hs-var">tmgr</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679115495"><span class="annot"><span class="annottext">Action
+</span><a href="#local-6989586621679115495"><span class="hs-identifier hs-var">closer</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-161"></span><span>    </span><span id="local-6989586621679115496"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679115496"><span class="hs-identifier hs-var">th</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Manager -&gt; Action -&gt; IO Handle
+</span><span class="hs-identifier hs-var">T.register</span></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679115494"><span class="hs-identifier hs-var">tmgr</span></a></span><span> </span><span class="annot"><span class="annottext">Action
+</span><a href="#local-6989586621679115495"><span class="hs-identifier hs-var">closer</span></a></span><span>
+</span><span id="line-162"></span><span>    </span><span class="annot"><span class="annottext">Action -&gt; IO Action
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Action -&gt; IO Action) -&gt; Action -&gt; IO Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Action
+</span><span class="hs-identifier hs-var">T.tickle</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679115496"><span class="hs-identifier hs-var">th</span></a></span><span>
+</span><span id="line-163"></span><span>
+</span><span id="line-164"></span><span class="hs-keyword">data</span><span> </span><span id="KilledByHttp2ThreadManager"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#KilledByHttp2ThreadManager"><span class="hs-identifier hs-var">KilledByHttp2ThreadManager</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="KilledByHttp2ThreadManager"><span class="annot"><a href="Network.HTTP2.H2.Manager.html#KilledByHttp2ThreadManager"><span class="hs-identifier hs-var">KilledByHttp2ThreadManager</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">SomeException</span></span><span class="hs-special">)</span><span>
+</span><span id="line-165"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679115500"><span id="local-6989586621679115506"><span id="local-6989586621679115510"><span class="annot"><span class="annottext">Int -&gt; KilledByHttp2ThreadManager -&gt; ShowS
+[KilledByHttp2ThreadManager] -&gt; ShowS
+KilledByHttp2ThreadManager -&gt; String
+(Int -&gt; KilledByHttp2ThreadManager -&gt; ShowS)
+-&gt; (KilledByHttp2ThreadManager -&gt; String)
+-&gt; ([KilledByHttp2ThreadManager] -&gt; ShowS)
+-&gt; Show KilledByHttp2ThreadManager
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; KilledByHttp2ThreadManager -&gt; ShowS
+showsPrec :: Int -&gt; KilledByHttp2ThreadManager -&gt; ShowS
+$cshow :: KilledByHttp2ThreadManager -&gt; String
+show :: KilledByHttp2ThreadManager -&gt; String
+$cshowList :: [KilledByHttp2ThreadManager] -&gt; ShowS
+showList :: [KilledByHttp2ThreadManager] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-166"></span><span>
+</span><span id="line-167"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679115521"><span class="annot"><span class="hs-identifier hs-type">Exception</span></span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#KilledByHttp2ThreadManager"><span class="hs-identifier hs-type">KilledByHttp2ThreadManager</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-168"></span><span>    </span><span id="local-6989586621679115525"><span class="annot"><span class="annottext">toException :: KilledByHttp2ThreadManager -&gt; SomeException
+</span><a href="#local-6989586621679115525"><span class="hs-identifier hs-var hs-var hs-var hs-var">toException</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">KilledByHttp2ThreadManager -&gt; SomeException
+forall e. Exception e =&gt; e -&gt; SomeException
+</span><span class="hs-identifier hs-var">asyncExceptionToException</span></span><span>
+</span><span id="line-169"></span><span>    </span><span id="local-6989586621679115529"><span class="annot"><span class="annottext">fromException :: SomeException -&gt; Maybe KilledByHttp2ThreadManager
+</span><a href="#local-6989586621679115529"><span class="hs-identifier hs-var hs-var hs-var hs-var">fromException</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; Maybe KilledByHttp2ThreadManager
+forall e. Exception e =&gt; SomeException -&gt; Maybe e
+</span><span class="hs-identifier hs-var">asyncExceptionFromException</span></span><span>
+</span><span id="line-170"></span><span>
+</span><span id="line-171"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#incCounter"><span class="hs-identifier hs-type">incCounter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-174"></span><span id="incCounter"><span class="annot"><span class="annottext">incCounter :: Manager -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#incCounter"><span class="hs-identifier hs-var hs-var">incCounter</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679115532"><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621679115532"><span class="hs-identifier hs-var">cnt</span></a></span></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">STM () -&gt; Action
+forall (m :: * -&gt; *) a. MonadIO m =&gt; STM a -&gt; m a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM () -&gt; Action) -&gt; STM () -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TVar Int -&gt; (Int -&gt; Int) -&gt; STM ()
+forall a. TVar a -&gt; (a -&gt; a) -&gt; STM ()
+</span><span class="hs-identifier hs-var">modifyTVar'</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621679115532"><span class="hs-identifier hs-var">cnt</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-175"></span><span>
+</span><span id="line-176"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#decCounter"><span class="hs-identifier hs-type">decCounter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-177"></span><span id="decCounter"><span class="annot"><span class="annottext">decCounter :: Manager -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#decCounter"><span class="hs-identifier hs-var hs-var">decCounter</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679115535"><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621679115535"><span class="hs-identifier hs-var">cnt</span></a></span></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">STM () -&gt; Action
+forall (m :: * -&gt; *) a. MonadIO m =&gt; STM a -&gt; m a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM () -&gt; Action) -&gt; STM () -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TVar Int -&gt; (Int -&gt; Int) -&gt; STM ()
+forall a. TVar a -&gt; (a -&gt; a) -&gt; STM ()
+</span><span class="hs-identifier hs-var">modifyTVar'</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621679115535"><span class="hs-identifier hs-var">cnt</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">subtract</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-178"></span><span>
+</span><span id="line-179"></span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#waitCounter0"><span class="hs-identifier hs-type">waitCounter0</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-180"></span><span id="waitCounter0"><span class="annot"><span class="annottext">waitCounter0 :: Manager -&gt; Action
+</span><a href="Network.HTTP2.H2.Manager.html#waitCounter0"><span class="hs-identifier hs-var hs-var">waitCounter0</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP2.H2.Manager.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="annot"><span class="annottext">TQueue Command
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">IORef Action
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679115537"><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621679115537"><span class="hs-identifier hs-var">cnt</span></a></span></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">STM () -&gt; Action
+forall (m :: * -&gt; *) a. MonadIO m =&gt; STM a -&gt; m a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM () -&gt; Action) -&gt; STM () -&gt; Action
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-181"></span><span>    </span><span id="local-6989586621679115538"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679115538"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TVar Int -&gt; STM Int
+forall a. TVar a -&gt; STM a
+</span><span class="hs-identifier hs-var">readTVar</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621679115537"><span class="hs-identifier hs-var">cnt</span></a></span><span>
+</span><span id="line-182"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; STM ()
+</span><span class="hs-identifier hs-var">checkSTM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679115538"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-183"></span></pre></body></html>

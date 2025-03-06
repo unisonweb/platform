@@ -1,0 +1,535 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | Functionality for using YAML as configuration files</span><span>
+</span><span id="line-4"></span><span class="hs-comment">--</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- In particular, merging environment variables with yaml values</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- 'loadYamlSettings' is a high-level API for loading YAML and merging environment variables.</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- A yaml value of @_env:ENV_VAR:default@ will lookup the environment variable @ENV_VAR@.</span><span>
+</span><span id="line-9"></span><span class="hs-comment">--</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- On a historical note, this code was taken directly from the yesod web framework's configuration module.</span><span>
+</span><span id="line-11"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.Yaml.Config</span><span>
+</span><span id="line-12"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- * High-level</span></span><span>
+</span><span id="line-13"></span><span>      </span><span class="annot"><a href="Data.Yaml.Config.html#loadYamlSettings"><span class="hs-identifier">loadYamlSettings</span></a></span><span>
+</span><span id="line-14"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#loadYamlSettingsArgs"><span class="hs-identifier">loadYamlSettingsArgs</span></a></span><span>
+</span><span id="line-15"></span><span>      </span><span class="annot"><span class="hs-comment">-- ** EnvUsage</span></span><span>
+</span><span id="line-16"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#EnvUsage"><span class="hs-identifier">EnvUsage</span></a></span><span>
+</span><span id="line-17"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#ignoreEnv"><span class="hs-identifier">ignoreEnv</span></a></span><span>
+</span><span id="line-18"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#useEnv"><span class="hs-identifier">useEnv</span></a></span><span>
+</span><span id="line-19"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#requireEnv"><span class="hs-identifier">requireEnv</span></a></span><span>
+</span><span id="line-20"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#useCustomEnv"><span class="hs-identifier">useCustomEnv</span></a></span><span>
+</span><span id="line-21"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#requireCustomEnv"><span class="hs-identifier">requireCustomEnv</span></a></span><span>
+</span><span id="line-22"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Lower level</span></span><span>
+</span><span id="line-23"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#applyCurrentEnv"><span class="hs-identifier">applyCurrentEnv</span></a></span><span>
+</span><span id="line-24"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#getCurrentEnv"><span class="hs-identifier">getCurrentEnv</span></a></span><span>
+</span><span id="line-25"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#applyEnvValue"><span class="hs-identifier">applyEnvValue</span></a></span><span>
+</span><span id="line-26"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span class="hs-cpp">
+
+
+#if __GLASGOW_HASKELL__ &lt; 710
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-identifier">Control.Applicative</span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-operator">&lt;$&gt;</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="hs-identifier">Data.Monoid</span><span class="hs-cpp">
+#endif
+</span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Semigroup</span></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List.NonEmpty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">nonEmpty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Aeson</span></span><span class="hs-cpp">
+#if MIN_VERSION_aeson(2,0,0)
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Aeson.Key</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">K</span></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Aeson.KeyMap</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">H</span></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Aeson.KeyMap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">KeyMap</span></span><span class="hs-special">)</span><span class="hs-cpp">
+#else
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-identifier">Data.HashMap.Strict</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="hs-identifier">H</span><span class="hs-cpp">
+#endif
+</span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Text</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">pack</span></span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Environment</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">getArgs</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">getEnvironment</span></span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Arrow</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-operator">(***)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">forM</span></span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">throwIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text.Encoding</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">encodeUtf8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Data.Yaml.html"><span class="hs-identifier">Data.Yaml</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Y</span></span><span>
+</span><span id="line-50"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Data.Yaml.Include.html"><span class="hs-identifier">Data.Yaml.Include</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">YI</span></span><span>
+</span><span id="line-51"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">fromMaybe</span></span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span class="hs-cpp">
+
+#if MIN_VERSION_aeson(2,0,0)
+</span><span class="annot"><a href="Data.Yaml.Config.html#fromText"><span class="hs-identifier hs-type">fromText</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Key</span></span><span>
+</span><span id="line-56"></span><span id="fromText"><span class="annot"><span class="annottext">fromText :: Text -&gt; Key
+</span><a href="Data.Yaml.Config.html#fromText"><span class="hs-identifier hs-var hs-var">fromText</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Key
+</span><span class="hs-identifier hs-var">K.fromText</span></span><span class="hs-cpp">
+#else
+</span><span class="hs-identifier">fromText</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">T.Text</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">T.Text</span><span>
+</span><span id="line-59"></span><span class="hs-identifier">fromText</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">id</span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="hs-keyword">type</span><span> </span><span class="hs-identifier">KeyMap</span><span> </span><span class="hs-identifier">a</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">H.HashMap</span><span> </span><span class="hs-identifier">T.Text</span><span> </span><span class="hs-identifier">a</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-64"></span><span class="hs-keyword">newtype</span><span> </span><span id="MergedValue"><span class="annot"><a href="Data.Yaml.Config.html#MergedValue"><span class="hs-identifier hs-var">MergedValue</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="MergedValue"><span class="annot"><a href="Data.Yaml.Config.html#MergedValue"><span class="hs-identifier hs-var">MergedValue</span></a></span></span><span> </span><span class="hs-special">{</span><span> </span><span id="getMergedValue"><span class="annot"><span class="annottext">MergedValue -&gt; Value
+</span><a href="Data.Yaml.Config.html#getMergedValue"><span class="hs-identifier hs-var hs-var">getMergedValue</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Value</span></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679100619"><span id="local-6989586621679100623"><span class="annot"><span class="hs-identifier hs-type">Semigroup</span></span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#MergedValue"><span class="hs-identifier hs-type">MergedValue</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-67"></span><span>    </span><span class="annot"><a href="Data.Yaml.Config.html#MergedValue"><span class="hs-identifier hs-type">MergedValue</span></a></span><span> </span><span id="local-6989586621679100628"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100628"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679100629"><span class="annot"><span class="annottext">&lt;&gt; :: MergedValue -&gt; MergedValue -&gt; MergedValue
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;&gt;</span></span></span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#MergedValue"><span class="hs-identifier hs-type">MergedValue</span></a></span><span> </span><span id="local-6989586621679100630"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100630"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Value -&gt; MergedValue
+</span><a href="Data.Yaml.Config.html#MergedValue"><span class="hs-identifier hs-var">MergedValue</span></a></span><span> </span><span class="annot"><span class="annottext">(Value -&gt; MergedValue) -&gt; Value -&gt; MergedValue
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Value -&gt; Value -&gt; Value
+</span><a href="Data.Yaml.Config.html#mergeValues"><span class="hs-identifier hs-var">mergeValues</span></a></span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100628"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100630"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span class="annot"><span class="hs-comment">-- | Left biased</span></span><span>
+</span><span id="line-70"></span><span class="annot"><a href="Data.Yaml.Config.html#mergeValues"><span class="hs-identifier hs-type">mergeValues</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Value</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Value</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Value</span></span><span>
+</span><span id="line-71"></span><span id="mergeValues"><span class="annot"><span class="annottext">mergeValues :: Value -&gt; Value -&gt; Value
+</span><a href="Data.Yaml.Config.html#mergeValues"><span class="hs-identifier hs-var hs-var">mergeValues</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Object</span></span><span> </span><span id="local-6989586621679100633"><span class="annot"><span class="annottext">Object
+</span><a href="#local-6989586621679100633"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Object</span></span><span> </span><span id="local-6989586621679100634"><span class="annot"><span class="annottext">Object
+</span><a href="#local-6989586621679100634"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Object -&gt; Value
+</span><span class="hs-identifier hs-var">Object</span></span><span> </span><span class="annot"><span class="annottext">(Object -&gt; Value) -&gt; Object -&gt; Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Value -&gt; Value -&gt; Value) -&gt; Object -&gt; Object -&gt; Object
+forall v. (v -&gt; v -&gt; v) -&gt; KeyMap v -&gt; KeyMap v -&gt; KeyMap v
+</span><span class="hs-identifier hs-var">H.unionWith</span></span><span> </span><span class="annot"><span class="annottext">Value -&gt; Value -&gt; Value
+</span><a href="Data.Yaml.Config.html#mergeValues"><span class="hs-identifier hs-var">mergeValues</span></a></span><span> </span><span class="annot"><span class="annottext">Object
+</span><a href="#local-6989586621679100633"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Object
+</span><a href="#local-6989586621679100634"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-72"></span><span class="annot"><a href="Data.Yaml.Config.html#mergeValues"><span class="hs-identifier hs-var">mergeValues</span></a></span><span> </span><span id="local-6989586621679100636"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100636"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="annot"><span class="annottext">Value
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100636"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- | Override environment variable placeholders in the given @Value@ with</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- values from the environment.</span><span>
+</span><span id="line-76"></span><span class="hs-comment">--</span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- If the first argument is @True@, then all placeholders _must_ be provided by</span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- the actual environment. Otherwise, default values from the @Value@ will be</span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- used.</span><span>
+</span><span id="line-80"></span><span class="hs-comment">--</span><span>
+</span><span id="line-81"></span><span class="hs-comment">-- @since 0.8.16</span><span>
+</span><span id="line-82"></span><span class="annot"><a href="Data.Yaml.Config.html#applyEnvValue"><span class="hs-identifier hs-type">applyEnvValue</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ require an environment variable to be present?</span></span><span>
+</span><span id="line-83"></span><span>              </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">KeyMap</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Value</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Value</span></span><span>
+</span><span id="line-84"></span><span id="applyEnvValue"><span class="annot"><span class="annottext">applyEnvValue :: Bool -&gt; KeyMap Text -&gt; Value -&gt; Value
+</span><a href="Data.Yaml.Config.html#applyEnvValue"><span class="hs-identifier hs-var hs-var">applyEnvValue</span></a></span></span><span> </span><span id="local-6989586621679100637"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679100637"><span class="hs-identifier hs-var">requireEnv'</span></a></span></span><span> </span><span id="local-6989586621679100638"><span class="annot"><span class="annottext">KeyMap Text
+</span><a href="#local-6989586621679100638"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-85"></span><span>    </span><span class="annot"><span class="annottext">Value -&gt; Value
+</span><a href="#local-6989586621679100639"><span class="hs-identifier hs-var">goV</span></a></span><span>
+</span><span id="line-86"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-87"></span><span>    </span><span id="local-6989586621679100639"><span class="annot"><span class="annottext">goV :: Value -&gt; Value
+</span><a href="#local-6989586621679100639"><span class="hs-identifier hs-var hs-var">goV</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Object</span></span><span> </span><span id="local-6989586621679100648"><span class="annot"><span class="annottext">Object
+</span><a href="#local-6989586621679100648"><span class="hs-identifier hs-var">o</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Object -&gt; Value
+</span><span class="hs-identifier hs-var">Object</span></span><span> </span><span class="annot"><span class="annottext">(Object -&gt; Value) -&gt; Object -&gt; Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Value -&gt; Value
+</span><a href="#local-6989586621679100639"><span class="hs-identifier hs-var">goV</span></a></span><span> </span><span class="annot"><span class="annottext">(Value -&gt; Value) -&gt; Object -&gt; Object
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Object
+</span><a href="#local-6989586621679100648"><span class="hs-identifier hs-var">o</span></a></span><span>
+</span><span id="line-88"></span><span>    </span><span class="annot"><a href="#local-6989586621679100639"><span class="hs-identifier hs-var">goV</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Array</span></span><span> </span><span id="local-6989586621679100651"><span class="annot"><span class="annottext">Array
+</span><a href="#local-6989586621679100651"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Array -&gt; Value
+</span><span class="hs-identifier hs-var">Array</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Value -&gt; Value
+</span><a href="#local-6989586621679100639"><span class="hs-identifier hs-var">goV</span></a></span><span> </span><span class="annot"><span class="annottext">(Value -&gt; Value) -&gt; Array -&gt; Array
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Array
+</span><a href="#local-6989586621679100651"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span>    </span><span class="annot"><a href="#local-6989586621679100639"><span class="hs-identifier hs-var">goV</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span id="local-6989586621679100653"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100653"><span class="hs-identifier hs-var">t1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Value -&gt; Maybe Value -&gt; Value
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text -&gt; Value
+</span><span class="hs-identifier hs-var">String</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100653"><span class="hs-identifier hs-var">t1</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Maybe Value -&gt; Value) -&gt; Maybe Value -&gt; Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-90"></span><span>        </span><span id="local-6989586621679100654"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100654"><span class="hs-identifier hs-var">t2</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Maybe Text
+</span><span class="hs-identifier hs-var">T.stripPrefix</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;_env:&quot;</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100653"><span class="hs-identifier hs-var">t1</span></a></span><span>
+</span><span id="line-91"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679100658"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100658"><span class="hs-identifier hs-var">name</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679100659"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100659"><span class="hs-identifier hs-var">t3</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Bool) -&gt; Text -&gt; (Text, Text)
+</span><span class="hs-identifier hs-var">T.break</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">':'</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100654"><span class="hs-identifier hs-var">t2</span></a></span><span>
+</span><span id="line-92"></span><span>            </span><span id="local-6989586621679100664"><span class="annot"><span class="annottext">mdef :: Maybe Value
+</span><a href="#local-6989586621679100664"><span class="hs-identifier hs-var hs-var">mdef</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Value) -&gt; Maybe Text -&gt; Maybe Value
+forall a b. (a -&gt; b) -&gt; Maybe a -&gt; Maybe b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Value
+</span><a href="#local-6989586621679100665"><span class="hs-identifier hs-var">parseValue</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe Text -&gt; Maybe Value) -&gt; Maybe Text -&gt; Maybe Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Maybe Text
+</span><span class="hs-identifier hs-var">T.stripPrefix</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;:&quot;</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100659"><span class="hs-identifier hs-var">t3</span></a></span><span>
+</span><span id="line-93"></span><span>        </span><span class="annot"><span class="annottext">Value -&gt; Maybe Value
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(Value -&gt; Maybe Value) -&gt; Value -&gt; Maybe Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Key -&gt; KeyMap Text -&gt; Maybe Text
+forall v. Key -&gt; KeyMap v -&gt; Maybe v
+</span><span class="hs-identifier hs-var">H.lookup</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text -&gt; Key
+</span><a href="Data.Yaml.Config.html#fromText"><span class="hs-identifier hs-var">fromText</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100658"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">KeyMap Text
+</span><a href="#local-6989586621679100638"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-94"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679100667"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100667"><span class="hs-identifier hs-var">val</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-95"></span><span>                </span><span class="hs-comment">-- If the default value parses as a String, we treat the</span><span>
+</span><span id="line-96"></span><span>                </span><span class="hs-comment">-- environment variable as a raw value and do not parse it.</span><span>
+</span><span id="line-97"></span><span>                </span><span class="hs-comment">-- This means that things like numeric passwords just work.</span><span>
+</span><span id="line-98"></span><span>                </span><span class="hs-comment">-- However, for originally numerical or boolean values (e.g.,</span><span>
+</span><span id="line-99"></span><span>                </span><span class="hs-comment">-- port numbers), we still perform a normal YAML parse.</span><span>
+</span><span id="line-100"></span><span>                </span><span class="hs-comment">--</span><span>
+</span><span id="line-101"></span><span>                </span><span class="hs-comment">-- For details, see:</span><span>
+</span><span id="line-102"></span><span>                </span><span class="hs-comment">-- https://github.com/yesodweb/yesod/issues/1061</span><span>
+</span><span id="line-103"></span><span>                </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe Value
+</span><a href="#local-6989586621679100664"><span class="hs-identifier hs-var">mdef</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-104"></span><span>                    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Value
+</span><span class="hs-identifier hs-var">String</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100667"><span class="hs-identifier hs-var">val</span></a></span><span>
+</span><span id="line-105"></span><span>                    </span><span class="annot"><span class="annottext">Maybe Value
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Value
+</span><a href="#local-6989586621679100665"><span class="hs-identifier hs-var">parseValue</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100667"><span class="hs-identifier hs-var">val</span></a></span><span>
+</span><span id="line-106"></span><span>            </span><span class="annot"><span class="annottext">Maybe Text
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-107"></span><span>                </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe Value
+</span><a href="#local-6989586621679100664"><span class="hs-identifier hs-var">mdef</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-108"></span><span>                    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679100668"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100668"><span class="hs-identifier hs-var">val</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679100637"><span class="hs-identifier hs-var">requireEnv'</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100668"><span class="hs-identifier hs-var">val</span></a></span><span>
+</span><span id="line-109"></span><span>                    </span><span class="annot"><span class="annottext">Maybe Value
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Value
+</span><span class="hs-identifier hs-var">Null</span></span><span>
+</span><span id="line-110"></span><span>    </span><span class="annot"><a href="#local-6989586621679100639"><span class="hs-identifier hs-var">goV</span></a></span><span> </span><span id="local-6989586621679100671"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100671"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100671"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-111"></span><span>
+</span><span id="line-112"></span><span>    </span><span id="local-6989586621679100665"><span class="annot"><span class="annottext">parseValue :: Text -&gt; Value
+</span><a href="#local-6989586621679100665"><span class="hs-identifier hs-var hs-var">parseValue</span></a></span></span><span> </span><span id="local-6989586621679100677"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100677"><span class="hs-identifier hs-var">val</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SomeException -&gt; Value)
+-&gt; (Value -&gt; Value) -&gt; Either SomeException Value -&gt; Value
+forall a c b. (a -&gt; c) -&gt; (b -&gt; c) -&gt; Either a b -&gt; c
+</span><span class="hs-identifier hs-var">either</span></span><span>
+</span><span id="line-113"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Value -&gt; SomeException -&gt; Value
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text -&gt; Value
+</span><span class="hs-identifier hs-var">String</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100677"><span class="hs-identifier hs-var">val</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>      </span><span class="annot"><span class="annottext">Value -&gt; Value
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span>
+</span><span id="line-115"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Either SomeException Value
+forall (m :: * -&gt; *) a.
+(MonadThrow m, FromJSON a) =&gt;
+ByteString -&gt; m a
+</span><a href="Data.Yaml.html#decodeThrow"><span class="hs-identifier hs-var">Y.decodeThrow</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Either SomeException Value)
+-&gt; ByteString -&gt; Either SomeException Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; ByteString
+</span><span class="hs-identifier hs-var">encodeUtf8</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679100677"><span class="hs-identifier hs-var">val</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span class="hs-comment">-- | Get the actual environment as a @HashMap@ from @Text@ to @Text@.</span><span>
+</span><span id="line-118"></span><span class="hs-comment">--</span><span>
+</span><span id="line-119"></span><span class="hs-comment">-- @since 0.8.16</span><span>
+</span><span id="line-120"></span><span class="annot"><a href="Data.Yaml.Config.html#getCurrentEnv"><span class="hs-identifier hs-type">getCurrentEnv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">KeyMap</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span class="hs-special">)</span><span>
+</span><span id="line-121"></span><span id="getCurrentEnv"><span class="annot"><span class="annottext">getCurrentEnv :: IO (KeyMap Text)
+</span><a href="Data.Yaml.Config.html#getCurrentEnv"><span class="hs-identifier hs-var hs-var">getCurrentEnv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">([(String, String)] -&gt; KeyMap Text)
+-&gt; IO [(String, String)] -&gt; IO (KeyMap Text)
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(Key, Text)] -&gt; KeyMap Text
+forall v. [(Key, v)] -&gt; KeyMap v
+</span><span class="hs-identifier hs-var">H.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(Key, Text)] -&gt; KeyMap Text)
+-&gt; ([(String, String)] -&gt; [(Key, Text)])
+-&gt; [(String, String)]
+-&gt; KeyMap Text
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">((String, String) -&gt; (Key, Text))
+-&gt; [(String, String)] -&gt; [(Key, Text)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text -&gt; Key
+</span><a href="Data.Yaml.Config.html#fromText"><span class="hs-identifier hs-var">fromText</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Key) -&gt; (String -&gt; Text) -&gt; String -&gt; Key
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; Text
+</span><span class="hs-identifier hs-var">pack</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; Key)
+-&gt; (String -&gt; Text) -&gt; (String, String) -&gt; (Key, Text)
+forall b c b' c'. (b -&gt; c) -&gt; (b' -&gt; c') -&gt; (b, b') -&gt; (c, c')
+forall (a :: * -&gt; * -&gt; *) b c b' c'.
+Arrow a =&gt;
+a b c -&gt; a b' c' -&gt; a (b, b') (c, c')
+</span><span class="hs-operator hs-var">***</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; Text
+</span><span class="hs-identifier hs-var">pack</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">IO [(String, String)]
+</span><span class="hs-identifier hs-var">getEnvironment</span></span><span>
+</span><span id="line-122"></span><span>
+</span><span id="line-123"></span><span class="hs-comment">-- | A convenience wrapper around 'applyEnvValue' and 'getCurrentEnv'</span><span>
+</span><span id="line-124"></span><span class="hs-comment">--</span><span>
+</span><span id="line-125"></span><span class="hs-comment">-- @since 0.8.16</span><span>
+</span><span id="line-126"></span><span class="annot"><a href="Data.Yaml.Config.html#applyCurrentEnv"><span class="hs-identifier hs-type">applyCurrentEnv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ require an environment variable to be present?</span></span><span>
+</span><span id="line-127"></span><span>                </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Value</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Value</span></span><span>
+</span><span id="line-128"></span><span id="applyCurrentEnv"><span class="annot"><span class="annottext">applyCurrentEnv :: Bool -&gt; Value -&gt; IO Value
+</span><a href="Data.Yaml.Config.html#applyCurrentEnv"><span class="hs-identifier hs-var hs-var">applyCurrentEnv</span></a></span></span><span> </span><span id="local-6989586621679100684"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679100684"><span class="hs-identifier hs-var">requireEnv'</span></a></span></span><span> </span><span id="local-6989586621679100685"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100685"><span class="hs-identifier hs-var">orig</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(KeyMap Text -&gt; Value -&gt; Value) -&gt; Value -&gt; KeyMap Text -&gt; Value
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; KeyMap Text -&gt; Value -&gt; Value
+</span><a href="Data.Yaml.Config.html#applyEnvValue"><span class="hs-identifier hs-var">applyEnvValue</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679100684"><span class="hs-identifier hs-var">requireEnv'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100685"><span class="hs-identifier hs-var">orig</span></a></span><span> </span><span class="annot"><span class="annottext">(KeyMap Text -&gt; Value) -&gt; IO (KeyMap Text) -&gt; IO Value
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO (KeyMap Text)
+</span><a href="Data.Yaml.Config.html#getCurrentEnv"><span class="hs-identifier hs-var">getCurrentEnv</span></a></span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span class="hs-comment">-- | Defines how we want to use the environment variables when loading a config</span><span>
+</span><span id="line-131"></span><span class="hs-comment">-- file. Use the smart constructors provided by this module.</span><span>
+</span><span id="line-132"></span><span class="hs-comment">--</span><span>
+</span><span id="line-133"></span><span class="hs-comment">-- @since 0.8.16</span><span>
+</span><span id="line-134"></span><span class="hs-keyword">data</span><span> </span><span id="EnvUsage"><span class="annot"><a href="Data.Yaml.Config.html#EnvUsage"><span class="hs-identifier hs-var">EnvUsage</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="IgnoreEnv"><span class="annot"><a href="Data.Yaml.Config.html#IgnoreEnv"><span class="hs-identifier hs-var">IgnoreEnv</span></a></span></span><span>
+</span><span id="line-135"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span id="UseEnv"><span class="annot"><a href="Data.Yaml.Config.html#UseEnv"><span class="hs-identifier hs-var">UseEnv</span></a></span></span><span>
+</span><span id="line-136"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span id="RequireEnv"><span class="annot"><a href="Data.Yaml.Config.html#RequireEnv"><span class="hs-identifier hs-var">RequireEnv</span></a></span></span><span>
+</span><span id="line-137"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span id="UseCustomEnv"><span class="annot"><a href="Data.Yaml.Config.html#UseCustomEnv"><span class="hs-identifier hs-var">UseCustomEnv</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">KeyMap</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span class="hs-special">)</span><span>
+</span><span id="line-138"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span id="RequireCustomEnv"><span class="annot"><a href="Data.Yaml.Config.html#RequireCustomEnv"><span class="hs-identifier hs-var">RequireCustomEnv</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">KeyMap</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>
+</span><span id="line-140"></span><span class="hs-comment">-- | Do not use any environment variables, instead relying on defaults values</span><span>
+</span><span id="line-141"></span><span class="hs-comment">-- in the config file.</span><span>
+</span><span id="line-142"></span><span class="hs-comment">--</span><span>
+</span><span id="line-143"></span><span class="hs-comment">-- @since 0.8.16</span><span>
+</span><span id="line-144"></span><span class="annot"><a href="Data.Yaml.Config.html#ignoreEnv"><span class="hs-identifier hs-type">ignoreEnv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#EnvUsage"><span class="hs-identifier hs-type">EnvUsage</span></a></span><span>
+</span><span id="line-145"></span><span id="ignoreEnv"><span class="annot"><span class="annottext">ignoreEnv :: EnvUsage
+</span><a href="Data.Yaml.Config.html#ignoreEnv"><span class="hs-identifier hs-var hs-var">ignoreEnv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EnvUsage
+</span><a href="Data.Yaml.Config.html#IgnoreEnv"><span class="hs-identifier hs-var">IgnoreEnv</span></a></span><span>
+</span><span id="line-146"></span><span>
+</span><span id="line-147"></span><span class="hs-comment">-- | Use environment variables when available, otherwise use defaults.</span><span>
+</span><span id="line-148"></span><span class="hs-comment">--</span><span>
+</span><span id="line-149"></span><span class="hs-comment">-- @since 0.8.16</span><span>
+</span><span id="line-150"></span><span class="annot"><a href="Data.Yaml.Config.html#useEnv"><span class="hs-identifier hs-type">useEnv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#EnvUsage"><span class="hs-identifier hs-type">EnvUsage</span></a></span><span>
+</span><span id="line-151"></span><span id="useEnv"><span class="annot"><span class="annottext">useEnv :: EnvUsage
+</span><a href="Data.Yaml.Config.html#useEnv"><span class="hs-identifier hs-var hs-var">useEnv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EnvUsage
+</span><a href="Data.Yaml.Config.html#UseEnv"><span class="hs-identifier hs-var">UseEnv</span></a></span><span>
+</span><span id="line-152"></span><span>
+</span><span id="line-153"></span><span class="hs-comment">-- | Do not use default values from the config file, but instead take all</span><span>
+</span><span id="line-154"></span><span class="hs-comment">-- overrides from the environment. If a value is missing, loading the file will</span><span>
+</span><span id="line-155"></span><span class="hs-comment">-- throw an exception.</span><span>
+</span><span id="line-156"></span><span class="hs-comment">--</span><span>
+</span><span id="line-157"></span><span class="hs-comment">-- @since 0.8.16</span><span>
+</span><span id="line-158"></span><span class="annot"><a href="Data.Yaml.Config.html#requireEnv"><span class="hs-identifier hs-type">requireEnv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#EnvUsage"><span class="hs-identifier hs-type">EnvUsage</span></a></span><span>
+</span><span id="line-159"></span><span id="requireEnv"><span class="annot"><span class="annottext">requireEnv :: EnvUsage
+</span><a href="Data.Yaml.Config.html#requireEnv"><span class="hs-identifier hs-var hs-var">requireEnv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EnvUsage
+</span><a href="Data.Yaml.Config.html#RequireEnv"><span class="hs-identifier hs-var">RequireEnv</span></a></span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="hs-comment">-- | Same as 'useEnv', but instead of the actual environment, use the provided</span><span>
+</span><span id="line-162"></span><span class="hs-comment">-- @HashMap@ as the environment.</span><span>
+</span><span id="line-163"></span><span class="hs-comment">--</span><span>
+</span><span id="line-164"></span><span class="hs-comment">-- @since 0.8.16</span><span>
+</span><span id="line-165"></span><span class="annot"><a href="Data.Yaml.Config.html#useCustomEnv"><span class="hs-identifier hs-type">useCustomEnv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">KeyMap</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#EnvUsage"><span class="hs-identifier hs-type">EnvUsage</span></a></span><span>
+</span><span id="line-166"></span><span id="useCustomEnv"><span class="annot"><span class="annottext">useCustomEnv :: KeyMap Text -&gt; EnvUsage
+</span><a href="Data.Yaml.Config.html#useCustomEnv"><span class="hs-identifier hs-var hs-var">useCustomEnv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">KeyMap Text -&gt; EnvUsage
+</span><a href="Data.Yaml.Config.html#UseCustomEnv"><span class="hs-identifier hs-var">UseCustomEnv</span></a></span><span>
+</span><span id="line-167"></span><span>
+</span><span id="line-168"></span><span class="hs-comment">-- | Same as 'requireEnv', but instead of the actual environment, use the</span><span>
+</span><span id="line-169"></span><span class="hs-comment">-- provided @HashMap@ as the environment.</span><span>
+</span><span id="line-170"></span><span class="hs-comment">--</span><span>
+</span><span id="line-171"></span><span class="hs-comment">-- @since 0.8.16</span><span>
+</span><span id="line-172"></span><span class="annot"><a href="Data.Yaml.Config.html#requireCustomEnv"><span class="hs-identifier hs-type">requireCustomEnv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">KeyMap</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#EnvUsage"><span class="hs-identifier hs-type">EnvUsage</span></a></span><span>
+</span><span id="line-173"></span><span id="requireCustomEnv"><span class="annot"><span class="annottext">requireCustomEnv :: KeyMap Text -&gt; EnvUsage
+</span><a href="Data.Yaml.Config.html#requireCustomEnv"><span class="hs-identifier hs-var hs-var">requireCustomEnv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">KeyMap Text -&gt; EnvUsage
+</span><a href="Data.Yaml.Config.html#RequireCustomEnv"><span class="hs-identifier hs-var">RequireCustomEnv</span></a></span><span>
+</span><span id="line-174"></span><span>
+</span><span id="line-175"></span><span class="hs-comment">-- | Load the settings from the following three sources:</span><span>
+</span><span id="line-176"></span><span class="hs-comment">--</span><span>
+</span><span id="line-177"></span><span class="hs-comment">-- * Run time config files</span><span>
+</span><span id="line-178"></span><span class="hs-comment">--</span><span>
+</span><span id="line-179"></span><span class="hs-comment">-- * Run time environment variables</span><span>
+</span><span id="line-180"></span><span class="hs-comment">--</span><span>
+</span><span id="line-181"></span><span class="hs-comment">-- * The default compile time config file</span><span>
+</span><span id="line-182"></span><span class="hs-comment">--</span><span>
+</span><span id="line-183"></span><span class="hs-comment">-- For example, to load up settings from @config/foo.yaml@ and allow overriding</span><span>
+</span><span id="line-184"></span><span class="hs-comment">-- from the actual environment, you can use:</span><span>
+</span><span id="line-185"></span><span class="hs-comment">--</span><span>
+</span><span id="line-186"></span><span class="hs-comment">-- &gt; loadYamlSettings [&quot;config/foo.yaml&quot;] [] useEnv</span><span>
+</span><span id="line-187"></span><span class="hs-comment">--</span><span>
+</span><span id="line-188"></span><span class="hs-comment">-- @since 0.8.16</span><span>
+</span><span id="line-189"></span><span id="local-6989586621679100562"><span class="annot"><a href="Data.Yaml.Config.html#loadYamlSettings"><span class="hs-identifier hs-type">loadYamlSettings</span></a></span><span>
+</span><span id="line-190"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FromJSON</span></span><span> </span><span class="annot"><a href="#local-6989586621679100562"><span class="hs-identifier hs-type">settings</span></a></span><span>
+</span><span id="line-191"></span><span>    </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="hs-comment">-- ^ run time config files to use, earlier files have precedence</span></span><span>
+</span><span id="line-192"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Value</span></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="hs-comment">-- ^ any other values to use, usually from compile time config. overridden by files</span></span><span>
+</span><span id="line-193"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#EnvUsage"><span class="hs-identifier hs-type">EnvUsage</span></a></span><span>
+</span><span id="line-194"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679100562"><span class="hs-identifier hs-type">settings</span></a></span></span><span>
+</span><span id="line-195"></span><span id="loadYamlSettings"><span class="annot"><span class="annottext">loadYamlSettings :: forall settings.
+FromJSON settings =&gt;
+[String] -&gt; [Value] -&gt; EnvUsage -&gt; IO settings
+</span><a href="Data.Yaml.Config.html#loadYamlSettings"><span class="hs-identifier hs-var hs-var">loadYamlSettings</span></a></span></span><span> </span><span id="local-6989586621679100722"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621679100722"><span class="hs-identifier hs-var">runTimeFiles</span></a></span></span><span> </span><span id="local-6989586621679100723"><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621679100723"><span class="hs-identifier hs-var">compileValues</span></a></span></span><span> </span><span id="local-6989586621679100724"><span class="annot"><span class="annottext">EnvUsage
+</span><a href="#local-6989586621679100724"><span class="hs-identifier hs-var">envUsage</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-196"></span><span>    </span><span id="local-6989586621679100725"><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621679100725"><span class="hs-identifier hs-var">runValues</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[String] -&gt; (String -&gt; IO Value) -&gt; IO [Value]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m (t b)
+</span><span class="hs-identifier hs-var">forM</span></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621679100722"><span class="hs-identifier hs-var">runTimeFiles</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; IO Value) -&gt; IO [Value])
+-&gt; (String -&gt; IO Value) -&gt; IO [Value]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679100726"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679100726"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-197"></span><span>        </span><span id="local-6989586621679100727"><span class="annot"><span class="annottext">Either ParseException Value
+</span><a href="#local-6989586621679100727"><span class="hs-identifier hs-var">eres</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO (Either ParseException Value)
+forall a. FromJSON a =&gt; String -&gt; IO (Either ParseException a)
+</span><a href="Data.Yaml.Include.html#decodeFileEither"><span class="hs-identifier hs-var">YI.decodeFileEither</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679100726"><span class="hs-identifier hs-var">fp</span></a></span><span>
+</span><span id="line-198"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either ParseException Value
+</span><a href="#local-6989586621679100727"><span class="hs-identifier hs-var">eres</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-199"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621679100729"><span class="annot"><span class="annottext">ParseException
+</span><a href="#local-6989586621679100729"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ParseException -&gt; IO Value
+forall e a. Exception e =&gt; e -&gt; IO a
+</span><span class="hs-identifier hs-var">throwIO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; ParseException -&gt; ParseException
+</span><a href="Data.Yaml.Internal.html#LoadSettingsException"><span class="hs-identifier hs-var">Y.LoadSettingsException</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679100726"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">ParseException
+</span><a href="#local-6989586621679100729"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-200"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621679100731"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100731"><span class="hs-identifier hs-var">value</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Value -&gt; IO Value
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100731"><span class="hs-identifier hs-var">value</span></a></span><span>
+</span><span id="line-201"></span><span>
+</span><span id="line-202"></span><span>    </span><span id="local-6989586621679100732"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100732"><span class="hs-identifier hs-var">value'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-203"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">[MergedValue] -&gt; Maybe (NonEmpty MergedValue)
+forall a. [a] -&gt; Maybe (NonEmpty a)
+</span><span class="hs-identifier hs-var">nonEmpty</span></span><span> </span><span class="annot"><span class="annottext">([MergedValue] -&gt; Maybe (NonEmpty MergedValue))
+-&gt; [MergedValue] -&gt; Maybe (NonEmpty MergedValue)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Value -&gt; MergedValue) -&gt; [Value] -&gt; [MergedValue]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Value -&gt; MergedValue
+</span><a href="Data.Yaml.Config.html#MergedValue"><span class="hs-identifier hs-var">MergedValue</span></a></span><span> </span><span class="annot"><span class="annottext">([Value] -&gt; [MergedValue]) -&gt; [Value] -&gt; [MergedValue]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621679100725"><span class="hs-identifier hs-var">runValues</span></a></span><span> </span><span class="annot"><span class="annottext">[Value] -&gt; [Value] -&gt; [Value]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621679100723"><span class="hs-identifier hs-var">compileValues</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-204"></span><span>            </span><span class="annot"><span class="annottext">Maybe (NonEmpty MergedValue)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO Value
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;loadYamlSettings: No configuration provided&quot;</span></span><span>
+</span><span id="line-205"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679100734"><span class="annot"><span class="annottext">NonEmpty MergedValue
+</span><a href="#local-6989586621679100734"><span class="hs-identifier hs-var">ne</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Value -&gt; IO Value
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Value -&gt; IO Value) -&gt; Value -&gt; IO Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">MergedValue -&gt; Value
+</span><a href="Data.Yaml.Config.html#getMergedValue"><span class="hs-identifier hs-var">getMergedValue</span></a></span><span> </span><span class="annot"><span class="annottext">(MergedValue -&gt; Value) -&gt; MergedValue -&gt; Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NonEmpty MergedValue -&gt; MergedValue
+forall a. Semigroup a =&gt; NonEmpty a -&gt; a
+</span><span class="hs-identifier hs-var">sconcat</span></span><span> </span><span class="annot"><span class="annottext">NonEmpty MergedValue
+</span><a href="#local-6989586621679100734"><span class="hs-identifier hs-var">ne</span></a></span><span>
+</span><span id="line-206"></span><span>    </span><span id="local-6989586621679100736"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100736"><span class="hs-identifier hs-var">value</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-207"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">EnvUsage
+</span><a href="#local-6989586621679100724"><span class="hs-identifier hs-var">envUsage</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-208"></span><span>            </span><span class="annot"><span class="annottext">EnvUsage
+</span><a href="Data.Yaml.Config.html#IgnoreEnv"><span class="hs-identifier hs-var">IgnoreEnv</span></a></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Value -&gt; IO Value
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Value -&gt; IO Value) -&gt; Value -&gt; IO Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; KeyMap Text -&gt; Value -&gt; Value
+</span><a href="Data.Yaml.Config.html#applyEnvValue"><span class="hs-identifier hs-var">applyEnvValue</span></a></span><span>   </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span class="annot"><span class="annottext">KeyMap Text
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100732"><span class="hs-identifier hs-var">value'</span></a></span><span>
+</span><span id="line-209"></span><span>            </span><span class="annot"><span class="annottext">EnvUsage
+</span><a href="Data.Yaml.Config.html#UseEnv"><span class="hs-identifier hs-var">UseEnv</span></a></span><span>               </span><span class="hs-glyph">-&gt;</span><span>          </span><span class="annot"><span class="annottext">Bool -&gt; Value -&gt; IO Value
+</span><a href="Data.Yaml.Config.html#applyCurrentEnv"><span class="hs-identifier hs-var">applyCurrentEnv</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>        </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100732"><span class="hs-identifier hs-var">value'</span></a></span><span>
+</span><span id="line-210"></span><span>            </span><span class="annot"><span class="annottext">EnvUsage
+</span><a href="Data.Yaml.Config.html#RequireEnv"><span class="hs-identifier hs-var">RequireEnv</span></a></span><span>           </span><span class="hs-glyph">-&gt;</span><span>          </span><span class="annot"><span class="annottext">Bool -&gt; Value -&gt; IO Value
+</span><a href="Data.Yaml.Config.html#applyCurrentEnv"><span class="hs-identifier hs-var">applyCurrentEnv</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>         </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100732"><span class="hs-identifier hs-var">value'</span></a></span><span>
+</span><span id="line-211"></span><span>            </span><span class="annot"><a href="Data.Yaml.Config.html#UseCustomEnv"><span class="hs-identifier hs-type">UseCustomEnv</span></a></span><span> </span><span id="local-6989586621679100737"><span class="annot"><span class="annottext">KeyMap Text
+</span><a href="#local-6989586621679100737"><span class="hs-identifier hs-var">env</span></a></span></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Value -&gt; IO Value
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Value -&gt; IO Value) -&gt; Value -&gt; IO Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; KeyMap Text -&gt; Value -&gt; Value
+</span><a href="Data.Yaml.Config.html#applyEnvValue"><span class="hs-identifier hs-var">applyEnvValue</span></a></span><span>   </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span class="annot"><span class="annottext">KeyMap Text
+</span><a href="#local-6989586621679100737"><span class="hs-identifier hs-var">env</span></a></span><span>    </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100732"><span class="hs-identifier hs-var">value'</span></a></span><span>
+</span><span id="line-212"></span><span>            </span><span class="annot"><a href="Data.Yaml.Config.html#RequireCustomEnv"><span class="hs-identifier hs-type">RequireCustomEnv</span></a></span><span> </span><span id="local-6989586621679100738"><span class="annot"><span class="annottext">KeyMap Text
+</span><a href="#local-6989586621679100738"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Value -&gt; IO Value
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Value -&gt; IO Value) -&gt; Value -&gt; IO Value
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; KeyMap Text -&gt; Value -&gt; Value
+</span><a href="Data.Yaml.Config.html#applyEnvValue"><span class="hs-identifier hs-var">applyEnvValue</span></a></span><span>   </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>  </span><span class="annot"><span class="annottext">KeyMap Text
+</span><a href="#local-6989586621679100738"><span class="hs-identifier hs-var">env</span></a></span><span>    </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100732"><span class="hs-identifier hs-var">value'</span></a></span><span>
+</span><span id="line-213"></span><span>
+</span><span id="line-214"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">(Value -&gt; Parser settings) -&gt; Value -&gt; Either String settings
+forall a b. (a -&gt; Parser b) -&gt; a -&gt; Either String b
+</span><span class="hs-identifier hs-var">Y.parseEither</span></span><span> </span><span class="annot"><span class="annottext">Value -&gt; Parser settings
+forall a. FromJSON a =&gt; Value -&gt; Parser a
+</span><span class="hs-identifier hs-var">parseJSON</span></span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621679100736"><span class="hs-identifier hs-var">value</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-215"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621679100741"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679100741"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO settings
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO settings) -&gt; String -&gt; IO settings
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Could not convert to expected type: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679100741"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-216"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621679100742"><span class="annot"><span class="annottext">settings
+</span><a href="#local-6989586621679100742"><span class="hs-identifier hs-var">settings</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">settings -&gt; IO settings
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">settings
+</span><a href="#local-6989586621679100742"><span class="hs-identifier hs-var">settings</span></a></span><span>
+</span><span id="line-217"></span><span>
+</span><span id="line-218"></span><span class="hs-comment">-- | Same as @loadYamlSettings@, but get the list of runtime config files from</span><span>
+</span><span id="line-219"></span><span class="hs-comment">-- the command line arguments.</span><span>
+</span><span id="line-220"></span><span class="hs-comment">--</span><span>
+</span><span id="line-221"></span><span class="hs-comment">-- @since 0.8.17</span><span>
+</span><span id="line-222"></span><span id="local-6989586621679100587"><span class="annot"><a href="Data.Yaml.Config.html#loadYamlSettingsArgs"><span class="hs-identifier hs-type">loadYamlSettingsArgs</span></a></span><span>
+</span><span id="line-223"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FromJSON</span></span><span> </span><span class="annot"><a href="#local-6989586621679100587"><span class="hs-identifier hs-type">settings</span></a></span><span>
+</span><span id="line-224"></span><span>    </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Value</span></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="hs-comment">-- ^ any other values to use, usually from compile time config. overridden by files</span></span><span>
+</span><span id="line-225"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Yaml.Config.html#EnvUsage"><span class="hs-identifier hs-type">EnvUsage</span></a></span><span> </span><span class="annot"><span class="hs-comment">-- ^ use environment variables</span></span><span>
+</span><span id="line-226"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679100587"><span class="hs-identifier hs-type">settings</span></a></span></span><span>
+</span><span id="line-227"></span><span id="loadYamlSettingsArgs"><span class="annot"><span class="annottext">loadYamlSettingsArgs :: forall settings.
+FromJSON settings =&gt;
+[Value] -&gt; EnvUsage -&gt; IO settings
+</span><a href="Data.Yaml.Config.html#loadYamlSettingsArgs"><span class="hs-identifier hs-var hs-var">loadYamlSettingsArgs</span></a></span></span><span> </span><span id="local-6989586621679100746"><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621679100746"><span class="hs-identifier hs-var">values</span></a></span></span><span> </span><span id="local-6989586621679100747"><span class="annot"><span class="annottext">EnvUsage
+</span><a href="#local-6989586621679100747"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-228"></span><span>    </span><span id="local-6989586621679100748"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621679100748"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO [String]
+</span><span class="hs-identifier hs-var">getArgs</span></span><span>
+</span><span id="line-229"></span><span>    </span><span class="annot"><span class="annottext">[String] -&gt; [Value] -&gt; EnvUsage -&gt; IO settings
+forall settings.
+FromJSON settings =&gt;
+[String] -&gt; [Value] -&gt; EnvUsage -&gt; IO settings
+</span><a href="Data.Yaml.Config.html#loadYamlSettings"><span class="hs-identifier hs-var">loadYamlSettings</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621679100748"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621679100746"><span class="hs-identifier hs-var">values</span></a></span><span> </span><span class="annot"><span class="annottext">EnvUsage
+</span><a href="#local-6989586621679100747"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-230"></span></pre></body></html>

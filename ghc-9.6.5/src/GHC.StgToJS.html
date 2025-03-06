@@ -1,0 +1,217 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.StgToJS</span><span>
+</span><span id="line-2"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.StgToJS.CodeGen.html#stgToJS"><span class="hs-identifier">stgToJS</span></a></span><span>
+</span><span id="line-3"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-4"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.StgToJS.CodeGen.html"><span class="hs-identifier">GHC.StgToJS.CodeGen</span></a></span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- Note [StgToJS design]</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- ~~~~~~~~~~~~~~~~~~~~~</span><span>
+</span><span id="line-11"></span><span class="hs-comment">--</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- StgToJS (&quot;JS backend&quot;) is adapted from GHCJS [GHCJS2013].</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- Haskell to JavaScript</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- ~~~~~~~~~~~~~~~~~~~~~</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- StgToJS converts STG into a JavaScript AST (in GHC.JS) that has been adapted</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- from JMacro [JMacro].</span><span>
+</span><span id="line-18"></span><span class="hs-comment">--</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- Tail calls: translated code is tail call optimized through a trampoline,</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- since JavaScript implementations don't always support tail calls.</span><span>
+</span><span id="line-21"></span><span class="hs-comment">--</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- JavaScript ASTs are then optimized. A dataflow analysis is performed and then</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- dead code and redundant assignments are removed.</span><span>
+</span><span id="line-24"></span><span class="hs-comment">--</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- Primitives</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- ~~~~~~~~~~</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- Haskell primitives have to be represented as JavaScript values. This is done</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- as follows:</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--</span><span>
+</span><span id="line-30"></span><span class="hs-comment">--  - Int#/Int32#     -&gt; number in Int32 range</span><span>
+</span><span id="line-31"></span><span class="hs-comment">--  - Int16#          -&gt; number in Int16 range</span><span>
+</span><span id="line-32"></span><span class="hs-comment">--  - Int8#           -&gt; number in Int8 range</span><span>
+</span><span id="line-33"></span><span class="hs-comment">--  - Word#/Word32#   -&gt; number in Word32 range</span><span>
+</span><span id="line-34"></span><span class="hs-comment">--  - Word16#         -&gt; number in Word16 range</span><span>
+</span><span id="line-35"></span><span class="hs-comment">--  - Word8#          -&gt; number in Word8 range</span><span>
+</span><span id="line-36"></span><span class="hs-comment">--</span><span>
+</span><span id="line-37"></span><span class="hs-comment">--  - Float#/Double#  -&gt; both represented as Javascript Double (no Float!)</span><span>
+</span><span id="line-38"></span><span class="hs-comment">--</span><span>
+</span><span id="line-39"></span><span class="hs-comment">--  - Int64#          -&gt; represented with two fields:</span><span>
+</span><span id="line-40"></span><span class="hs-comment">--                          high -&gt; number in Int32 range</span><span>
+</span><span id="line-41"></span><span class="hs-comment">--                          low  -&gt; number in Word32 range</span><span>
+</span><span id="line-42"></span><span class="hs-comment">--  - Word64#         -&gt; represented with two fields: high, low</span><span>
+</span><span id="line-43"></span><span class="hs-comment">--                          high -&gt; number in Word32 range</span><span>
+</span><span id="line-44"></span><span class="hs-comment">--                          low  -&gt; number in Word32 range</span><span>
+</span><span id="line-45"></span><span class="hs-comment">--</span><span>
+</span><span id="line-46"></span><span class="hs-comment">--  - Addr#           -&gt; represented with two fields: array (used as a namespace) and index</span><span>
+</span><span id="line-47"></span><span class="hs-comment">--  - StablePtr#      -&gt; similar to Addr# with array fixed to h$stablePtrBuf</span><span>
+</span><span id="line-48"></span><span class="hs-comment">--</span><span>
+</span><span id="line-49"></span><span class="hs-comment">--  - JSVal#          -&gt; any Javascript object (used to pass JS objects via FFI)</span><span>
+</span><span id="line-50"></span><span class="hs-comment">--</span><span>
+</span><span id="line-51"></span><span class="hs-comment">--  - TVar#, MVar#, etc. are represented with JS objects</span><span>
+</span><span id="line-52"></span><span class="hs-comment">--</span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- Foreign JavaScript imports</span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- ~~~~~~~~~~~~~~~~~~~~~~~~~~</span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- StgToJS supports inline JavaScript code. Example:</span><span>
+</span><span id="line-56"></span><span class="hs-comment">--</span><span>
+</span><span id="line-57"></span><span class="hs-comment">--    &gt; foreign import javascript unsafe</span><span>
+</span><span id="line-58"></span><span class="hs-comment">--    &gt;   &quot;((x,y) =&gt; x + y)&quot;</span><span>
+</span><span id="line-59"></span><span class="hs-comment">--    &gt;   plus :: Int -&gt; Int -&gt; Int</span><span>
+</span><span id="line-60"></span><span class="hs-comment">--</span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- Currently the JS backend only supports functions as JS imports.</span><span>
+</span><span id="line-62"></span><span class="hs-comment">--</span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- In comparison, GHCJS supports JavaScript snippets with $1, $2... variables</span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- as placeholders for the arguments. It requires a JavaScript parser that the</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- JS backend lacks. In GHCJS, the parser is inherited from JMacro and supports</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- local variable declarations, loops, etc. Local variables are converted to</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- hygienic names to avoid capture.</span><span>
+</span><span id="line-68"></span><span class="hs-comment">--</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- Primitives that are represented as multiple values (Int64#, Word64#, Addr#)</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- are passed to FFI functions with multiple arguments.</span><span>
+</span><span id="line-71"></span><span class="hs-comment">--</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- Interruptible convention: FFI imports with the &quot;interruptible&quot; calling</span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- convention are passed an extra argument (usually named &quot;$c&quot;) that is a</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- continuation function. The FFI function must call this function to return to</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- Haskell code.</span><span>
+</span><span id="line-76"></span><span class="hs-comment">--</span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- Unboxed tuples: returning an unboxed tuple can be done with the predefined</span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- macros RETURN_UBX_TUPn where n is the size of the tuples. Internally it uses</span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- predefined &quot;h$retN&quot; global variables to pass additional values; the first</span><span>
+</span><span id="line-80"></span><span class="hs-comment">-- element of the tuple is returned normally.</span><span>
+</span><span id="line-81"></span><span class="hs-comment">--</span><span>
+</span><span id="line-82"></span><span class="hs-comment">-- Memory management</span><span>
+</span><span id="line-83"></span><span class="hs-comment">-- ~~~~~~~~~~~~~~~~~</span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- Heap objects are represented as JavaScript values.</span><span>
+</span><span id="line-85"></span><span class="hs-comment">--</span><span>
+</span><span id="line-86"></span><span class="hs-comment">-- Most heap objects are represented generically as JavaScript &quot;objects&quot; (hash</span><span>
+</span><span id="line-87"></span><span class="hs-comment">-- maps). However, some Haskell heap objects can use use a more memory efficient</span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- JavaScript representation: number, string... An example of a consequence of</span><span>
+</span><span id="line-89"></span><span class="hs-comment">-- this is that both Int# and Int are represented the same as a JavaScript</span><span>
+</span><span id="line-90"></span><span class="hs-comment">-- number. JavaScript introspection (e.g. typeof) is used to differentiate</span><span>
+</span><span id="line-91"></span><span class="hs-comment">-- heap object representations when necessary.</span><span>
+</span><span id="line-92"></span><span class="hs-comment">--</span><span>
+</span><span id="line-93"></span><span class="hs-comment">-- Generic representation: objects on the heap (&quot;closures&quot;) are represented as</span><span>
+</span><span id="line-94"></span><span class="hs-comment">-- JavaScript objects with the following fields:</span><span>
+</span><span id="line-95"></span><span class="hs-comment">--</span><span>
+</span><span id="line-96"></span><span class="hs-comment">--  { f   -- (function) entry function + info table</span><span>
+</span><span id="line-97"></span><span class="hs-comment">--  , d1  -- two fields of payload</span><span>
+</span><span id="line-98"></span><span class="hs-comment">--  , d2</span><span>
+</span><span id="line-99"></span><span class="hs-comment">--  , m   -- GC mark</span><span>
+</span><span id="line-100"></span><span class="hs-comment">--  , cc  -- optional cost-center</span><span>
+</span><span id="line-101"></span><span class="hs-comment">--  }</span><span>
+</span><span id="line-102"></span><span class="hs-comment">--</span><span>
+</span><span id="line-103"></span><span class="hs-comment">-- Payload: payload only consists of two fields (d1, d2). When more than two</span><span>
+</span><span id="line-104"></span><span class="hs-comment">-- fields of payload are required, the second field is itself an object.</span><span>
+</span><span id="line-105"></span><span class="hs-comment">--    payload []         ==&gt; { d1 = null, d2 = null                   }</span><span>
+</span><span id="line-106"></span><span class="hs-comment">--    payload [a]        ==&gt; { d1 = a   , d2 = null                   }</span><span>
+</span><span id="line-107"></span><span class="hs-comment">--    payload [a,b]      ==&gt; { d1 = a   , d2 = b                      }</span><span>
+</span><span id="line-108"></span><span class="hs-comment">--    payload [a,b,c]    ==&gt; { d1 = a   , d2 = { d1 = b, d2 = c}      }</span><span>
+</span><span id="line-109"></span><span class="hs-comment">--    payload [a,b,c...] ==&gt; { d1 = a   , d2 = { d1 = b, d2 = c, ...} }</span><span>
+</span><span id="line-110"></span><span class="hs-comment">--</span><span>
+</span><span id="line-111"></span><span class="hs-comment">-- Entry function/ info tables: JavaScript functions are JavaScript objects. If</span><span>
+</span><span id="line-112"></span><span class="hs-comment">-- &quot;f&quot; is a function, we can:</span><span>
+</span><span id="line-113"></span><span class="hs-comment">--    - call it, e.g. &quot;f(arg0,arg1...)&quot;</span><span>
+</span><span id="line-114"></span><span class="hs-comment">--    - get/set its fields, e.g. &quot;f.xyz = abc&quot;</span><span>
+</span><span id="line-115"></span><span class="hs-comment">-- This is used to implement the equivalent of tables-next-to-code in</span><span>
+</span><span id="line-116"></span><span class="hs-comment">-- JavaScript: every heap object has an entry function &quot;f&quot; that also contains</span><span>
+</span><span id="line-117"></span><span class="hs-comment">-- some metadata (info table) about the Haskell object:</span><span>
+</span><span id="line-118"></span><span class="hs-comment">--    { t     -- object type</span><span>
+</span><span id="line-119"></span><span class="hs-comment">--    , size  -- number of fields in the payload (-1 if variable layout)</span><span>
+</span><span id="line-120"></span><span class="hs-comment">--    , i     -- (array) fields layout (empty if variable layout)</span><span>
+</span><span id="line-121"></span><span class="hs-comment">--    , n     -- (string) object name for easier dubugging</span><span>
+</span><span id="line-122"></span><span class="hs-comment">--    , a     -- constructor tag / fun arity</span><span>
+</span><span id="line-123"></span><span class="hs-comment">--    , r     -- ??</span><span>
+</span><span id="line-124"></span><span class="hs-comment">--    , s     -- static references?</span><span>
+</span><span id="line-125"></span><span class="hs-comment">--    , m     -- GC mark?</span><span>
+</span><span id="line-126"></span><span class="hs-comment">--    }</span><span>
+</span><span id="line-127"></span><span class="hs-comment">--</span><span>
+</span><span id="line-128"></span><span class="hs-comment">-- Payloads for each kind of heap object:</span><span>
+</span><span id="line-129"></span><span class="hs-comment">--</span><span>
+</span><span id="line-130"></span><span class="hs-comment">-- THUNK =</span><span>
+</span><span id="line-131"></span><span class="hs-comment">--  { f  = returns the object reduced to WHNF</span><span>
+</span><span id="line-132"></span><span class="hs-comment">--  , m  = ?</span><span>
+</span><span id="line-133"></span><span class="hs-comment">--  , d1 = ?</span><span>
+</span><span id="line-134"></span><span class="hs-comment">--  , d2 = ?</span><span>
+</span><span id="line-135"></span><span class="hs-comment">--  }</span><span>
+</span><span id="line-136"></span><span class="hs-comment">--</span><span>
+</span><span id="line-137"></span><span class="hs-comment">-- FUN =</span><span>
+</span><span id="line-138"></span><span class="hs-comment">--  { f  = function itself</span><span>
+</span><span id="line-139"></span><span class="hs-comment">--  , m  = ?</span><span>
+</span><span id="line-140"></span><span class="hs-comment">--  , d1 = free variable 1</span><span>
+</span><span id="line-141"></span><span class="hs-comment">--  , d2 = free variable 2</span><span>
+</span><span id="line-142"></span><span class="hs-comment">--  }</span><span>
+</span><span id="line-143"></span><span class="hs-comment">--</span><span>
+</span><span id="line-144"></span><span class="hs-comment">-- There are two different kinds of partial application:</span><span>
+</span><span id="line-145"></span><span class="hs-comment">--  - pap_r   : pre-generated PAP that contains r registers</span><span>
+</span><span id="line-146"></span><span class="hs-comment">--  - pap_gen : generic PAP, contains any number of registers</span><span>
+</span><span id="line-147"></span><span class="hs-comment">--</span><span>
+</span><span id="line-148"></span><span class="hs-comment">-- PAP =</span><span>
+</span><span id="line-149"></span><span class="hs-comment">--  { f  = ?</span><span>
+</span><span id="line-150"></span><span class="hs-comment">--  , m  = ?</span><span>
+</span><span id="line-151"></span><span class="hs-comment">--  , d1 = function</span><span>
+</span><span id="line-152"></span><span class="hs-comment">--  , d2 =</span><span>
+</span><span id="line-153"></span><span class="hs-comment">--    { d1 &amp; 0xff = number of args (PAP arity)</span><span>
+</span><span id="line-154"></span><span class="hs-comment">--    , d1 &gt;&gt; 8   = number of registers (r for h$pap_r)</span><span>
+</span><span id="line-155"></span><span class="hs-comment">--    , d2, d3... = args (r)</span><span>
+</span><span id="line-156"></span><span class="hs-comment">--    }</span><span>
+</span><span id="line-157"></span><span class="hs-comment">--  }</span><span>
+</span><span id="line-158"></span><span class="hs-comment">--</span><span>
+</span><span id="line-159"></span><span class="hs-comment">-- CON =</span><span>
+</span><span id="line-160"></span><span class="hs-comment">--  { f  = entry function of the datacon worker</span><span>
+</span><span id="line-161"></span><span class="hs-comment">--  , m  = 0</span><span>
+</span><span id="line-162"></span><span class="hs-comment">--  , d1 = first arg</span><span>
+</span><span id="line-163"></span><span class="hs-comment">--  , d2 = arity = 2: second arg</span><span>
+</span><span id="line-164"></span><span class="hs-comment">--         arity &gt; 2: { d1, d2, ...} object with remaining args (starts with &quot;d1 = x2&quot;!)</span><span>
+</span><span id="line-165"></span><span class="hs-comment">--  }</span><span>
+</span><span id="line-166"></span><span class="hs-comment">--</span><span>
+</span><span id="line-167"></span><span class="hs-comment">-- BLACKHOLE =</span><span>
+</span><span id="line-168"></span><span class="hs-comment">--  { f  = h$blackhole</span><span>
+</span><span id="line-169"></span><span class="hs-comment">--  , m  = ?</span><span>
+</span><span id="line-170"></span><span class="hs-comment">--  , d1 = owning TSO</span><span>
+</span><span id="line-171"></span><span class="hs-comment">--  , d2 = waiters array</span><span>
+</span><span id="line-172"></span><span class="hs-comment">--  }</span><span>
+</span><span id="line-173"></span><span class="hs-comment">--</span><span>
+</span><span id="line-174"></span><span class="hs-comment">-- StackFrame closures are *not* represented as JS objects. Instead they are</span><span>
+</span><span id="line-175"></span><span class="hs-comment">-- &quot;unpacked&quot; in the stack, i.e. a stack frame occupies a few slots in the JS</span><span>
+</span><span id="line-176"></span><span class="hs-comment">-- array representing the stack (&quot;h$stack&quot;).</span><span>
+</span><span id="line-177"></span><span class="hs-comment">--</span><span>
+</span><span id="line-178"></span><span class="hs-comment">-- When a shared thunk is entered, it is overriden with a black hole (&quot;eager</span><span>
+</span><span id="line-179"></span><span class="hs-comment">-- blackholing&quot;) and an update frame is pushed on the stack.</span><span>
+</span><span id="line-180"></span><span class="hs-comment">--</span><span>
+</span><span id="line-181"></span><span class="hs-comment">-- Stack: the Haskell stack is implemented with a dynamically growing JavaScript</span><span>
+</span><span id="line-182"></span><span class="hs-comment">-- array (&quot;h$stack&quot;).</span><span>
+</span><span id="line-183"></span><span class="hs-comment">--  TODO: does it shrink sometimes?</span><span>
+</span><span id="line-184"></span><span class="hs-comment">--  TODO: what are the elements of the stack? one JS object per stack frame?</span><span>
+</span><span id="line-185"></span><span class="hs-comment">--</span><span>
+</span><span id="line-186"></span><span class="hs-comment">--</span><span>
+</span><span id="line-187"></span><span class="hs-comment">-- Interaction with JavaScript's garbage collector</span><span>
+</span><span id="line-188"></span><span class="hs-comment">-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</span><span>
+</span><span id="line-189"></span><span class="hs-comment">-- Using JS objects to represent Haskell heap objects means that JS's GC does</span><span>
+</span><span id="line-190"></span><span class="hs-comment">-- most of the memory management work.</span><span>
+</span><span id="line-191"></span><span class="hs-comment">--</span><span>
+</span><span id="line-192"></span><span class="hs-comment">-- However, GHC extends Haskell with features that rely on GC layer violation</span><span>
+</span><span id="line-193"></span><span class="hs-comment">-- (weak references, finalizers, etc.). To support these features, a heap scan</span><span>
+</span><span id="line-194"></span><span class="hs-comment">-- is can be performed (using TSOs, StablePtr, etc. as roots) to mark reachable</span><span>
+</span><span id="line-195"></span><span class="hs-comment">-- objects. Scanning the heap is an expensive operation, but fortunately it</span><span>
+</span><span id="line-196"></span><span class="hs-comment">-- doesn't need to happen too often and it can be disabled.</span><span>
+</span><span id="line-197"></span><span class="hs-comment">--</span><span>
+</span><span id="line-198"></span><span class="hs-comment">-- TODO: importance of eager blackholing</span><span>
+</span><span id="line-199"></span><span class="hs-comment">--</span><span>
+</span><span id="line-200"></span><span class="hs-comment">-- Concurrency</span><span>
+</span><span id="line-201"></span><span class="hs-comment">-- ~~~~~~~~~~~</span><span>
+</span><span id="line-202"></span><span class="hs-comment">-- The scheduler is implemented in JS and runs in a single JavaScript thread</span><span>
+</span><span id="line-203"></span><span class="hs-comment">-- (similarly to the C RTS not using `-threaded`).</span><span>
+</span><span id="line-204"></span><span class="hs-comment">--</span><span>
+</span><span id="line-205"></span><span class="hs-comment">-- The scheduler relies on callbacks/continuations to interact with other JS</span><span>
+</span><span id="line-206"></span><span class="hs-comment">-- codes (user interface, etc.). In particular, safe foreign import can use &quot;$c&quot;</span><span>
+</span><span id="line-207"></span><span class="hs-comment">-- as a continuation function to return to Haskell code.</span><span>
+</span><span id="line-208"></span><span class="hs-comment">--</span><span>
+</span><span id="line-209"></span><span class="hs-comment">-- TODO: is this still true since 2013 or are we using more recent JS features now?</span><span>
+</span><span id="line-210"></span><span class="hs-comment">-- TODO: synchronous threads</span><span>
+</span><span id="line-211"></span><span class="hs-comment">--</span><span>
+</span><span id="line-212"></span><span class="hs-comment">--</span><span>
+</span><span id="line-213"></span><span class="hs-comment">-- REFERENCES</span><span>
+</span><span id="line-214"></span><span class="hs-comment">--  * [GHCJS2013] &quot;Demo Proposal: GHCJS, Concurrent Haskell in the Browser&quot;, Luite Stegeman,</span><span>
+</span><span id="line-215"></span><span class="hs-comment">--    2013 (https://www.haskell.org/haskell-symposium/2013/ghcjs.pdf)</span><span>
+</span><span id="line-216"></span><span class="hs-comment">--  * [JMacro] https://hackage.haskell.org/package/jmacro</span><span>
+</span><span id="line-217"></span></pre></body></html>

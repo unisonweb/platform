@@ -1,0 +1,191 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- Module      :  Control.Concurrent.Async</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Copyright   :  (c) Simon Marlow 2012</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- License     :  BSD3 (see the file LICENSE)</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- Maintainer  :  Simon Marlow &lt;marlowsd@gmail.com&gt;</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Stability   :  provisional</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- Portability :  non-portable (requires concurrency)</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- This module provides a set of operations for running IO operations</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- asynchronously and waiting for their results.  It is a thin layer</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- over the basic concurrency operations provided by</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- &quot;Control.Concurrent&quot;.  The main additional functionality it</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- provides is the ability to wait for the return value of a thread,</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- but the interface also provides some additional safety and</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- robustness over using 'forkIO' threads and @MVar@ directly.</span><span>
+</span><span id="line-18"></span><span class="hs-comment">--</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- == High-level API</span><span>
+</span><span id="line-20"></span><span class="hs-comment">--</span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- @async@'s high-level API spawns /lexically scoped/ threads,</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- ensuring the following key poperties that make it safer to use</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- than using plain 'forkIO':</span><span>
+</span><span id="line-24"></span><span class="hs-comment">--</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- 1. No exception is swallowed (waiting for results propagates exceptions).</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- 2. No thread is leaked (left running unintentionally).</span><span>
+</span><span id="line-27"></span><span class="hs-comment">--</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- (This is done using the 'Control.Exception.bracket' pattern to work in presence</span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- of synchronous and asynchronous exceptions.)</span><span>
+</span><span id="line-30"></span><span class="hs-comment">--</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- __Most practical/production code should only use the high-level API__.</span><span>
+</span><span id="line-32"></span><span class="hs-comment">--</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- The basic type is @'Async' a@, which represents an asynchronous</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- @IO@ action that will return a value of type @a@, or die with an</span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- exception.  An 'Async' is a wrapper around a low-level 'forkIO' thread.</span><span>
+</span><span id="line-36"></span><span class="hs-comment">--</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- The fundamental function to spawn threads with the high-level API is</span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- 'withAsync'.</span><span>
+</span><span id="line-39"></span><span class="hs-comment">--</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- For example, to fetch two web pages at the same time, we could do</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- this (assuming a suitable @getURL@ function):</span><span>
+</span><span id="line-42"></span><span class="hs-comment">--</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- &gt; withAsync (getURL url1) $ \a1 -&gt; do</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- &gt;   withAsync (getURL url2) $ \a2 -&gt; do</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- &gt;     page1 &lt;- wait a1</span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- &gt;     page2 &lt;- wait a2</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- &gt;     ...</span><span>
+</span><span id="line-48"></span><span class="hs-comment">--</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- where 'withAsync' starts the operation in a separate thread, and</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- 'wait' waits for and returns the result.</span><span>
+</span><span id="line-51"></span><span class="hs-comment">--</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- * If the operation throws an exception, then that exception is re-thrown</span><span>
+</span><span id="line-53"></span><span class="hs-comment">--   by 'wait'. This ensures property (1): No exception is swallowed.</span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- * If an exception bubbles up through a 'withAsync', then the 'Async'</span><span>
+</span><span id="line-55"></span><span class="hs-comment">--   it spawned is 'cancel'ed. This ensures property (2): No thread is leaked.</span><span>
+</span><span id="line-56"></span><span class="hs-comment">--</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- Often we do not care to work manually with 'Async' handles like</span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- @a1@ and @a2@. Instead, we want to express high-level objectives like</span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- performing two or more tasks concurrently, and waiting for one or all</span><span>
+</span><span id="line-60"></span><span class="hs-comment">-- of them to finish.</span><span>
+</span><span id="line-61"></span><span class="hs-comment">--</span><span>
+</span><span id="line-62"></span><span class="hs-comment">-- For example, the pattern of performing two IO actions concurrently and</span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- waiting for both their results is packaged up in a combinator 'concurrently',</span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- so we can further shorten the above example to:</span><span>
+</span><span id="line-65"></span><span class="hs-comment">--</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- &gt; (page1, page2) &lt;- concurrently (getURL url1) (getURL url2)</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- &gt; ...</span><span>
+</span><span id="line-68"></span><span class="hs-comment">--</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- The section __/High-level utilities/__ covers the most</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- common high-level objectives, including:</span><span>
+</span><span id="line-71"></span><span class="hs-comment">--</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- * Waiting for 2 results ('concurrently').</span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- * Waiting for many results ('mapConcurrently' / 'forConcurrently').</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- * Waiting for the first of 2 results ('race').</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- * Waiting for arbitrary nestings of &quot;all of /N/&quot; and &quot;the first of /N/&quot;</span><span>
+</span><span id="line-76"></span><span class="hs-comment">--   results with the 'Concurrently' newtype and its 'Applicative' and</span><span>
+</span><span id="line-77"></span><span class="hs-comment">--   'Alternative' instances.</span><span>
+</span><span id="line-78"></span><span class="hs-comment">--</span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- Click here to scroll to that section:</span><span>
+</span><span id="line-80"></span><span class="hs-comment">-- &quot;Control.Concurrent.Async#high-level-utilities&quot;.</span><span>
+</span><span id="line-81"></span><span class="hs-comment">--</span><span>
+</span><span id="line-82"></span><span class="hs-comment">-- == Low-level API</span><span>
+</span><span id="line-83"></span><span class="hs-comment">--</span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- Some use cases require parallelism that is not lexically scoped.</span><span>
+</span><span id="line-85"></span><span class="hs-comment">--</span><span>
+</span><span id="line-86"></span><span class="hs-comment">-- For those, the low-level function 'async' can be used as a direct</span><span>
+</span><span id="line-87"></span><span class="hs-comment">-- equivalent of 'forkIO':</span><span>
+</span><span id="line-88"></span><span class="hs-comment">--</span><span>
+</span><span id="line-89"></span><span class="hs-comment">-- &gt; -- Do NOT use this code in production, it has a flaw (explained below).</span><span>
+</span><span id="line-90"></span><span class="hs-comment">-- &gt; do</span><span>
+</span><span id="line-91"></span><span class="hs-comment">-- &gt;   a1 &lt;- async (getURL url1)</span><span>
+</span><span id="line-92"></span><span class="hs-comment">-- &gt;   a2 &lt;- async (getURL url2)</span><span>
+</span><span id="line-93"></span><span class="hs-comment">-- &gt;   page1 &lt;- wait a1</span><span>
+</span><span id="line-94"></span><span class="hs-comment">-- &gt;   page2 &lt;- wait a2</span><span>
+</span><span id="line-95"></span><span class="hs-comment">-- &gt;   ...</span><span>
+</span><span id="line-96"></span><span class="hs-comment">--</span><span>
+</span><span id="line-97"></span><span class="hs-comment">-- In contrast to 'withAsync', this code has a problem.</span><span>
+</span><span id="line-98"></span><span class="hs-comment">--</span><span>
+</span><span id="line-99"></span><span class="hs-comment">-- It still fulfills property (1) in that an exception arising from</span><span>
+</span><span id="line-100"></span><span class="hs-comment">-- @getUrl@ will be re-thrown by 'wait', but it does not fulfill</span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- property (2).</span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- Consider the case when the first 'wait' throws an exception; then the</span><span>
+</span><span id="line-103"></span><span class="hs-comment">-- second 'wait' will not happen, and the second 'async' may be left</span><span>
+</span><span id="line-104"></span><span class="hs-comment">-- running in the background, possibly indefinitely.</span><span>
+</span><span id="line-105"></span><span class="hs-comment">--</span><span>
+</span><span id="line-106"></span><span class="hs-comment">-- 'withAsync' is like 'async', except that the 'Async' is</span><span>
+</span><span id="line-107"></span><span class="hs-comment">-- automatically killed (using 'uninterruptibleCancel') if the</span><span>
+</span><span id="line-108"></span><span class="hs-comment">-- enclosing IO operation returns before it has completed.</span><span>
+</span><span id="line-109"></span><span class="hs-comment">-- Furthermore, 'withAsync' allows a tree of threads to be built, such</span><span>
+</span><span id="line-110"></span><span class="hs-comment">-- that children are automatically killed if their parents die for any</span><span>
+</span><span id="line-111"></span><span class="hs-comment">-- reason.</span><span>
+</span><span id="line-112"></span><span class="hs-comment">--</span><span>
+</span><span id="line-113"></span><span class="hs-comment">-- If you need to use the low-level API, ensure that you guarantee</span><span>
+</span><span id="line-114"></span><span class="hs-comment">-- property (2) by other means, such as 'link'ing asyncs that need</span><span>
+</span><span id="line-115"></span><span class="hs-comment">-- to die together, and protecting against asynchronous exceptions</span><span>
+</span><span id="line-116"></span><span class="hs-comment">-- using 'Control.Exception.bracket', 'Control.Exception.mask',</span><span>
+</span><span id="line-117"></span><span class="hs-comment">-- or other functions from &quot;Control.Exception&quot;.</span><span>
+</span><span id="line-118"></span><span class="hs-comment">--</span><span>
+</span><span id="line-119"></span><span class="hs-comment">-- == Miscellaneous</span><span>
+</span><span id="line-120"></span><span class="hs-comment">--</span><span>
+</span><span id="line-121"></span><span class="hs-comment">-- The 'Functor' instance can be used to change the result of an</span><span>
+</span><span id="line-122"></span><span class="hs-comment">-- 'Async'.  For example:</span><span>
+</span><span id="line-123"></span><span class="hs-comment">--</span><span>
+</span><span id="line-124"></span><span class="hs-comment">-- &gt; ghci&gt; withAsync (return 3) (\a -&gt; wait (fmap (+1) a))</span><span>
+</span><span id="line-125"></span><span class="hs-comment">-- &gt; 4</span><span>
+</span><span id="line-126"></span><span class="hs-comment">--</span><span>
+</span><span id="line-127"></span><span class="hs-comment">-- === Resource exhaustion</span><span>
+</span><span id="line-128"></span><span class="hs-comment">--</span><span>
+</span><span id="line-129"></span><span class="hs-comment">-- As with all concurrent programming, keep in mind that while</span><span>
+</span><span id="line-130"></span><span class="hs-comment">-- Haskell's cooperative (&quot;green&quot;) multithreading carries low overhead,</span><span>
+</span><span id="line-131"></span><span class="hs-comment">-- spawning too many of them at the same time may lead to resource exhaustion</span><span>
+</span><span id="line-132"></span><span class="hs-comment">-- (of memory, file descriptors, or other limited resources), given that the</span><span>
+</span><span id="line-133"></span><span class="hs-comment">-- actions running in the threads consume these resources.</span><span>
+</span><span id="line-134"></span><span>
+</span><span id="line-135"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-136"></span><span>
+</span><span id="line-137"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Control.Concurrent.Async</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-138"></span><span>
+</span><span id="line-139"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Asynchronous actions</span></span><span>
+</span><span id="line-140"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#Async"><span class="hs-identifier">Async</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-141"></span><span>
+</span><span id="line-142"></span><span>    </span><span class="annot"><span class="hs-comment">-- * High-level API</span></span><span>
+</span><span id="line-143"></span><span>
+</span><span id="line-144"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Spawning with automatic 'cancel'ation</span></span><span>
+</span><span id="line-145"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#withAsync"><span class="hs-identifier">withAsync</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#withAsyncBound"><span class="hs-identifier">withAsyncBound</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#withAsyncOn"><span class="hs-identifier">withAsyncOn</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#withAsyncWithUnmask"><span class="hs-identifier">withAsyncWithUnmask</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-146"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#withAsyncOnWithUnmask"><span class="hs-identifier">withAsyncOnWithUnmask</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Querying 'Async's</span></span><span>
+</span><span id="line-149"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#wait"><span class="hs-identifier">wait</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#poll"><span class="hs-identifier">poll</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitCatch"><span class="hs-identifier">waitCatch</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#asyncThreadId"><span class="hs-identifier">asyncThreadId</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-150"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#cancel"><span class="hs-identifier">cancel</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#cancelMany"><span class="hs-identifier">cancelMany</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#uninterruptibleCancel"><span class="hs-identifier">uninterruptibleCancel</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#cancelWith"><span class="hs-identifier">cancelWith</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#AsyncCancelled"><span class="hs-identifier">AsyncCancelled</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-151"></span><span>
+</span><span id="line-152"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** #high-level-utilities# High-level utilities</span></span><span>
+</span><span id="line-153"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#race"><span class="hs-identifier">race</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#race_"><span class="hs-identifier">race_</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-154"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#concurrently"><span class="hs-identifier">concurrently</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#concurrently_"><span class="hs-identifier">concurrently_</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-155"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#mapConcurrently"><span class="hs-identifier">mapConcurrently</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#forConcurrently"><span class="hs-identifier">forConcurrently</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-156"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#mapConcurrently_"><span class="hs-identifier">mapConcurrently_</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#forConcurrently_"><span class="hs-identifier">forConcurrently_</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-157"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#replicateConcurrently"><span class="hs-identifier">replicateConcurrently</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#replicateConcurrently_"><span class="hs-identifier">replicateConcurrently_</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-158"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#Concurrently"><span class="hs-identifier">Concurrently</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-159"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#concurrentlyE"><span class="hs-identifier">concurrentlyE</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-160"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#ConcurrentlyE"><span class="hs-identifier">ConcurrentlyE</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-161"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#compareAsyncs"><span class="hs-identifier">compareAsyncs</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-162"></span><span>
+</span><span id="line-163"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Specialised operations</span></span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span>    </span><span class="annot"><span class="hs-comment">-- *** STM operations</span></span><span>
+</span><span id="line-166"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitSTM"><span class="hs-identifier">waitSTM</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#pollSTM"><span class="hs-identifier">pollSTM</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitCatchSTM"><span class="hs-identifier">waitCatchSTM</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-167"></span><span>
+</span><span id="line-168"></span><span>    </span><span class="annot"><span class="hs-comment">-- *** Waiting for multiple 'Async's</span></span><span>
+</span><span id="line-169"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitAny"><span class="hs-identifier">waitAny</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitAnyCatch"><span class="hs-identifier">waitAnyCatch</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitAnyCancel"><span class="hs-identifier">waitAnyCancel</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitAnyCatchCancel"><span class="hs-identifier">waitAnyCatchCancel</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-170"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitEither"><span class="hs-identifier">waitEither</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitEitherCatch"><span class="hs-identifier">waitEitherCatch</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitEitherCancel"><span class="hs-identifier">waitEitherCancel</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitEitherCatchCancel"><span class="hs-identifier">waitEitherCatchCancel</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-171"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitEither_"><span class="hs-identifier">waitEither_</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-172"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitBoth"><span class="hs-identifier">waitBoth</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-173"></span><span>
+</span><span id="line-174"></span><span>    </span><span class="annot"><span class="hs-comment">-- *** Waiting for multiple 'Async's in STM</span></span><span>
+</span><span id="line-175"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitAnySTM"><span class="hs-identifier">waitAnySTM</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitAnyCatchSTM"><span class="hs-identifier">waitAnyCatchSTM</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-176"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitEitherSTM"><span class="hs-identifier">waitEitherSTM</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitEitherCatchSTM"><span class="hs-identifier">waitEitherCatchSTM</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-177"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitEitherSTM_"><span class="hs-identifier">waitEitherSTM_</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-178"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#waitBothSTM"><span class="hs-identifier">waitBothSTM</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-179"></span><span>
+</span><span id="line-180"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Low-level API</span></span><span>
+</span><span id="line-181"></span><span>
+</span><span id="line-182"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Spawning (low-level API)</span></span><span>
+</span><span id="line-183"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#async"><span class="hs-identifier">async</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#asyncBound"><span class="hs-identifier">asyncBound</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#asyncOn"><span class="hs-identifier">asyncOn</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#asyncWithUnmask"><span class="hs-identifier">asyncWithUnmask</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#asyncOnWithUnmask"><span class="hs-identifier">asyncOnWithUnmask</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-184"></span><span>
+</span><span id="line-185"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Linking</span></span><span>
+</span><span id="line-186"></span><span>    </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#link"><span class="hs-identifier">link</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#linkOnly"><span class="hs-identifier">linkOnly</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#link2"><span class="hs-identifier">link2</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#link2Only"><span class="hs-identifier">link2Only</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html#ExceptionInLinkedThread"><span class="hs-identifier">ExceptionInLinkedThread</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-189"></span><span>
+</span><span id="line-190"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Concurrent.Async.Internal.html"><span class="hs-identifier">Control.Concurrent.Async.Internal</span></a></span><span>
+</span><span id="line-191"></span></pre></body></html>

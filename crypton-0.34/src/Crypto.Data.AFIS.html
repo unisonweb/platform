@@ -1,0 +1,649 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module      : Crypto.Data.AFIS</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Maintainer  : Vincent Hanquez &lt;vincent@snarc.org&gt;</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Stability   : experimental</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Portability : unknown</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Haskell implementation of the Anti-forensic information splitter</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- available in LUKS. &lt;http://clemens.endorphin.org/AFsplitter&gt;</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- The algorithm bloats an arbitrary secret with many bits that are necessary for</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- the recovery of the key (merge), and allow greater way to permanently</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- destroy a key stored on disk.</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--</span><span>
+</span><span id="line-15"></span><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables #-}</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Crypto.Data.AFIS</span><span>
+</span><span id="line-17"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Crypto.Data.AFIS.html#split"><span class="hs-identifier">split</span></a></span><span>
+</span><span id="line-18"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Data.AFIS.html#merge"><span class="hs-identifier">merge</span></a></span><span>
+</span><span id="line-19"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Hash.html"><span class="hs-identifier">Crypto.Hash</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Random.Types.html"><span class="hs-identifier">Crypto.Random.Types</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.Compat.html"><span class="hs-identifier">Crypto.Internal.Compat</span></a></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">forM_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">foldM</span></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Bits</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Storable</span></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.ByteArray.html"><span class="hs-identifier">Crypto.Internal.ByteArray</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteArray</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Bytes</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">MemView</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Crypto.Internal.ByteArray.html"><span class="hs-identifier">Crypto.Internal.ByteArray</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Memory.PtrMethods</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">memSet</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">memCopy</span></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- | Split data to diffused data, using a random generator and</span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- an hash algorithm.</span><span>
+</span><span id="line-37"></span><span class="hs-comment">--</span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- the diffused data will consist of random data for (expandTimes-1)</span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- then the last block will be xor of the accumulated random data diffused by</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- the hash algorithm.</span><span>
+</span><span id="line-41"></span><span class="hs-comment">--</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- ----------</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- -  orig  -</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- ----------</span><span>
+</span><span id="line-45"></span><span class="hs-comment">--</span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- ---------- ---------- --------------</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- - rand1  - - rand2  - - orig ^ acc -</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- ---------- ---------- --------------</span><span>
+</span><span id="line-49"></span><span class="hs-comment">--</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- where acc is :</span><span>
+</span><span id="line-51"></span><span class="hs-comment">--   acc(n+1) = hash (n ++ rand(n)) ^ acc(n)</span><span>
+</span><span id="line-52"></span><span class="hs-comment">--</span><span>
+</span><span id="line-53"></span><span id="local-6989586621679254436"><span id="local-6989586621679254438"><span id="local-6989586621679254440"><span class="annot"><a href="Crypto.Data.AFIS.html#split"><span class="hs-identifier hs-type">split</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679254436"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Hash.Types.html#HashAlgorithm"><span class="hs-identifier hs-type">HashAlgorithm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679254438"><span class="hs-identifier hs-type">hash</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Random.Types.html#DRG"><span class="hs-identifier hs-type">DRG</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679254440"><span class="hs-identifier hs-type">rng</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-54"></span><span>      </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679254438"><span class="hs-identifier hs-type">hash</span></a></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ Hash algorithm to use as diffuser</span></span><span>
+</span><span id="line-55"></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679254440"><span class="hs-identifier hs-type">rng</span></a></span><span>   </span><span class="annot"><span class="hs-comment">-- ^ Random generator to use</span></span><span>
+</span><span id="line-56"></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>   </span><span class="annot"><span class="hs-comment">-- ^ Number of times to diffuse the data.</span></span><span>
+</span><span id="line-57"></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679254436"><span class="hs-identifier hs-type">ba</span></a></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ original data to diffuse.</span></span><span>
+</span><span id="line-58"></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679254436"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679254440"><span class="hs-identifier hs-type">rng</span></a></span><span class="hs-special">)</span></span></span></span><span>         </span><span class="annot"><span class="hs-comment">-- ^ The diffused data</span></span><span>
+</span><span id="line-59"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Crypto.Data.AFIS.html#split"><span class="hs-pragma hs-type">split</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-60"></span><span id="split"><span class="annot"><span class="annottext">split :: forall ba hash rng.
+(ByteArray ba, HashAlgorithm hash, DRG rng) =&gt;
+hash -&gt; rng -&gt; Int -&gt; ba -&gt; (ba, rng)
+</span><a href="Crypto.Data.AFIS.html#split"><span class="hs-identifier hs-var hs-var">split</span></a></span></span><span> </span><span id="local-6989586621679254560"><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679254560"><span class="hs-identifier hs-var">hashAlg</span></a></span></span><span> </span><span id="local-6989586621679254561"><span class="annot"><span class="annottext">rng
+</span><a href="#local-6989586621679254561"><span class="hs-identifier hs-var">rng</span></a></span></span><span> </span><span id="local-6989586621679254562"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254562"><span class="hs-identifier hs-var">expandTimes</span></a></span></span><span> </span><span id="local-6989586621679254563"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679254563"><span class="hs-identifier hs-var">src</span></a></span></span><span>
+</span><span id="line-61"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254562"><span class="hs-identifier hs-var">expandTimes</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; (ba, rng)
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;invalid expandTimes value&quot;</span></span><span>
+</span><span id="line-62"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (ba, rng) -&gt; (ba, rng)
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO (ba, rng) -&gt; (ba, rng)) -&gt; IO (ba, rng) -&gt; (ba, rng)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-63"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679254567"><span class="annot"><span class="annottext">rng
+</span><a href="#local-6989586621679254567"><span class="hs-identifier hs-var">rng'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679254568"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679254568"><span class="hs-identifier hs-var">bs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Any -&gt; IO rng) -&gt; IO (rng, ba)
+forall ba p a. ByteArray ba =&gt; Int -&gt; (Ptr p -&gt; IO a) -&gt; IO (a, ba)
+forall p a. Int -&gt; (Ptr p -&gt; IO a) -&gt; IO (a, ba)
+</span><span class="hs-identifier hs-var">B.allocRet</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254570"><span class="hs-identifier hs-var">diffusedLen</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Any -&gt; IO rng
+forall {a}. Ptr a -&gt; IO rng
+</span><a href="#local-6989586621679254571"><span class="hs-identifier hs-var">runOp</span></a></span><span>
+</span><span id="line-64"></span><span>        </span><span class="annot"><span class="annottext">(ba, rng) -&gt; IO (ba, rng)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679254568"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">rng
+</span><a href="#local-6989586621679254567"><span class="hs-identifier hs-var">rng'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-65"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679254570"><span class="annot"><span class="annottext">diffusedLen :: Int
+</span><a href="#local-6989586621679254570"><span class="hs-identifier hs-var hs-var">diffusedLen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254573"><span class="hs-identifier hs-var">blockSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254562"><span class="hs-identifier hs-var">expandTimes</span></a></span><span>
+</span><span id="line-66"></span><span>        </span><span id="local-6989586621679254573"><span class="annot"><span class="annottext">blockSize :: Int
+</span><a href="#local-6989586621679254573"><span class="hs-identifier hs-var hs-var">blockSize</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679254563"><span class="hs-identifier hs-var">src</span></a></span><span>
+</span><span id="line-67"></span><span>        </span><span id="local-6989586621679254571"><span class="annot"><span class="annottext">runOp :: Ptr a -&gt; IO rng
+</span><a href="#local-6989586621679254571"><span class="hs-identifier hs-var hs-var">runOp</span></a></span></span><span> </span><span id="local-6989586621679254591"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679254591"><span class="hs-identifier hs-var">dstPtr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-68"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679254595"><span class="annot"><span class="annottext">lastBlock :: Ptr b
+</span><a href="#local-6989586621679254595"><span class="hs-identifier hs-var hs-var">lastBlock</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679254591"><span class="hs-identifier hs-var">dstPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a -&gt; Int -&gt; Ptr b
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254573"><span class="hs-identifier hs-var">blockSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254562"><span class="hs-identifier hs-var">expandTimes</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-69"></span><span>            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memSet</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+forall {b}. Ptr b
+</span><a href="#local-6989586621679254595"><span class="hs-identifier hs-var">lastBlock</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254573"><span class="hs-identifier hs-var">blockSize</span></a></span><span>
+</span><span id="line-70"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679254603"><span class="annot"><span class="annottext">randomBlockPtrs :: [Ptr b]
+</span><a href="#local-6989586621679254603"><span class="hs-identifier hs-var hs-var">randomBlockPtrs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Ptr b) -&gt; [Int] -&gt; [Ptr b]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr a -&gt; Int -&gt; Ptr b
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-identifier hs-var">plusPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679254591"><span class="hs-identifier hs-var">dstPtr</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Ptr b) -&gt; (Int -&gt; Int) -&gt; Int -&gt; Ptr b
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(*)</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254573"><span class="hs-identifier hs-var">blockSize</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-glyph">..</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254562"><span class="hs-identifier hs-var">expandTimes</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-71"></span><span>            </span><span id="local-6989586621679254605"><span class="annot"><span class="annottext">rng
+</span><a href="#local-6989586621679254605"><span class="hs-identifier hs-var">rng'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(rng -&gt; Ptr Word8 -&gt; IO rng) -&gt; rng -&gt; [Ptr Word8] -&gt; IO rng
+forall (t :: * -&gt; *) (m :: * -&gt; *) b a.
+(Foldable t, Monad m) =&gt;
+(b -&gt; a -&gt; m b) -&gt; b -&gt; t a -&gt; m b
+</span><span class="hs-identifier hs-var">foldM</span></span><span> </span><span class="annot"><span class="annottext">rng -&gt; Ptr Word8 -&gt; IO rng
+forall {b}. DRG b =&gt; b -&gt; Ptr Word8 -&gt; IO b
+</span><a href="#local-6989586621679254606"><span class="hs-identifier hs-var">fillRandomBlock</span></a></span><span> </span><span class="annot"><span class="annottext">rng
+</span><a href="#local-6989586621679254561"><span class="hs-identifier hs-var">rng</span></a></span><span> </span><span class="annot"><span class="annottext">[Ptr Word8]
+forall {b}. [Ptr b]
+</span><a href="#local-6989586621679254603"><span class="hs-identifier hs-var">randomBlockPtrs</span></a></span><span>
+</span><span id="line-72"></span><span>            </span><span class="annot"><span class="annottext">(Ptr Word8 -&gt; IO ()) -&gt; [Ptr Word8] -&gt; IO ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679254608"><span class="hs-identifier hs-var">addRandomBlock</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+forall {b}. Ptr b
+</span><a href="#local-6989586621679254595"><span class="hs-identifier hs-var">lastBlock</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Ptr Word8]
+forall {b}. [Ptr b]
+</span><a href="#local-6989586621679254603"><span class="hs-identifier hs-var">randomBlockPtrs</span></a></span><span>
+</span><span id="line-73"></span><span>            </span><span class="annot"><span class="annottext">ba -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679254563"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679254610"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254610"><span class="hs-identifier hs-var">srcPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="Crypto.Data.AFIS.html#xorMem"><span class="hs-identifier hs-var">xorMem</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254610"><span class="hs-identifier hs-var">srcPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+forall {b}. Ptr b
+</span><a href="#local-6989586621679254595"><span class="hs-identifier hs-var">lastBlock</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254573"><span class="hs-identifier hs-var">blockSize</span></a></span><span>
+</span><span id="line-74"></span><span>            </span><span class="annot"><span class="annottext">rng -&gt; IO rng
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">rng
+</span><a href="#local-6989586621679254605"><span class="hs-identifier hs-var">rng'</span></a></span><span>
+</span><span id="line-75"></span><span>        </span><span id="local-6989586621679254608"><span class="annot"><span class="annottext">addRandomBlock :: Ptr Word8 -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679254608"><span class="hs-identifier hs-var hs-var">addRandomBlock</span></a></span></span><span> </span><span id="local-6989586621679254614"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254614"><span class="hs-identifier hs-var">lastBlock</span></a></span></span><span> </span><span id="local-6989586621679254615"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254615"><span class="hs-identifier hs-var">blockPtr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-76"></span><span>            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="Crypto.Data.AFIS.html#xorMem"><span class="hs-identifier hs-var">xorMem</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254615"><span class="hs-identifier hs-var">blockPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254614"><span class="hs-identifier hs-var">lastBlock</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254573"><span class="hs-identifier hs-var">blockSize</span></a></span><span>
+</span><span id="line-77"></span><span>            </span><span class="annot"><span class="annottext">hash -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall hash.
+HashAlgorithm hash =&gt;
+hash -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="Crypto.Data.AFIS.html#diffuse"><span class="hs-identifier hs-var">diffuse</span></a></span><span> </span><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679254560"><span class="hs-identifier hs-var">hashAlg</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254614"><span class="hs-identifier hs-var">lastBlock</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254573"><span class="hs-identifier hs-var">blockSize</span></a></span><span>
+</span><span id="line-78"></span><span>        </span><span id="local-6989586621679254606"><span class="annot"><span class="annottext">fillRandomBlock :: b -&gt; Ptr Word8 -&gt; IO b
+</span><a href="#local-6989586621679254606"><span class="hs-identifier hs-var hs-var">fillRandomBlock</span></a></span></span><span> </span><span id="local-6989586621679254622"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679254622"><span class="hs-identifier hs-var">g</span></a></span></span><span> </span><span id="local-6989586621679254623"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254623"><span class="hs-identifier hs-var">blockPtr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-79"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679254627"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679254627"><span class="hs-identifier hs-var">rand</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679254628"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679254628"><span class="hs-identifier hs-var">g'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; b -&gt; (Bytes, b)
+forall byteArray. ByteArray byteArray =&gt; Int -&gt; b -&gt; (byteArray, b)
+forall gen byteArray.
+(DRG gen, ByteArray byteArray) =&gt;
+Int -&gt; gen -&gt; (byteArray, gen)
+</span><a href="Crypto.Random.Types.html#randomBytesGenerate"><span class="hs-identifier hs-var">randomBytesGenerate</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254573"><span class="hs-identifier hs-var">blockSize</span></a></span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679254622"><span class="hs-identifier hs-var">g</span></a></span><span>
+</span><span id="line-80"></span><span>            </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679254627"><span class="hs-identifier hs-var">rand</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679254630"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254630"><span class="hs-identifier hs-var">randPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memCopy</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254623"><span class="hs-identifier hs-var">blockPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254630"><span class="hs-identifier hs-var">randPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254573"><span class="hs-identifier hs-var">blockSize</span></a></span><span>
+</span><span id="line-81"></span><span>            </span><span class="annot"><span class="annottext">b -&gt; IO b
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679254628"><span class="hs-identifier hs-var">g'</span></a></span><span>
+</span><span id="line-82"></span><span>
+</span><span id="line-83"></span><span class="annot"><span class="hs-comment">-- | Merge previously diffused data back to the original data.</span></span><span>
+</span><span id="line-84"></span><span id="local-6989586621679254486"><span id="local-6989586621679254487"><span class="annot"><a href="Crypto.Data.AFIS.html#merge"><span class="hs-identifier hs-type">merge</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679254486"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Hash.Types.html#HashAlgorithm"><span class="hs-identifier hs-type">HashAlgorithm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679254487"><span class="hs-identifier hs-type">hash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-85"></span><span>      </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679254487"><span class="hs-identifier hs-type">hash</span></a></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ Hash algorithm used as diffuser</span></span><span>
+</span><span id="line-86"></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>   </span><span class="annot"><span class="hs-comment">-- ^ Number of times to un-diffuse the data</span></span><span>
+</span><span id="line-87"></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679254486"><span class="hs-identifier hs-type">ba</span></a></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Diffused data</span></span><span>
+</span><span id="line-88"></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679254486"><span class="hs-identifier hs-type">ba</span></a></span></span></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Original data</span></span><span>
+</span><span id="line-89"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Crypto.Data.AFIS.html#merge"><span class="hs-pragma hs-type">merge</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-90"></span><span id="merge"><span class="annot"><span class="annottext">merge :: forall ba hash.
+(ByteArray ba, HashAlgorithm hash) =&gt;
+hash -&gt; Int -&gt; ba -&gt; ba
+</span><a href="Crypto.Data.AFIS.html#merge"><span class="hs-identifier hs-var hs-var">merge</span></a></span></span><span> </span><span id="local-6989586621679254661"><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679254661"><span class="hs-identifier hs-var">hashAlg</span></a></span></span><span> </span><span id="local-6989586621679254662"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254662"><span class="hs-identifier hs-var">expandTimes</span></a></span></span><span> </span><span id="local-6989586621679254663"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679254663"><span class="hs-identifier hs-var">bs</span></a></span></span><span>
+</span><span id="line-91"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254664"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>            </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ba
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;diffused data not a multiple of expandTimes&quot;</span></span><span>
+</span><span id="line-92"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254666"><span class="hs-identifier hs-var">originalSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ba
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;diffused data null&quot;</span></span><span>
+</span><span id="line-93"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; ba
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254666"><span class="hs-identifier hs-var">originalSize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; ba) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; ba
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679254668"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254668"><span class="hs-identifier hs-var">dstPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-94"></span><span>        </span><span class="annot"><span class="annottext">ba -&gt; (Ptr Any -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679254663"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Any -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Any -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679254669"><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679254669"><span class="hs-identifier hs-var">srcPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-95"></span><span>            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memSet</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254668"><span class="hs-identifier hs-var">dstPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254666"><span class="hs-identifier hs-var">originalSize</span></a></span><span>
+</span><span id="line-96"></span><span>            </span><span class="annot"><span class="annottext">[Int] -&gt; (Int -&gt; IO ()) -&gt; IO ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m ()
+</span><span class="hs-identifier hs-var">forM_</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-glyph">..</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254662"><span class="hs-identifier hs-var">expandTimes</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">((Int -&gt; IO ()) -&gt; IO ()) -&gt; (Int -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679254670"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254670"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-97"></span><span>                </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="Crypto.Data.AFIS.html#xorMem"><span class="hs-identifier hs-var">xorMem</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679254669"><span class="hs-identifier hs-var">srcPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Any -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254670"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254666"><span class="hs-identifier hs-var">originalSize</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254668"><span class="hs-identifier hs-var">dstPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254666"><span class="hs-identifier hs-var">originalSize</span></a></span><span>
+</span><span id="line-98"></span><span>                </span><span class="annot"><span class="annottext">hash -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall hash.
+HashAlgorithm hash =&gt;
+hash -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="Crypto.Data.AFIS.html#diffuse"><span class="hs-identifier hs-var">diffuse</span></a></span><span> </span><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679254661"><span class="hs-identifier hs-var">hashAlg</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254668"><span class="hs-identifier hs-var">dstPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254666"><span class="hs-identifier hs-var">originalSize</span></a></span><span>
+</span><span id="line-99"></span><span>            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="Crypto.Data.AFIS.html#xorMem"><span class="hs-identifier hs-var">xorMem</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679254669"><span class="hs-identifier hs-var">srcPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Any -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254662"><span class="hs-identifier hs-var">expandTimes</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254666"><span class="hs-identifier hs-var">originalSize</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254668"><span class="hs-identifier hs-var">dstPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254666"><span class="hs-identifier hs-var">originalSize</span></a></span><span>
+</span><span id="line-100"></span><span>            </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679254666"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254666"><span class="hs-identifier hs-var">originalSize</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679254664"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254664"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254672"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; (Int, Int)
+forall a. Integral a =&gt; a -&gt; a -&gt; (a, a)
+</span><span class="hs-operator hs-var">`quotRem`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254662"><span class="hs-identifier hs-var">expandTimes</span></a></span><span>
+</span><span id="line-102"></span><span>        </span><span id="local-6989586621679254672"><span class="annot"><span class="annottext">len :: Int
+</span><a href="#local-6989586621679254672"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span>              </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679254663"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-103"></span><span>
+</span><span id="line-104"></span><span class="hs-comment">-- | inplace Xor with an input</span><span>
+</span><span id="line-105"></span><span class="hs-comment">-- dst = src `xor` dst</span><span>
+</span><span id="line-106"></span><span class="annot"><a href="Crypto.Data.AFIS.html#xorMem"><span class="hs-identifier hs-type">xorMem</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span id="xorMem"><span class="annot"><span class="annottext">xorMem :: Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="Crypto.Data.AFIS.html#xorMem"><span class="hs-identifier hs-var hs-var">xorMem</span></a></span></span><span> </span><span id="local-6989586621679254676"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254676"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span id="local-6989586621679254677"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254677"><span class="hs-identifier hs-var">dst</span></a></span></span><span> </span><span id="local-6989586621679254678"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254678"><span class="hs-identifier hs-var">sz</span></a></span></span><span>
+</span><span id="line-108"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254678"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`mod`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">64</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Ptr Word64 -&gt; Ptr Word64 -&gt; Int -&gt; IO ()
+forall {b}.
+(Storable b, Bits b) =&gt;
+Int -&gt; Ptr b -&gt; Ptr b -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621679254680"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word64
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254676"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word64
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254677"><span class="hs-identifier hs-var">dst</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254678"><span class="hs-identifier hs-var">sz</span></a></span><span>
+</span><span id="line-109"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254678"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`mod`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Ptr Word32 -&gt; Ptr Word32 -&gt; Int -&gt; IO ()
+forall {b}.
+(Storable b, Bits b) =&gt;
+Int -&gt; Ptr b -&gt; Ptr b -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621679254680"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word32
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254676"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word32
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254677"><span class="hs-identifier hs-var">dst</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254678"><span class="hs-identifier hs-var">sz</span></a></span><span>
+</span><span id="line-110"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall {b}.
+(Storable b, Bits b) =&gt;
+Int -&gt; Ptr b -&gt; Ptr b -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621679254680"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254676"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254677"><span class="hs-identifier hs-var">dst</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254678"><span class="hs-identifier hs-var">sz</span></a></span><span>
+</span><span id="line-111"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679254680"><span class="annot"><span class="annottext">loop :: Int -&gt; Ptr b -&gt; Ptr b -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621679254680"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span>    </span><span class="annot"><span class="annottext">Ptr b
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Ptr b
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span>        </span><span class="annot"><a href="#local-6989586621679254680"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span id="local-6989586621679254698"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254698"><span class="hs-identifier hs-var">incr</span></a></span></span><span> </span><span id="local-6989586621679254699"><span class="annot"><span class="annottext">Ptr b
+</span><a href="#local-6989586621679254699"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679254700"><span class="annot"><span class="annottext">Ptr b
+</span><a href="#local-6989586621679254700"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span id="local-6989586621679254701"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254701"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621679254702"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679254702"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr b -&gt; IO b
+forall a. Storable a =&gt; Ptr a -&gt; IO a
+</span><span class="hs-identifier hs-var">peek</span></span><span> </span><span class="annot"><span class="annottext">Ptr b
+</span><a href="#local-6989586621679254699"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-113"></span><span>                             </span><span id="local-6989586621679254704"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679254704"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr b -&gt; IO b
+forall a. Storable a =&gt; Ptr a -&gt; IO a
+</span><span class="hs-identifier hs-var">peek</span></span><span> </span><span class="annot"><span class="annottext">Ptr b
+</span><a href="#local-6989586621679254700"><span class="hs-identifier hs-var">d</span></a></span><span>
+</span><span id="line-114"></span><span>                             </span><span class="annot"><span class="annottext">Ptr b -&gt; b -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">poke</span></span><span> </span><span class="annot"><span class="annottext">Ptr b
+</span><a href="#local-6989586621679254700"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679254702"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">b -&gt; b -&gt; b
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`xor`</span></span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679254704"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-115"></span><span>                             </span><span class="annot"><span class="annottext">Int -&gt; Ptr b -&gt; Ptr b -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621679254680"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254698"><span class="hs-identifier hs-var">incr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr b
+</span><a href="#local-6989586621679254699"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr b -&gt; Int -&gt; Ptr b
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254698"><span class="hs-identifier hs-var">incr</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr b
+</span><a href="#local-6989586621679254700"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr b -&gt; Int -&gt; Ptr b
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254698"><span class="hs-identifier hs-var">incr</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254701"><span class="hs-identifier hs-var">n</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254698"><span class="hs-identifier hs-var">incr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span id="local-6989586621679254482"><span class="annot"><a href="Crypto.Data.AFIS.html#diffuse"><span class="hs-identifier hs-type">diffuse</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Hash.Types.html#HashAlgorithm"><span class="hs-identifier hs-type">HashAlgorithm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679254482"><span class="hs-identifier hs-type">hash</span></a></span><span>
+</span><span id="line-118"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679254482"><span class="hs-identifier hs-type">hash</span></a></span><span>      </span><span class="annot"><span class="hs-comment">-- ^ Hash function to use as diffuser</span></span><span>
+</span><span id="line-119"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ buffer to diffuse, modify in place</span></span><span>
+</span><span id="line-120"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>       </span><span class="annot"><span class="hs-comment">-- ^ length of buffer to diffuse</span></span><span>
+</span><span id="line-121"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-122"></span><span id="diffuse"><span class="annot"><span class="annottext">diffuse :: forall hash.
+HashAlgorithm hash =&gt;
+hash -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="Crypto.Data.AFIS.html#diffuse"><span class="hs-identifier hs-var hs-var">diffuse</span></a></span></span><span> </span><span id="local-6989586621679254721"><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679254721"><span class="hs-identifier hs-var">hashAlg</span></a></span></span><span> </span><span id="local-6989586621679254722"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254722"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span id="local-6989586621679254723"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254723"><span class="hs-identifier hs-var">sz</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621679254724"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254722"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-123"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679254726"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254726"><span class="hs-identifier hs-var">full</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679254727"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254727"><span class="hs-identifier hs-var">pad</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254723"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; (Int, Int)
+forall a. Integral a =&gt; a -&gt; a -&gt; (a, a)
+</span><span class="hs-operator hs-var">`quotRem`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254728"><span class="hs-identifier hs-var">digestSize</span></a></span><span> </span><span>
+</span><span id="line-124"></span><span>        </span><span id="local-6989586621679254724"><span class="annot"><span class="annottext">loop :: Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621679254724"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621679254745"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254745"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679254746"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254746"><span class="hs-identifier hs-var">i</span></a></span></span><span>
+</span><span id="line-125"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254746"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254726"><span class="hs-identifier hs-var">full</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621679254748"><span class="annot"><span class="annottext">Digest hash
+</span><a href="#local-6989586621679254748"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Ptr Word8 -&gt; Int -&gt; IO (Digest hash)
+forall {m :: * -&gt; *}.
+Monad m =&gt;
+Int -&gt; Ptr Word8 -&gt; Int -&gt; m (Digest hash)
+</span><a href="#local-6989586621679254749"><span class="hs-identifier hs-var">hashBlock</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254746"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254745"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254728"><span class="hs-identifier hs-var">digestSize</span></a></span><span>
+</span><span id="line-126"></span><span>                            </span><span class="annot"><span class="annottext">Digest hash -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Digest hash -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Digest hash
+</span><a href="#local-6989586621679254748"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679254750"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254750"><span class="hs-identifier hs-var">hPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memCopy</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254745"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254750"><span class="hs-identifier hs-var">hPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254728"><span class="hs-identifier hs-var">digestSize</span></a></span><span>
+</span><span id="line-127"></span><span>                            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="#local-6989586621679254724"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254745"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254728"><span class="hs-identifier hs-var">digestSize</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254746"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-128"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254727"><span class="hs-identifier hs-var">pad</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621679254752"><span class="annot"><span class="annottext">Digest hash
+</span><a href="#local-6989586621679254752"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Ptr Word8 -&gt; Int -&gt; IO (Digest hash)
+forall {m :: * -&gt; *}.
+Monad m =&gt;
+Int -&gt; Ptr Word8 -&gt; Int -&gt; m (Digest hash)
+</span><a href="#local-6989586621679254749"><span class="hs-identifier hs-var">hashBlock</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254746"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254745"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254727"><span class="hs-identifier hs-var">pad</span></a></span><span>
+</span><span id="line-129"></span><span>                            </span><span class="annot"><span class="annottext">Digest hash -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Digest hash -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Digest hash
+</span><a href="#local-6989586621679254752"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679254753"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254753"><span class="hs-identifier hs-var">hPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memCopy</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254745"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254753"><span class="hs-identifier hs-var">hPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254727"><span class="hs-identifier hs-var">pad</span></a></span><span>
+</span><span id="line-130"></span><span>                            </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-131"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span>        </span><span id="local-6989586621679254728"><span class="annot"><span class="annottext">digestSize :: Int
+</span><a href="#local-6989586621679254728"><span class="hs-identifier hs-var hs-var">digestSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">hash -&gt; Int
+forall a. HashAlgorithm a =&gt; a -&gt; Int
+</span><a href="Crypto.Hash.Types.html#hashDigestSize"><span class="hs-identifier hs-var">hashDigestSize</span></a></span><span> </span><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679254721"><span class="hs-identifier hs-var">hashAlg</span></a></span><span>
+</span><span id="line-134"></span><span>
+</span><span id="line-135"></span><span>        </span><span class="hs-comment">-- Hash [ BE32(n), (p .. p+hashSz) ]</span><span>
+</span><span id="line-136"></span><span>        </span><span id="local-6989586621679254749"><span class="annot"><span class="annottext">hashBlock :: Int -&gt; Ptr Word8 -&gt; Int -&gt; m (Digest hash)
+</span><a href="#local-6989586621679254749"><span class="hs-identifier hs-var hs-var">hashBlock</span></a></span></span><span> </span><span id="local-6989586621679254770"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254770"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621679254771"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254771"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621679254772"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254772"><span class="hs-identifier hs-var">hashSz</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-137"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679254774"><span class="annot"><span class="annottext">ctx :: Context hash
+</span><a href="#local-6989586621679254774"><span class="hs-identifier hs-var hs-var">ctx</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">hash -&gt; Context hash
+forall alg. HashAlgorithm alg =&gt; alg -&gt; Context alg
+</span><a href="Crypto.Hash.html#hashInitWith"><span class="hs-identifier hs-var">hashInitWith</span></a></span><span> </span><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679254721"><span class="hs-identifier hs-var">hashAlg</span></a></span><span>
+</span><span id="line-138"></span><span>            </span><span class="annot"><span class="annottext">Digest hash -&gt; m (Digest hash)
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Digest hash -&gt; m (Digest hash)) -&gt; Digest hash -&gt; m (Digest hash)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">Context hash -&gt; Digest hash
+forall a. HashAlgorithm a =&gt; Context a -&gt; Digest a
+</span><a href="Crypto.Hash.html#hashFinalize"><span class="hs-identifier hs-var">hashFinalize</span></a></span><span> </span><span class="annot"><span class="annottext">(Context hash -&gt; Digest hash) -&gt; Context hash -&gt; Digest hash
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Context hash -&gt; MemView -&gt; Context hash
+forall ba a.
+(ByteArrayAccess ba, HashAlgorithm a) =&gt;
+Context a -&gt; ba -&gt; Context a
+</span><a href="Crypto.Hash.html#hashUpdate"><span class="hs-identifier hs-var">hashUpdate</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Context hash -&gt; Bytes -&gt; Context hash
+forall ba a.
+(ByteArrayAccess ba, HashAlgorithm a) =&gt;
+Context a -&gt; ba -&gt; Context a
+</span><a href="Crypto.Hash.html#hashUpdate"><span class="hs-identifier hs-var">hashUpdate</span></a></span><span> </span><span class="annot"><span class="annottext">Context hash
+</span><a href="#local-6989586621679254774"><span class="hs-identifier hs-var">ctx</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Bytes
+</span><a href="#local-6989586621679254779"><span class="hs-identifier hs-var">be32</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254770"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; MemView
+</span><span class="hs-identifier hs-var">MemView</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254771"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254772"><span class="hs-identifier hs-var">hashSz</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>
+</span><span id="line-140"></span><span>        </span><span class="annot"><a href="#local-6989586621679254779"><span class="hs-identifier hs-type">be32</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-141"></span><span>        </span><span id="local-6989586621679254779"><span class="annot"><span class="annottext">be32 :: Int -&gt; Bytes
+</span><a href="#local-6989586621679254779"><span class="hs-identifier hs-var hs-var">be32</span></a></span></span><span> </span><span id="local-6989586621679254781"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254781"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Bytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679254782"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254782"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-142"></span><span>            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">poke</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254782"><span class="hs-identifier hs-var">ptr</span></a></span><span>               </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8
+</span><a href="#local-6989586621679254783"><span class="hs-identifier hs-var">f8</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254781"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">24</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-143"></span><span>            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">poke</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254782"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8
+</span><a href="#local-6989586621679254783"><span class="hs-identifier hs-var">f8</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254781"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span>            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">poke</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254782"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8
+</span><a href="#local-6989586621679254783"><span class="hs-identifier hs-var">f8</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254781"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-145"></span><span>            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">poke</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679254782"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8
+</span><a href="#local-6989586621679254783"><span class="hs-identifier hs-var">f8</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679254781"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-146"></span><span>          </span><span class="hs-keyword">where</span><span>
+</span><span id="line-147"></span><span>                </span><span class="annot"><a href="#local-6989586621679254783"><span class="hs-identifier hs-type">f8</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>
+</span><span id="line-148"></span><span>                </span><span id="local-6989586621679254783"><span class="annot"><span class="annottext">f8 :: Int -&gt; Word8
+</span><a href="#local-6989586621679254783"><span class="hs-identifier hs-var hs-var">f8</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span>
+</span><span id="line-149"></span></pre></body></html>

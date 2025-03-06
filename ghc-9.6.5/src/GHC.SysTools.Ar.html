@@ -1,0 +1,1166 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings, GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-3"></span><span class="hs-comment">{- Note [The need for Ar.hs]
+   ~~~~~~~~~~~~~~~~~~~~~~~~~
+Building `-staticlib` previously required the presence of libtool, and was a
+such restricted to mach-o only. As libtool on macOS and gnu libtool are very
+different, there was no simple portable way to support this.
+
+libtool for static archives does essentially: concatenate the input archives,
+add the input objects, and create a symbol index. Using `ar` for this task
+fails as even `ar` (bsd and gnu, llvm, ...) do not provide the same
+features across platforms (e.g. index prefixed retrieval of objects with
+the same name.)
+
+As archives are rather simple structurally, we can just build the archives
+with Haskell directly and use ranlib on the final result to get the symbol
+index. This should allow us to work around with the differences/availability
+of libtool across different platforms.
+-}</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.SysTools.Ar</span><span>
+</span><span id="line-21"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier">ArchiveEntry</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span>  </span><span class="hs-special">,</span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier">Archive</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span>  </span><span class="hs-special">,</span><span class="annot"><a href="GHC.SysTools.Ar.html#afilter"><span class="hs-identifier">afilter</span></a></span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span>  </span><span class="hs-special">,</span><span class="annot"><a href="GHC.SysTools.Ar.html#parseAr"><span class="hs-identifier">parseAr</span></a></span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span>  </span><span class="hs-special">,</span><span class="annot"><a href="GHC.SysTools.Ar.html#loadAr"><span class="hs-identifier">loadAr</span></a></span><span>
+</span><span id="line-28"></span><span>  </span><span class="hs-special">,</span><span class="annot"><a href="GHC.SysTools.Ar.html#loadObj"><span class="hs-identifier">loadObj</span></a></span><span>
+</span><span id="line-29"></span><span>  </span><span class="hs-special">,</span><span class="annot"><a href="GHC.SysTools.Ar.html#writeBSDAr"><span class="hs-identifier">writeBSDAr</span></a></span><span>
+</span><span id="line-30"></span><span>  </span><span class="hs-special">,</span><span class="annot"><a href="GHC.SysTools.Ar.html#writeGNUAr"><span class="hs-identifier">writeGNUAr</span></a></span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span>  </span><span class="hs-special">,</span><span class="annot"><a href="GHC.SysTools.Ar.html#isBSDSymdef"><span class="hs-identifier">isBSDSymdef</span></a></span><span>
+</span><span id="line-33"></span><span>  </span><span class="hs-special">,</span><span class="annot"><a href="GHC.SysTools.Ar.html#isGNUSymdef"><span class="hs-identifier">isGNUSymdef</span></a></span><span>
+</span><span id="line-34"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span>   </span><span class="hs-keyword">where</span><span>
+</span><span id="line-36"></span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.List.html#/Data.List.html"><span class="hs-identifier">Data.List</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Traversable.html#mapAccumL/Data.Traversable.html#mapAccumL"><span class="hs-identifier">mapAccumL</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.OldList.html#isPrefixOf/Data.OldList.html#isPrefixOf"><span class="hs-identifier">isPrefixOf</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Monoid.html#/Data.Monoid.html"><span class="hs-identifier">Data.Monoid</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator">(&lt;&gt;)</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Get.html#/Data.Binary.Get.html"><span class="hs-identifier">Data.Binary.Get</span></a></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#/Data.Binary.Put.html"><span class="hs-identifier">Data.Binary.Put</span></a></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.html#/Control.Monad.html"><span class="hs-identifier">Control.Monad</span></a></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Applicative.html#/Control.Applicative.html"><span class="hs-identifier">Control.Applicative</span></a></span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#/Data.ByteString.html"><span class="hs-identifier">Data.ByteString</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-46"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#/Data.ByteString.Char8.html"><span class="hs-identifier">Data.ByteString.Char8</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">C</span></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Lazy.html#/Data.ByteString.Lazy.html"><span class="hs-identifier">Data.ByteString.Lazy</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">L</span></span><span class="hs-cpp">
+#if !defined(mingw32_HOST_OS)
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../unix-2.8.4.0/src/System.Posix.Files.html#/System.Posix.Files.html"><span class="hs-identifier">System.Posix.Files</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">POSIX</span></span><span class="hs-cpp">
+#endif
+</span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/System.FilePath.html#/System.FilePath.html"><span class="hs-identifier">System.FilePath</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../filepath-1.4.300.1/src/System.FilePath.Posix.html#takeFileName/System.FilePath.Posix.html#takeFileName"><span class="hs-identifier">takeFileName</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>
+</span><span id="line-53"></span><span class="hs-keyword">data</span><span> </span><span id="ArchiveEntry"><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-var">ArchiveEntry</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="ArchiveEntry"><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-var">ArchiveEntry</span></a></span></span><span>
+</span><span id="line-54"></span><span>    </span><span class="hs-special">{</span><span> </span><span id="filename"><span class="annot"><span class="annottext">ArchiveEntry -&gt; [Char]
+</span><a href="GHC.SysTools.Ar.html#filename"><span class="hs-identifier hs-var hs-var">filename</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#String/GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span>       </span><span class="annot"><span class="hs-comment">-- ^ File name.</span></span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="filetime"><span class="annot"><span class="annottext">ArchiveEntry -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#filetime"><span class="hs-identifier hs-var hs-var">filetime</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>          </span><span class="annot"><span class="hs-comment">-- ^ File modification time.</span></span><span>
+</span><span id="line-56"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="fileown"><span class="annot"><span class="annottext">ArchiveEntry -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#fileown"><span class="hs-identifier hs-var hs-var">fileown</span></a></span></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>          </span><span class="annot"><span class="hs-comment">-- ^ File owner.</span></span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="filegrp"><span class="annot"><span class="annottext">ArchiveEntry -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#filegrp"><span class="hs-identifier hs-var hs-var">filegrp</span></a></span></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>          </span><span class="annot"><span class="hs-comment">-- ^ File group.</span></span><span>
+</span><span id="line-58"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="filemode"><span class="annot"><span class="annottext">ArchiveEntry -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#filemode"><span class="hs-identifier hs-var hs-var">filemode</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>          </span><span class="annot"><span class="hs-comment">-- ^ File mode.</span></span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="filesize"><span class="annot"><span class="annottext">ArchiveEntry -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#filesize"><span class="hs-identifier hs-var hs-var">filesize</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>          </span><span class="annot"><span class="hs-comment">-- ^ File size.</span></span><span>
+</span><span id="line-60"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="filedata"><span class="annot"><span class="annottext">ArchiveEntry -&gt; ByteString
+</span><a href="GHC.SysTools.Ar.html#filedata"><span class="hs-identifier hs-var hs-var">filedata</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="annot"><span class="hs-comment">-- ^ File bytes.</span></span><span>
+</span><span id="line-61"></span><span>    </span><span class="hs-special">}</span><span> </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681495766"><span id="local-6989586621681495775"><span class="annot"><span class="annottext">ArchiveEntry -&gt; ArchiveEntry -&gt; Bool
+(ArchiveEntry -&gt; ArchiveEntry -&gt; Bool)
+-&gt; (ArchiveEntry -&gt; ArchiveEntry -&gt; Bool) -&gt; Eq ArchiveEntry
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: ArchiveEntry -&gt; ArchiveEntry -&gt; Bool
+== :: ArchiveEntry -&gt; ArchiveEntry -&gt; Bool
+$c/= :: ArchiveEntry -&gt; ArchiveEntry -&gt; Bool
+/= :: ArchiveEntry -&gt; ArchiveEntry -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681495780"><span id="local-6989586621681495791"><span id="local-6989586621681495795"><span class="annot"><span class="annottext">Int -&gt; ArchiveEntry -&gt; ShowS
+[ArchiveEntry] -&gt; ShowS
+ArchiveEntry -&gt; [Char]
+(Int -&gt; ArchiveEntry -&gt; ShowS)
+-&gt; (ArchiveEntry -&gt; [Char])
+-&gt; ([ArchiveEntry] -&gt; ShowS)
+-&gt; Show ArchiveEntry
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; [Char]) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; ArchiveEntry -&gt; ShowS
+showsPrec :: Int -&gt; ArchiveEntry -&gt; ShowS
+$cshow :: ArchiveEntry -&gt; [Char]
+show :: ArchiveEntry -&gt; [Char]
+$cshowList :: [ArchiveEntry] -&gt; ShowS
+showList :: [ArchiveEntry] -&gt; ShowS
+</span><a href="../../base-4.18.2.1/src/GHC.Show.html#Show/GHC.Show.html#Show"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></a></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="hs-keyword">newtype</span><span> </span><span id="Archive"><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-var">Archive</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Archive"><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-var">Archive</span></a></span></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-64"></span><span>        </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681495800"><span id="local-6989586621681495805"><span class="annot"><span class="annottext">Archive -&gt; Archive -&gt; Bool
+(Archive -&gt; Archive -&gt; Bool)
+-&gt; (Archive -&gt; Archive -&gt; Bool) -&gt; Eq Archive
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: Archive -&gt; Archive -&gt; Bool
+== :: Archive -&gt; Archive -&gt; Bool
+$c/= :: Archive -&gt; Archive -&gt; Bool
+/= :: Archive -&gt; Archive -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681495811"><span id="local-6989586621681495816"><span id="local-6989586621681495820"><span class="annot"><span class="annottext">Int -&gt; Archive -&gt; ShowS
+[Archive] -&gt; ShowS
+Archive -&gt; [Char]
+(Int -&gt; Archive -&gt; ShowS)
+-&gt; (Archive -&gt; [Char]) -&gt; ([Archive] -&gt; ShowS) -&gt; Show Archive
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; [Char]) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; Archive -&gt; ShowS
+showsPrec :: Int -&gt; Archive -&gt; ShowS
+$cshow :: Archive -&gt; [Char]
+show :: Archive -&gt; [Char]
+$cshowList :: [Archive] -&gt; ShowS
+showList :: [Archive] -&gt; ShowS
+</span><a href="../../base-4.18.2.1/src/GHC.Show.html#Show/GHC.Show.html#Show"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></a></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681495823"><span id="local-6989586621681495827"><span id="local-6989586621681495833"><span class="annot"><span class="annottext">NonEmpty Archive -&gt; Archive
+Archive -&gt; Archive -&gt; Archive
+(Archive -&gt; Archive -&gt; Archive)
+-&gt; (NonEmpty Archive -&gt; Archive)
+-&gt; (forall b. Integral b =&gt; b -&gt; Archive -&gt; Archive)
+-&gt; Semigroup Archive
+forall b. Integral b =&gt; b -&gt; Archive -&gt; Archive
+forall a.
+(a -&gt; a -&gt; a)
+-&gt; (NonEmpty a -&gt; a)
+-&gt; (forall b. Integral b =&gt; b -&gt; a -&gt; a)
+-&gt; Semigroup a
+$c&lt;&gt; :: Archive -&gt; Archive -&gt; Archive
+&lt;&gt; :: Archive -&gt; Archive -&gt; Archive
+$csconcat :: NonEmpty Archive -&gt; Archive
+sconcat :: NonEmpty Archive -&gt; Archive
+$cstimes :: forall b. Integral b =&gt; b -&gt; Archive -&gt; Archive
+stimes :: forall b. Integral b =&gt; b -&gt; Archive -&gt; Archive
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#Semigroup/GHC.Base.html#Semigroup"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Semigroup</span></a></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681495843"><span id="local-6989586621681495847"><span id="local-6989586621681495851"><span class="annot"><span class="annottext">Semigroup Archive
+Archive
+Semigroup Archive =&gt;
+Archive
+-&gt; (Archive -&gt; Archive -&gt; Archive)
+-&gt; ([Archive] -&gt; Archive)
+-&gt; Monoid Archive
+[Archive] -&gt; Archive
+Archive -&gt; Archive -&gt; Archive
+forall a.
+Semigroup a =&gt;
+a -&gt; (a -&gt; a -&gt; a) -&gt; ([a] -&gt; a) -&gt; Monoid a
+$cmempty :: Archive
+mempty :: Archive
+$cmappend :: Archive -&gt; Archive -&gt; Archive
+mappend :: Archive -&gt; Archive -&gt; Archive
+$cmconcat :: [Archive] -&gt; Archive
+mconcat :: [Archive] -&gt; Archive
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#Monoid/GHC.Base.html#Monoid"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Monoid</span></a></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span class="annot"><a href="GHC.SysTools.Ar.html#afilter"><span class="hs-identifier hs-type">afilter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span>
+</span><span id="line-67"></span><span id="afilter"><span class="annot"><span class="annottext">afilter :: (ArchiveEntry -&gt; Bool) -&gt; Archive -&gt; Archive
+</span><a href="GHC.SysTools.Ar.html#afilter"><span class="hs-identifier hs-var hs-var">afilter</span></a></span></span><span> </span><span id="local-6989586621681495856"><span class="annot"><span class="annottext">ArchiveEntry -&gt; Bool
+</span><a href="#local-6989586621681495856"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span> </span><span id="local-6989586621681495857"><span class="annot"><span class="annottext">[ArchiveEntry]
+</span><a href="#local-6989586621681495857"><span class="hs-identifier hs-var">xs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ArchiveEntry] -&gt; Archive
+</span><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-var">Archive</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(ArchiveEntry -&gt; Bool) -&gt; [ArchiveEntry] -&gt; [ArchiveEntry]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#filter/GHC.List.html#filter"><span class="hs-identifier hs-var">filter</span></a></span><span> </span><span class="annot"><span class="annottext">ArchiveEntry -&gt; Bool
+</span><a href="#local-6989586621681495856"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">[ArchiveEntry]
+</span><a href="#local-6989586621681495857"><span class="hs-identifier hs-var">xs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span class="annot"><a href="GHC.SysTools.Ar.html#isBSDSymdef"><span class="hs-identifier hs-type">isBSDSymdef</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#isGNUSymdef"><span class="hs-identifier hs-type">isGNUSymdef</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-70"></span><span id="isBSDSymdef"><span class="annot"><span class="annottext">isBSDSymdef :: ArchiveEntry -&gt; Bool
+</span><a href="GHC.SysTools.Ar.html#isBSDSymdef"><span class="hs-identifier hs-var hs-var">isBSDSymdef</span></a></span></span><span> </span><span id="local-6989586621681495858"><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495858"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;__.SYMDEF&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; Bool
+forall a. Eq a =&gt; [a] -&gt; [a] -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.OldList.html#isPrefixOf/Data.OldList.html#isPrefixOf"><span class="hs-operator hs-var">`isPrefixOf`</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ArchiveEntry -&gt; [Char]
+</span><a href="GHC.SysTools.Ar.html#filename"><span class="hs-identifier hs-var">filename</span></a></span><span> </span><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495858"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-71"></span><span id="isGNUSymdef"><span class="annot"><span class="annottext">isGNUSymdef :: ArchiveEntry -&gt; Bool
+</span><a href="GHC.SysTools.Ar.html#isGNUSymdef"><span class="hs-identifier hs-var hs-var">isGNUSymdef</span></a></span></span><span> </span><span id="local-6989586621681495859"><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495859"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;/&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ArchiveEntry -&gt; [Char]
+</span><a href="GHC.SysTools.Ar.html#filename"><span class="hs-identifier hs-var">filename</span></a></span><span> </span><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495859"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-72"></span><span>
+</span><span id="line-73"></span><span class="annot"><span class="hs-comment">-- | Archives have numeric values padded with '\x20' to the right.</span></span><span>
+</span><span id="line-74"></span><span class="annot"><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-type">getPaddedInt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-75"></span><span id="getPaddedInt"><span class="annot"><span class="annottext">getPaddedInt :: ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var hs-var">getPaddedInt</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Int
+forall a. Read a =&gt; [Char] -&gt; a
+</span><a href="../../base-4.18.2.1/src/Text.Read.html#read/Text.Read.html#read"><span class="hs-identifier hs-var">read</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; Int) -&gt; (ByteString -&gt; [Char]) -&gt; ByteString -&gt; Int
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; [Char])
+-&gt; (ByteString -&gt; ByteString) -&gt; ByteString -&gt; [Char]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Bool) -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#takeWhile/Data.ByteString.Char8.html#takeWhile"><span class="hs-identifier hs-var">C.takeWhile</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'\x20'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-76"></span><span>
+</span><span id="line-77"></span><span class="annot"><a href="GHC.SysTools.Ar.html#putPaddedInt"><span class="hs-identifier hs-type">putPaddedInt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#Put/Data.Binary.Put.html#Put"><span class="hs-identifier hs-type">Put</span></a></span><span>
+</span><span id="line-78"></span><span id="putPaddedInt"><span class="annot"><span class="annottext">putPaddedInt :: Int -&gt; Int -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putPaddedInt"><span class="hs-identifier hs-var hs-var">putPaddedInt</span></a></span></span><span> </span><span id="local-6989586621681495867"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495867"><span class="hs-identifier hs-var">padding</span></a></span></span><span> </span><span id="local-6989586621681495868"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495868"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Int -&gt; [Char] -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putPaddedString"><span class="hs-identifier hs-var">putPaddedString</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'\x20'</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495867"><span class="hs-identifier hs-var">padding</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; [Char]
+forall a. Show a =&gt; a -&gt; [Char]
+</span><a href="../../base-4.18.2.1/src/GHC.Show.html#show/GHC.Show.html#show"><span class="hs-identifier hs-var">show</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495868"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span class="annot"><a href="GHC.SysTools.Ar.html#putPaddedString"><span class="hs-identifier hs-type">putPaddedString</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Char</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#String/GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#Put/Data.Binary.Put.html#Put"><span class="hs-identifier hs-type">Put</span></a></span><span>
+</span><span id="line-81"></span><span id="putPaddedString"><span class="annot"><span class="annottext">putPaddedString :: Char -&gt; Int -&gt; [Char] -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putPaddedString"><span class="hs-identifier hs-var hs-var">putPaddedString</span></a></span></span><span> </span><span id="local-6989586621681495871"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681495871"><span class="hs-identifier hs-var">pad</span></a></span></span><span> </span><span id="local-6989586621681495872"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495872"><span class="hs-identifier hs-var">padding</span></a></span></span><span> </span><span id="local-6989586621681495873"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495873"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Put
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#putByteString/Data.Binary.Put.html#putByteString"><span class="hs-identifier hs-var">putByteString</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Put) -&gt; ([Char] -&gt; ByteString) -&gt; [Char] -&gt; Put
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">C.pack</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; ByteString) -&gt; ShowS -&gt; [Char] -&gt; ByteString
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ShowS
+forall a. Int -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#take/GHC.List.html#take"><span class="hs-identifier hs-var">take</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495872"><span class="hs-identifier hs-var">padding</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; Put) -&gt; [Char] -&gt; Put
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495873"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ShowS
+forall a. Monoid a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mappend/GHC.Base.html#mappend"><span class="hs-operator hs-var">`mappend`</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; [Char]
+forall a. a -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#repeat/GHC.List.html#repeat"><span class="hs-identifier hs-var">repeat</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621681495871"><span class="hs-identifier hs-var">pad</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span>
+</span><span id="line-83"></span><span class="annot"><a href="GHC.SysTools.Ar.html#getBSDArchEntries"><span class="hs-identifier hs-type">getBSDArchEntries</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#Get/Data.Binary.Get.Internal.html#Get"><span class="hs-identifier hs-type">Get</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-84"></span><span id="getBSDArchEntries"><span class="annot"><span class="annottext">getBSDArchEntries :: Get [ArchiveEntry]
+</span><a href="GHC.SysTools.Ar.html#getBSDArchEntries"><span class="hs-identifier hs-var hs-var">getBSDArchEntries</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-85"></span><span>    </span><span id="local-6989586621681495879"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681495879"><span class="hs-identifier hs-var">empty</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Get Bool
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#isEmpty/Data.Binary.Get.Internal.html#isEmpty"><span class="hs-identifier hs-var">isEmpty</span></a></span><span>
+</span><span id="line-86"></span><span>    </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681495879"><span class="hs-identifier hs-var">empty</span></a></span><span> </span><span class="hs-keyword">then</span><span>
+</span><span id="line-87"></span><span>        </span><span class="annot"><span class="annottext">[ArchiveEntry] -&gt; Get [ArchiveEntry]
+forall a. a -&gt; Get a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-88"></span><span>     </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-89"></span><span>        </span><span id="local-6989586621681495881"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495881"><span class="hs-identifier hs-var">name</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span>
+</span><span id="line-90"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; Get () -&gt; Get ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#when/GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'/'</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; ByteString -&gt; Bool
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#elem/Data.ByteString.Char8.html#elem"><span class="hs-operator hs-var">`C.elem`</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495881"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#take/Data.ByteString.html#take"><span class="hs-identifier hs-var">C.take</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495881"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;#1/&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Get () -&gt; Get ()) -&gt; Get () -&gt; Get ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-91"></span><span>          </span><span class="annot"><span class="annottext">[Char] -&gt; Get ()
+forall a. [Char] -&gt; Get a
+forall (m :: * -&gt; *) a. MonadFail m =&gt; [Char] -&gt; m a
+</span><a href="../../base-4.18.2.1/src/Control.Monad.Fail.html#fail/Control.Monad.Fail.html#fail"><span class="hs-identifier hs-var">fail</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Looks like GNU Archive&quot;</span></span><span>
+</span><span id="line-92"></span><span>        </span><span id="local-6989586621681495887"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495887"><span class="hs-identifier hs-var">time</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var">getPaddedInt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; Get ByteString -&gt; Get Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">12</span></span><span>
+</span><span id="line-93"></span><span>        </span><span id="local-6989586621681495889"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495889"><span class="hs-identifier hs-var">own</span></a></span></span><span>     </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var">getPaddedInt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; Get ByteString -&gt; Get Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span>
+</span><span id="line-94"></span><span>        </span><span id="local-6989586621681495890"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495890"><span class="hs-identifier hs-var">grp</span></a></span></span><span>     </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var">getPaddedInt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; Get ByteString -&gt; Get Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span>
+</span><span id="line-95"></span><span>        </span><span id="local-6989586621681495891"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495891"><span class="hs-identifier hs-var">mode</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var">getPaddedInt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; Get ByteString -&gt; Get Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span>
+</span><span id="line-96"></span><span>        </span><span id="local-6989586621681495892"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495892"><span class="hs-identifier hs-var">st_size</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var">getPaddedInt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; Get ByteString -&gt; Get Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span>
+</span><span id="line-97"></span><span>        </span><span id="local-6989586621681495893"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495893"><span class="hs-identifier hs-var">end</span></a></span></span><span>     </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-98"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; Get () -&gt; Get ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#when/GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495893"><span class="hs-identifier hs-var">end</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;\x60\x0a&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Get () -&gt; Get ()) -&gt; Get () -&gt; Get ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-99"></span><span>          </span><span class="annot"><span class="annottext">[Char] -&gt; Get ()
+forall a. [Char] -&gt; Get a
+forall (m :: * -&gt; *) a. MonadFail m =&gt; [Char] -&gt; m a
+</span><a href="../../base-4.18.2.1/src/Control.Monad.Fail.html#fail/Control.Monad.Fail.html#fail"><span class="hs-identifier hs-var">fail</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;[BSD Archive] Invalid archive header end marker for name: &quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ShowS
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span>
+</span><span id="line-100"></span><span>                </span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495881"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span>        </span><span id="local-6989586621681495894"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495894"><span class="hs-identifier hs-var">off1</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Int64 -&gt; Int) -&gt; Get Int64 -&gt; Get Int
+forall (m :: * -&gt; *) a1 r. Monad m =&gt; (a1 -&gt; r) -&gt; m a1 -&gt; m r
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#liftM/GHC.Base.html#liftM"><span class="hs-identifier hs-var">liftM</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#fromIntegral/GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">Get Int64
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#bytesRead/Data.Binary.Get.Internal.html#bytesRead"><span class="hs-identifier hs-var">bytesRead</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#Get/Data.Binary.Get.Internal.html#Get"><span class="hs-identifier hs-type">Get</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-102"></span><span>        </span><span class="hs-comment">-- BSD stores extended filenames, by writing #1/&lt;length&gt; into the</span><span>
+</span><span id="line-103"></span><span>        </span><span class="hs-comment">-- name field, the first @length@ bytes then represent the file name</span><span>
+</span><span id="line-104"></span><span>        </span><span class="hs-comment">-- thus the payload size is filesize + file name length.</span><span>
+</span><span id="line-105"></span><span>        </span><span id="local-6989586621681495897"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495897"><span class="hs-identifier hs-var">name</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#take/Data.ByteString.html#take"><span class="hs-identifier hs-var">C.take</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495881"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;#1/&quot;</span></span><span> </span><span class="hs-keyword">then</span><span>
+</span><span id="line-106"></span><span>                        </span><span class="annot"><span class="annottext">(ByteString -&gt; [Char]) -&gt; Get ByteString -&gt; Get [Char]
+forall (m :: * -&gt; *) a1 r. Monad m =&gt; (a1 -&gt; r) -&gt; m a1 -&gt; m r
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#liftM/GHC.Base.html#liftM"><span class="hs-identifier hs-var">liftM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; [Char])
+-&gt; (ByteString -&gt; ByteString) -&gt; ByteString -&gt; [Char]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Bool) -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#takeWhile/Data.ByteString.Char8.html#takeWhile"><span class="hs-identifier hs-var">C.takeWhile</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'\0'</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Get ByteString) -&gt; Int -&gt; Get ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Int
+forall a. Read a =&gt; [Char] -&gt; a
+</span><a href="../../base-4.18.2.1/src/Text.Read.html#read/Text.Read.html#read"><span class="hs-identifier hs-var">read</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; Int) -&gt; [Char] -&gt; Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; [Char]) -&gt; ByteString -&gt; [Char]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#drop/Data.ByteString.html#drop"><span class="hs-identifier hs-var">C.drop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495881"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>                    </span><span class="hs-keyword">else</span><span>
+</span><span id="line-108"></span><span>                        </span><span class="annot"><span class="annottext">[Char] -&gt; Get [Char]
+forall a. a -&gt; Get a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; Get [Char]) -&gt; [Char] -&gt; Get [Char]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; [Char]) -&gt; ByteString -&gt; [Char]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Bool) -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#takeWhile/Data.ByteString.Char8.html#takeWhile"><span class="hs-identifier hs-var">C.takeWhile</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">' '</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495881"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-109"></span><span>        </span><span id="local-6989586621681495899"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495899"><span class="hs-identifier hs-var">off2</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Int64 -&gt; Int) -&gt; Get Int64 -&gt; Get Int
+forall (m :: * -&gt; *) a1 r. Monad m =&gt; (a1 -&gt; r) -&gt; m a1 -&gt; m r
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#liftM/GHC.Base.html#liftM"><span class="hs-identifier hs-var">liftM</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#fromIntegral/GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">Get Int64
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#bytesRead/Data.Binary.Get.Internal.html#bytesRead"><span class="hs-identifier hs-var">bytesRead</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#Get/Data.Binary.Get.Internal.html#Get"><span class="hs-identifier hs-type">Get</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-110"></span><span>        </span><span id="local-6989586621681495900"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495900"><span class="hs-identifier hs-var">file</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495892"><span class="hs-identifier hs-var">st_size</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#-/GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495899"><span class="hs-identifier hs-var">off2</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#-/GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495894"><span class="hs-identifier hs-var">off1</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-111"></span><span>        </span><span class="hs-comment">-- data sections are two byte aligned (see #15396)</span><span>
+</span><span id="line-112"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; Get () -&gt; Get ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#when/GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Bool
+forall a. Integral a =&gt; a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#odd/GHC.Real.html#odd"><span class="hs-identifier hs-var">odd</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495892"><span class="hs-identifier hs-var">st_size</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Get () -&gt; Get ()) -&gt; Get () -&gt; Get ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-113"></span><span>          </span><span class="annot"><span class="annottext">Get ByteString -&gt; Get ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#void/Data.Functor.html#void"><span class="hs-identifier hs-var">void</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>
+</span><span id="line-115"></span><span>        </span><span id="local-6989586621681495903"><span class="annot"><span class="annottext">[ArchiveEntry]
+</span><a href="#local-6989586621681495903"><span class="hs-identifier hs-var">rest</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Get [ArchiveEntry]
+</span><a href="GHC.SysTools.Ar.html#getBSDArchEntries"><span class="hs-identifier hs-var">getBSDArchEntries</span></a></span><span>
+</span><span id="line-116"></span><span>        </span><span class="annot"><span class="annottext">[ArchiveEntry] -&gt; Get [ArchiveEntry]
+forall a. a -&gt; Get a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">([ArchiveEntry] -&gt; Get [ArchiveEntry])
+-&gt; [ArchiveEntry] -&gt; Get [ArchiveEntry]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+-&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; ByteString -&gt; ArchiveEntry
+</span><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-var">ArchiveEntry</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495897"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495887"><span class="hs-identifier hs-var">time</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495889"><span class="hs-identifier hs-var">own</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495890"><span class="hs-identifier hs-var">grp</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495891"><span class="hs-identifier hs-var">mode</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495892"><span class="hs-identifier hs-var">st_size</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#-/GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495899"><span class="hs-identifier hs-var">off2</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#-/GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495894"><span class="hs-identifier hs-var">off1</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495900"><span class="hs-identifier hs-var">file</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ArchiveEntry -&gt; [ArchiveEntry] -&gt; [ArchiveEntry]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[ArchiveEntry]
+</span><a href="#local-6989586621681495903"><span class="hs-identifier hs-var">rest</span></a></span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span class="hs-comment">-- | GNU Archives feature a special '//' entry that contains the</span><span>
+</span><span id="line-119"></span><span class="hs-comment">-- extended names. Those are referred to as /&lt;num&gt;, where num is the</span><span>
+</span><span id="line-120"></span><span class="hs-comment">-- offset into the '//' entry.</span><span>
+</span><span id="line-121"></span><span class="hs-comment">-- In addition, filenames are terminated with '/' in the archive.</span><span>
+</span><span id="line-122"></span><span class="annot"><a href="GHC.SysTools.Ar.html#getGNUArchEntries"><span class="hs-identifier hs-type">getGNUArchEntries</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#Get/Data.Binary.Get.Internal.html#Get"><span class="hs-identifier hs-type">Get</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-123"></span><span id="getGNUArchEntries"><span class="annot"><span class="annottext">getGNUArchEntries :: Maybe ArchiveEntry -&gt; Get [ArchiveEntry]
+</span><a href="GHC.SysTools.Ar.html#getGNUArchEntries"><span class="hs-identifier hs-var hs-var">getGNUArchEntries</span></a></span></span><span> </span><span id="local-6989586621681495906"><span class="annot"><span class="annottext">Maybe ArchiveEntry
+</span><a href="#local-6989586621681495906"><span class="hs-identifier hs-var">extInfo</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-124"></span><span>  </span><span id="local-6989586621681495907"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681495907"><span class="hs-identifier hs-var">empty</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Get Bool
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#isEmpty/Data.Binary.Get.Internal.html#isEmpty"><span class="hs-identifier hs-var">isEmpty</span></a></span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681495907"><span class="hs-identifier hs-var">empty</span></a></span><span>
+</span><span id="line-126"></span><span>    </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">[ArchiveEntry] -&gt; Get [ArchiveEntry]
+forall a. a -&gt; Get a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-127"></span><span>    </span><span class="hs-keyword">else</span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-keyword">do</span><span>
+</span><span id="line-129"></span><span>      </span><span id="local-6989586621681495908"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495908"><span class="hs-identifier hs-var">name</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span>
+</span><span id="line-130"></span><span>      </span><span id="local-6989586621681495909"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495909"><span class="hs-identifier hs-var">time</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var">getPaddedInt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; Get ByteString -&gt; Get Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">12</span></span><span>
+</span><span id="line-131"></span><span>      </span><span id="local-6989586621681495910"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495910"><span class="hs-identifier hs-var">own</span></a></span></span><span>     </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var">getPaddedInt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; Get ByteString -&gt; Get Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span>
+</span><span id="line-132"></span><span>      </span><span id="local-6989586621681495911"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495911"><span class="hs-identifier hs-var">grp</span></a></span></span><span>     </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var">getPaddedInt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; Get ByteString -&gt; Get Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span>
+</span><span id="line-133"></span><span>      </span><span id="local-6989586621681495912"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495912"><span class="hs-identifier hs-var">mode</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var">getPaddedInt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; Get ByteString -&gt; Get Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span>
+</span><span id="line-134"></span><span>      </span><span id="local-6989586621681495913"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495913"><span class="hs-identifier hs-var">st_size</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#getPaddedInt"><span class="hs-identifier hs-var">getPaddedInt</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; Get ByteString -&gt; Get Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span>
+</span><span id="line-135"></span><span>      </span><span id="local-6989586621681495914"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495914"><span class="hs-identifier hs-var">end</span></a></span></span><span>     </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-136"></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; Get () -&gt; Get ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#when/GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495914"><span class="hs-identifier hs-var">end</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;\x60\x0a&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Get () -&gt; Get ()) -&gt; Get () -&gt; Get ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-137"></span><span>        </span><span class="annot"><span class="annottext">[Char] -&gt; Get ()
+forall a. [Char] -&gt; Get a
+forall (m :: * -&gt; *) a. MonadFail m =&gt; [Char] -&gt; m a
+</span><a href="../../base-4.18.2.1/src/Control.Monad.Fail.html#fail/Control.Monad.Fail.html#fail"><span class="hs-identifier hs-var">fail</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;[BSD Archive] Invalid archive header end marker for name: &quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ShowS
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span>
+</span><span id="line-138"></span><span>              </span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495908"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>      </span><span id="local-6989586621681495915"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495915"><span class="hs-identifier hs-var">file</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495913"><span class="hs-identifier hs-var">st_size</span></a></span><span>
+</span><span id="line-140"></span><span>      </span><span class="hs-comment">-- data sections are two byte aligned (see #15396)</span><span>
+</span><span id="line-141"></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; Get () -&gt; Get ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#when/GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Bool
+forall a. Integral a =&gt; a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#odd/GHC.Real.html#odd"><span class="hs-identifier hs-var">odd</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495913"><span class="hs-identifier hs-var">st_size</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Get () -&gt; Get ()) -&gt; Get () -&gt; Get ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-142"></span><span>        </span><span class="annot"><span class="annottext">Get ByteString -&gt; Get ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#void/Data.Functor.html#void"><span class="hs-identifier hs-var">void</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-143"></span><span>      </span><span id="local-6989586621681495916"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495916"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Get [Char]
+forall a. a -&gt; Get a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; Get [Char])
+-&gt; (ByteString -&gt; [Char]) -&gt; ByteString -&gt; Get [Char]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Get [Char]) -&gt; ByteString -&gt; Get [Char]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-144"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#take/Data.ByteString.html#take"><span class="hs-identifier hs-var">C.take</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495908"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;/&quot;</span></span><span>
+</span><span id="line-145"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Bool) -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#takeWhile/Data.ByteString.Char8.html#takeWhile"><span class="hs-identifier hs-var">C.takeWhile</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">' '</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495908"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-146"></span><span>               </span><span id="local-6989586621681495917"><span class="annot"><span class="annottext">name :: ByteString
+</span><a href="#local-6989586621681495917"><span class="hs-identifier hs-var">name</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;/&quot;</span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495917"><span class="hs-identifier hs-var">name</span></a></span><span>               </span><span class="hs-comment">-- symbol table</span><span>
+</span><span id="line-147"></span><span>               </span><span id="local-6989586621681495918"><span class="annot"><span class="annottext">name :: ByteString
+</span><a href="#local-6989586621681495918"><span class="hs-identifier hs-var">name</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;//&quot;</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495918"><span class="hs-identifier hs-var">name</span></a></span><span>               </span><span class="hs-comment">-- extended file names table</span><span>
+</span><span id="line-148"></span><span>               </span><span id="local-6989586621681495919"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495919"><span class="hs-identifier hs-var">name</span></a></span></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe ArchiveEntry -&gt; Int -&gt; ByteString
+</span><a href="#local-6989586621681495920"><span class="hs-identifier hs-var">getExtName</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe ArchiveEntry
+</span><a href="#local-6989586621681495906"><span class="hs-identifier hs-var">extInfo</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char] -&gt; Int
+forall a. Read a =&gt; [Char] -&gt; a
+</span><a href="../../base-4.18.2.1/src/Text.Read.html#read/Text.Read.html#read"><span class="hs-identifier hs-var">read</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; Int) -&gt; (ByteString -&gt; [Char]) -&gt; ByteString -&gt; Int
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; ByteString -&gt; Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#drop/Data.ByteString.html#drop"><span class="hs-identifier hs-var">C.drop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495919"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-149"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Bool) -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#takeWhile/Data.ByteString.Char8.html#takeWhile"><span class="hs-identifier hs-var">C.takeWhile</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'/'</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495908"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-150"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495916"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-151"></span><span>        </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;/&quot;</span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe ArchiveEntry -&gt; Get [ArchiveEntry]
+</span><a href="GHC.SysTools.Ar.html#getGNUArchEntries"><span class="hs-identifier hs-var">getGNUArchEntries</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe ArchiveEntry
+</span><a href="#local-6989586621681495906"><span class="hs-identifier hs-var">extInfo</span></a></span><span>
+</span><span id="line-152"></span><span>        </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;//&quot;</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe ArchiveEntry -&gt; Get [ArchiveEntry]
+</span><a href="GHC.SysTools.Ar.html#getGNUArchEntries"><span class="hs-identifier hs-var">getGNUArchEntries</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ArchiveEntry -&gt; Maybe ArchiveEntry
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+-&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; ByteString -&gt; ArchiveEntry
+</span><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-var">ArchiveEntry</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495916"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495909"><span class="hs-identifier hs-var">time</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495910"><span class="hs-identifier hs-var">own</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495911"><span class="hs-identifier hs-var">grp</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495912"><span class="hs-identifier hs-var">mode</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495913"><span class="hs-identifier hs-var">st_size</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495915"><span class="hs-identifier hs-var">file</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-153"></span><span>        </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-identifier">_</span></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+-&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; ByteString -&gt; ArchiveEntry
+</span><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-var">ArchiveEntry</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495916"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495909"><span class="hs-identifier hs-var">time</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495910"><span class="hs-identifier hs-var">own</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495911"><span class="hs-identifier hs-var">grp</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495912"><span class="hs-identifier hs-var">mode</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495913"><span class="hs-identifier hs-var">st_size</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495915"><span class="hs-identifier hs-var">file</span></a></span><span> </span><span class="annot"><span class="annottext">ArchiveEntry -&gt; [ArchiveEntry] -&gt; [ArchiveEntry]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([ArchiveEntry] -&gt; [ArchiveEntry])
+-&gt; Get [ArchiveEntry] -&gt; Get [ArchiveEntry]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe ArchiveEntry -&gt; Get [ArchiveEntry]
+</span><a href="GHC.SysTools.Ar.html#getGNUArchEntries"><span class="hs-identifier hs-var">getGNUArchEntries</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe ArchiveEntry
+</span><a href="#local-6989586621681495906"><span class="hs-identifier hs-var">extInfo</span></a></span><span>
+</span><span id="line-154"></span><span>
+</span><span id="line-155"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-156"></span><span>   </span><span class="annot"><a href="#local-6989586621681495920"><span class="hs-identifier hs-type">getExtName</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span>
+</span><span id="line-157"></span><span>   </span><span id="local-6989586621681495920"><span class="annot"><span class="annottext">getExtName :: Maybe ArchiveEntry -&gt; Int -&gt; ByteString
+</span><a href="#local-6989586621681495920"><span class="hs-identifier hs-var hs-var">getExtName</span></a></span></span><span> </span><span class="annot"><span class="annottext">Maybe ArchiveEntry
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ByteString
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Err.html#error/GHC.Err.html#error"><span class="hs-identifier hs-var">error</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Invalid extended filename reference.&quot;</span></span><span>
+</span><span id="line-158"></span><span>   </span><span class="annot"><a href="#local-6989586621681495920"><span class="hs-identifier hs-var">getExtName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681495922"><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495922"><span class="hs-identifier hs-var">info</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621681495923"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495923"><span class="hs-identifier hs-var">offset</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Bool) -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#takeWhile/Data.ByteString.Char8.html#takeWhile"><span class="hs-identifier hs-var">C.takeWhile</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'/'</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString)
+-&gt; (ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#drop/Data.ByteString.html#drop"><span class="hs-identifier hs-var">C.drop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495923"><span class="hs-identifier hs-var">offset</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">ArchiveEntry -&gt; ByteString
+</span><a href="GHC.SysTools.Ar.html#filedata"><span class="hs-identifier hs-var">filedata</span></a></span><span> </span><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495922"><span class="hs-identifier hs-var">info</span></a></span><span>
+</span><span id="line-159"></span><span>
+</span><span id="line-160"></span><span class="hs-comment">-- | put an Archive Entry. This assumes that the entries</span><span>
+</span><span id="line-161"></span><span class="hs-comment">-- have been preprocessed to account for the extended file name</span><span>
+</span><span id="line-162"></span><span class="hs-comment">-- table section &quot;//&quot; e.g. for GNU Archives. Or that the names</span><span>
+</span><span id="line-163"></span><span class="hs-comment">-- have been move into the payload for BSD Archives.</span><span>
+</span><span id="line-164"></span><span class="annot"><a href="GHC.SysTools.Ar.html#putArchEntry"><span class="hs-identifier hs-type">putArchEntry</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#PutM/Data.Binary.Put.html#PutM"><span class="hs-identifier hs-type">PutM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-165"></span><span id="putArchEntry"><span class="annot"><span class="annottext">putArchEntry :: ArchiveEntry -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putArchEntry"><span class="hs-identifier hs-var hs-var">putArchEntry</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span id="local-6989586621681495925"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495925"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621681495926"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495926"><span class="hs-identifier hs-var">time</span></a></span></span><span> </span><span id="local-6989586621681495927"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495927"><span class="hs-identifier hs-var">own</span></a></span></span><span> </span><span id="local-6989586621681495928"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495928"><span class="hs-identifier hs-var">grp</span></a></span></span><span> </span><span id="local-6989586621681495929"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495929"><span class="hs-identifier hs-var">mode</span></a></span></span><span> </span><span id="local-6989586621681495930"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495930"><span class="hs-identifier hs-var">st_size</span></a></span></span><span> </span><span id="local-6989586621681495931"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495931"><span class="hs-identifier hs-var">file</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-166"></span><span>  </span><span class="annot"><span class="annottext">Char -&gt; Int -&gt; [Char] -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putPaddedString"><span class="hs-identifier hs-var">putPaddedString</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">' '</span></span><span>  </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495925"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-167"></span><span>  </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putPaddedInt"><span class="hs-identifier hs-var">putPaddedInt</span></a></span><span>         </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">12</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495926"><span class="hs-identifier hs-var">time</span></a></span><span>
+</span><span id="line-168"></span><span>  </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putPaddedInt"><span class="hs-identifier hs-var">putPaddedInt</span></a></span><span>          </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495927"><span class="hs-identifier hs-var">own</span></a></span><span>
+</span><span id="line-169"></span><span>  </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putPaddedInt"><span class="hs-identifier hs-var">putPaddedInt</span></a></span><span>          </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495928"><span class="hs-identifier hs-var">grp</span></a></span><span>
+</span><span id="line-170"></span><span>  </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putPaddedInt"><span class="hs-identifier hs-var">putPaddedInt</span></a></span><span>          </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495929"><span class="hs-identifier hs-var">mode</span></a></span><span>
+</span><span id="line-171"></span><span>  </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putPaddedInt"><span class="hs-identifier hs-var">putPaddedInt</span></a></span><span>         </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495930"><span class="hs-identifier hs-var">st_size</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495933"><span class="hs-identifier hs-var">pad</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-172"></span><span>  </span><span class="annot"><span class="annottext">ByteString -&gt; Put
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#putByteString/Data.Binary.Put.html#putByteString"><span class="hs-identifier hs-var">putByteString</span></a></span><span>           </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;\x60\x0a&quot;</span></span><span>
+</span><span id="line-173"></span><span>  </span><span class="annot"><span class="annottext">ByteString -&gt; Put
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#putByteString/Data.Binary.Put.html#putByteString"><span class="hs-identifier hs-var">putByteString</span></a></span><span>           </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681495931"><span class="hs-identifier hs-var">file</span></a></span><span>
+</span><span id="line-174"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; Put -&gt; Put
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#when/GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495933"><span class="hs-identifier hs-var">pad</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Put -&gt; Put) -&gt; Put -&gt; Put
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-175"></span><span>    </span><span class="annot"><span class="annottext">Word8 -&gt; Put
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#putWord8/Data.Binary.Put.html#putWord8"><span class="hs-identifier hs-var">putWord8</span></a></span><span>              </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0x0a</span></span><span>
+</span><span id="line-176"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-177"></span><span>    </span><span id="local-6989586621681495933"><span class="annot"><span class="annottext">pad :: Int
+</span><a href="#local-6989586621681495933"><span class="hs-identifier hs-var hs-var">pad</span></a></span></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495930"><span class="hs-identifier hs-var">st_size</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#mod/GHC.Real.html#mod"><span class="hs-operator hs-var">`mod`</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-178"></span><span>
+</span><span id="line-179"></span><span class="annot"><a href="GHC.SysTools.Ar.html#getArchMagic"><span class="hs-identifier hs-type">getArchMagic</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#Get/Data.Binary.Get.Internal.html#Get"><span class="hs-identifier hs-type">Get</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-180"></span><span id="getArchMagic"><span class="annot"><span class="annottext">getArchMagic :: Get ()
+</span><a href="GHC.SysTools.Ar.html#getArchMagic"><span class="hs-identifier hs-var hs-var">getArchMagic</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-181"></span><span>  </span><span id="local-6989586621681495937"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495937"><span class="hs-identifier hs-var">magic</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; [Char]) -&gt; Get ByteString -&gt; Get [Char]
+forall (m :: * -&gt; *) a1 r. Monad m =&gt; (a1 -&gt; r) -&gt; m a1 -&gt; m r
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#liftM/GHC.Base.html#liftM"><span class="hs-identifier hs-var">liftM</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [Char]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#unpack/Data.ByteString.Char8.html#unpack"><span class="hs-identifier hs-var">C.unpack</span></a></span><span> </span><span class="annot"><span class="annottext">(Get ByteString -&gt; Get [Char]) -&gt; Get ByteString -&gt; Get [Char]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Get ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#getByteString/Data.Binary.Get.Internal.html#getByteString"><span class="hs-identifier hs-var">getByteString</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span>
+</span><span id="line-182"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495937"><span class="hs-identifier hs-var">magic</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;!&lt;arch&gt;\n&quot;</span></span><span>
+</span><span id="line-183"></span><span>    </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Get ()
+forall a. [Char] -&gt; Get a
+forall (m :: * -&gt; *) a. MonadFail m =&gt; [Char] -&gt; m a
+</span><a href="../../base-4.18.2.1/src/Control.Monad.Fail.html#fail/Control.Monad.Fail.html#fail"><span class="hs-identifier hs-var">fail</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; Get ()) -&gt; [Char] -&gt; Get ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Invalid magic number &quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ShowS
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">ShowS
+forall a. Show a =&gt; a -&gt; [Char]
+</span><a href="../../base-4.18.2.1/src/GHC.Show.html#show/GHC.Show.html#show"><span class="hs-identifier hs-var">show</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495937"><span class="hs-identifier hs-var">magic</span></a></span><span>
+</span><span id="line-184"></span><span>    </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">() -&gt; Get ()
+forall a. a -&gt; Get a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-185"></span><span>
+</span><span id="line-186"></span><span class="annot"><a href="GHC.SysTools.Ar.html#putArchMagic"><span class="hs-identifier hs-type">putArchMagic</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#Put/Data.Binary.Put.html#Put"><span class="hs-identifier hs-type">Put</span></a></span><span>
+</span><span id="line-187"></span><span id="putArchMagic"><span class="annot"><span class="annottext">putArchMagic :: Put
+</span><a href="GHC.SysTools.Ar.html#putArchMagic"><span class="hs-identifier hs-var hs-var">putArchMagic</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Put
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#putByteString/Data.Binary.Put.html#putByteString"><span class="hs-identifier hs-var">putByteString</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Put) -&gt; ByteString -&gt; Put
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-var">C.pack</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;!&lt;arch&gt;\n&quot;</span></span><span>
+</span><span id="line-188"></span><span>
+</span><span id="line-189"></span><span class="annot"><a href="GHC.SysTools.Ar.html#getArch"><span class="hs-identifier hs-type">getArch</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Get.Internal.html#Get/Data.Binary.Get.Internal.html#Get"><span class="hs-identifier hs-type">Get</span></a></span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span>
+</span><span id="line-190"></span><span id="getArch"><span class="annot"><span class="annottext">getArch :: Get Archive
+</span><a href="GHC.SysTools.Ar.html#getArch"><span class="hs-identifier hs-var hs-var">getArch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ArchiveEntry] -&gt; Archive
+</span><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-var">Archive</span></a></span><span> </span><span class="annot"><span class="annottext">([ArchiveEntry] -&gt; Archive) -&gt; Get [ArchiveEntry] -&gt; Get Archive
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-191"></span><span>  </span><span class="annot"><span class="annottext">Get ()
+</span><a href="GHC.SysTools.Ar.html#getArchMagic"><span class="hs-identifier hs-var">getArchMagic</span></a></span><span>
+</span><span id="line-192"></span><span>  </span><span class="annot"><span class="annottext">Get [ArchiveEntry]
+</span><a href="GHC.SysTools.Ar.html#getBSDArchEntries"><span class="hs-identifier hs-var">getBSDArchEntries</span></a></span><span> </span><span class="annot"><span class="annottext">Get [ArchiveEntry] -&gt; Get [ArchiveEntry] -&gt; Get [ArchiveEntry]
+forall a. Get a -&gt; Get a -&gt; Get a
+forall (f :: * -&gt; *) a. Alternative f =&gt; f a -&gt; f a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%7C%3E/GHC.Base.html#%3C%7C%3E"><span class="hs-operator hs-var">&lt;|&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe ArchiveEntry -&gt; Get [ArchiveEntry]
+</span><a href="GHC.SysTools.Ar.html#getGNUArchEntries"><span class="hs-identifier hs-var">getGNUArchEntries</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe ArchiveEntry
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-193"></span><span>
+</span><span id="line-194"></span><span class="annot"><a href="GHC.SysTools.Ar.html#putBSDArch"><span class="hs-identifier hs-type">putBSDArch</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#PutM/Data.Binary.Put.html#PutM"><span class="hs-identifier hs-type">PutM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-195"></span><span id="putBSDArch"><span class="annot"><span class="annottext">putBSDArch :: Archive -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putBSDArch"><span class="hs-identifier hs-var hs-var">putBSDArch</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span> </span><span id="local-6989586621681495942"><span class="annot"><span class="annottext">[ArchiveEntry]
+</span><a href="#local-6989586621681495942"><span class="hs-keyword hs-var">as</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-196"></span><span>  </span><span class="annot"><span class="annottext">Put
+</span><a href="GHC.SysTools.Ar.html#putArchMagic"><span class="hs-identifier hs-var">putArchMagic</span></a></span><span>
+</span><span id="line-197"></span><span>  </span><span class="annot"><span class="annottext">(ArchiveEntry -&gt; Put) -&gt; [ArchiveEntry] -&gt; Put
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#mapM_/Data.Foldable.html#mapM_"><span class="hs-identifier hs-var">mapM_</span></a></span><span> </span><span class="annot"><span class="annottext">ArchiveEntry -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putArchEntry"><span class="hs-identifier hs-var">putArchEntry</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[ArchiveEntry] -&gt; [ArchiveEntry]
+</span><a href="#local-6989586621681495944"><span class="hs-identifier hs-var">processEntries</span></a></span><span> </span><span class="annot"><span class="annottext">[ArchiveEntry]
+</span><a href="#local-6989586621681495942"><span class="hs-keyword hs-var">as</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-198"></span><span>
+</span><span id="line-199"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-200"></span><span>    </span><span id="local-6989586621681495946"><span class="annot"><span class="annottext">padStr :: a -&gt; Int -&gt; [a] -&gt; [a]
+</span><a href="#local-6989586621681495946"><span class="hs-identifier hs-var hs-var">padStr</span></a></span></span><span> </span><span id="local-6989586621681495947"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681495947"><span class="hs-identifier hs-var">pad</span></a></span></span><span> </span><span id="local-6989586621681495948"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495948"><span class="hs-identifier hs-var">size</span></a></span></span><span> </span><span id="local-6989586621681495949"><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621681495949"><span class="hs-identifier hs-var">str</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [a] -&gt; [a]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#take/GHC.List.html#take"><span class="hs-identifier hs-var">take</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495948"><span class="hs-identifier hs-var">size</span></a></span><span> </span><span class="annot"><span class="annottext">([a] -&gt; [a]) -&gt; [a] -&gt; [a]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621681495949"><span class="hs-identifier hs-var">str</span></a></span><span> </span><span class="annot"><span class="annottext">[a] -&gt; [a] -&gt; [a]
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-var">&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; [a]
+forall a. a -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#repeat/GHC.List.html#repeat"><span class="hs-identifier hs-var">repeat</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681495947"><span class="hs-identifier hs-var">pad</span></a></span><span>
+</span><span id="line-201"></span><span>    </span><span id="local-6989586621681495962"><span class="annot"><span class="annottext">nameSize :: t a -&gt; Int
+</span><a href="#local-6989586621681495962"><span class="hs-identifier hs-var hs-var">nameSize</span></a></span></span><span> </span><span id="local-6989586621681495963"><span class="annot"><span class="annottext">t a
+</span><a href="#local-6989586621681495963"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">t a -&gt; Int
+forall a. t a -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#length/Data.Foldable.html#length"><span class="hs-identifier hs-var">length</span></a></span><span> </span><span class="annot"><span class="annottext">t a
+</span><a href="#local-6989586621681495963"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; (Int, Int)
+forall a. Integral a =&gt; a -&gt; a -&gt; (a, a)
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#divMod/GHC.Real.html#divMod"><span class="hs-operator hs-var">`divMod`</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-202"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621681495966"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495966"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2A/GHC.Num.html#%2A"><span class="hs-operator hs-var">*</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495966"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-203"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621681495968"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495968"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2A/GHC.Num.html#%2A"><span class="hs-operator hs-var">*</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495968"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-204"></span><span>    </span><span id="local-6989586621681495975"><span class="annot"><span class="annottext">needExt :: t Char -&gt; Bool
+</span><a href="#local-6989586621681495975"><span class="hs-identifier hs-var hs-var">needExt</span></a></span></span><span> </span><span id="local-6989586621681495976"><span class="annot"><span class="annottext">t Char
+</span><a href="#local-6989586621681495976"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">t Char -&gt; Int
+forall a. t a -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#length/Data.Foldable.html#length"><span class="hs-identifier hs-var">length</span></a></span><span> </span><span class="annot"><span class="annottext">t Char
+</span><a href="#local-6989586621681495976"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">' '</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; t Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; t a -&gt; Bool
+forall (t :: * -&gt; *) a. (Foldable t, Eq a) =&gt; a -&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#elem/Data.Foldable.html#elem"><span class="hs-operator hs-var">`elem`</span></a></span><span> </span><span class="annot"><span class="annottext">t Char
+</span><a href="#local-6989586621681495976"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-205"></span><span>    </span><span class="annot"><a href="#local-6989586621681495980"><span class="hs-identifier hs-type">processEntry</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span>
+</span><span id="line-206"></span><span>    </span><span id="local-6989586621681495980"><span class="annot"><span class="annottext">processEntry :: ArchiveEntry -&gt; ArchiveEntry
+</span><a href="#local-6989586621681495980"><span class="hs-identifier hs-var hs-var">processEntry</span></a></span></span><span> </span><span id="local-6989586621681495981"><span class="annot"><span class="annottext">archive :: ArchiveEntry
+</span><a href="#local-6989586621681495981"><span class="hs-identifier hs-var">archive</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span id="local-6989586621681495982"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495982"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681495983"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681495983"><span class="hs-identifier hs-var">st_size</span></a></span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-207"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Bool
+forall {t :: * -&gt; *}. Foldable t =&gt; t Char -&gt; Bool
+</span><a href="#local-6989586621681495975"><span class="hs-identifier hs-var">needExt</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495982"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495981"><span class="hs-identifier hs-var">archive</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#filename"><span class="hs-identifier hs-var">filename</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-string">&quot;#1/&quot;</span></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-type">&lt;&gt;</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Show.html#show/GHC.Show.html#show"><span class="hs-identifier hs-type">show</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681495984"><span class="hs-identifier hs-type">sz</span></a></span><span>
+</span><span id="line-208"></span><span>                               </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#filedata"><span class="hs-identifier hs-var">filedata</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-type">C.pack</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681495946"><span class="hs-identifier hs-type">padStr</span></a></span><span> </span><span class="annot"><span class="hs-char">'\0'</span></span><span> </span><span class="annot"><a href="#local-6989586621681495984"><span class="hs-identifier hs-type">sz</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681495982"><span class="hs-identifier hs-type">name</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-type">&lt;&gt;</span></a></span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#filedata"><span class="hs-identifier hs-var">filedata</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681495981"><span class="hs-identifier hs-type">archive</span></a></span><span>
+</span><span id="line-209"></span><span>                               </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#filesize"><span class="hs-identifier hs-var">filesize</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621681495983"><span class="hs-identifier hs-type">st_size</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-type">+</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681495984"><span class="hs-identifier hs-type">sz</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-210"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495981"><span class="hs-identifier hs-var">archive</span></a></span><span>
+</span><span id="line-211"></span><span>
+</span><span id="line-212"></span><span>      </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621681495984"><span class="annot"><span class="annottext">sz :: Int
+</span><a href="#local-6989586621681495984"><span class="hs-identifier hs-var hs-var">sz</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Int
+forall {t :: * -&gt; *} {a}. Foldable t =&gt; t a -&gt; Int
+</span><a href="#local-6989586621681495962"><span class="hs-identifier hs-var">nameSize</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495982"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-213"></span><span>
+</span><span id="line-214"></span><span>    </span><span id="local-6989586621681495944"><span class="annot"><span class="annottext">processEntries :: [ArchiveEntry] -&gt; [ArchiveEntry]
+</span><a href="#local-6989586621681495944"><span class="hs-identifier hs-var hs-var">processEntries</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(ArchiveEntry -&gt; ArchiveEntry) -&gt; [ArchiveEntry] -&gt; [ArchiveEntry]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">ArchiveEntry -&gt; ArchiveEntry
+</span><a href="#local-6989586621681495980"><span class="hs-identifier hs-var">processEntry</span></a></span><span>
+</span><span id="line-215"></span><span>
+</span><span id="line-216"></span><span class="annot"><a href="GHC.SysTools.Ar.html#putGNUArch"><span class="hs-identifier hs-type">putGNUArch</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#PutM/Data.Binary.Put.html#PutM"><span class="hs-identifier hs-type">PutM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-217"></span><span id="putGNUArch"><span class="annot"><span class="annottext">putGNUArch :: Archive -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putGNUArch"><span class="hs-identifier hs-var hs-var">putGNUArch</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span> </span><span id="local-6989586621681495986"><span class="annot"><span class="annottext">[ArchiveEntry]
+</span><a href="#local-6989586621681495986"><span class="hs-keyword hs-var">as</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-218"></span><span>  </span><span class="annot"><span class="annottext">Put
+</span><a href="GHC.SysTools.Ar.html#putArchMagic"><span class="hs-identifier hs-var">putArchMagic</span></a></span><span>
+</span><span id="line-219"></span><span>  </span><span class="annot"><span class="annottext">(ArchiveEntry -&gt; Put) -&gt; [ArchiveEntry] -&gt; Put
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#mapM_/Data.Foldable.html#mapM_"><span class="hs-identifier hs-var">mapM_</span></a></span><span> </span><span class="annot"><span class="annottext">ArchiveEntry -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putArchEntry"><span class="hs-identifier hs-var">putArchEntry</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[ArchiveEntry] -&gt; [ArchiveEntry]
+</span><a href="#local-6989586621681495987"><span class="hs-identifier hs-var">processEntries</span></a></span><span> </span><span class="annot"><span class="annottext">[ArchiveEntry]
+</span><a href="#local-6989586621681495986"><span class="hs-keyword hs-var">as</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-220"></span><span>
+</span><span id="line-221"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-222"></span><span>    </span><span class="annot"><a href="#local-6989586621681495988"><span class="hs-identifier hs-type">processEntry</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-223"></span><span>    </span><span id="local-6989586621681495988"><span class="annot"><span class="annottext">processEntry :: ArchiveEntry -&gt; ArchiveEntry -&gt; (ArchiveEntry, ArchiveEntry)
+</span><a href="#local-6989586621681495988"><span class="hs-identifier hs-var hs-var">processEntry</span></a></span></span><span> </span><span id="local-6989586621681495989"><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495989"><span class="hs-identifier hs-var">extInfo</span></a></span></span><span> </span><span id="local-6989586621681495990"><span class="annot"><span class="annottext">archive :: ArchiveEntry
+</span><a href="#local-6989586621681495990"><span class="hs-identifier hs-var">archive</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span> </span><span id="local-6989586621681495991"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495991"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-224"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Int
+forall a. [a] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#length/Data.Foldable.html#length"><span class="hs-identifier hs-var">length</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495991"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">15</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495989"><span class="hs-identifier hs-var">extInfo</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#filesize"><span class="hs-identifier hs-var">filesize</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#filesize"><span class="hs-identifier hs-var">filesize</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681495989"><span class="hs-identifier hs-type">extInfo</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-type">+</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Foldable.html#length/Data.Foldable.html#length"><span class="hs-identifier hs-type">length</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681495991"><span class="hs-identifier hs-type">name</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-type">+</span></a></span><span> </span><span class="annot"><span class="hs-number">2</span></span><span>
+</span><span id="line-225"></span><span>                                    </span><span class="hs-special">,</span><span>  </span><span class="annot"><a href="GHC.SysTools.Ar.html#filedata"><span class="hs-identifier hs-var">filedata</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#filedata"><span class="hs-identifier hs-var">filedata</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681495989"><span class="hs-identifier hs-type">extInfo</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-type">&lt;&gt;</span></a></span><span>  </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Char8.html#pack/Data.ByteString.Char8.html#pack"><span class="hs-identifier hs-type">C.pack</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681495991"><span class="hs-identifier hs-type">name</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-type">&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="hs-string">&quot;/\n&quot;</span></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-226"></span><span>                           </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495990"><span class="hs-identifier hs-var">archive</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#filename"><span class="hs-identifier hs-var">filename</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-string">&quot;/&quot;</span></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-type">&lt;&gt;</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Show.html#show/GHC.Show.html#show"><span class="hs-identifier hs-type">show</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.SysTools.Ar.html#filesize"><span class="hs-identifier hs-var">filesize</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681495989"><span class="hs-identifier hs-type">extInfo</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-227"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495989"><span class="hs-identifier hs-var">extInfo</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ArchiveEntry
+</span><a href="#local-6989586621681495990"><span class="hs-identifier hs-var">archive</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#filename"><span class="hs-identifier hs-var">filename</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621681495991"><span class="hs-identifier hs-type">name</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-type">&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="hs-string">&quot;/&quot;</span></span><span> </span><span class="hs-special">}</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-228"></span><span>
+</span><span id="line-229"></span><span>    </span><span class="annot"><a href="#local-6989586621681495987"><span class="hs-identifier hs-type">processEntries</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-230"></span><span>    </span><span id="local-6989586621681495987"><span class="annot"><span class="annottext">processEntries :: [ArchiveEntry] -&gt; [ArchiveEntry]
+</span><a href="#local-6989586621681495987"><span class="hs-identifier hs-var hs-var">processEntries</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-231"></span><span>      </span><span class="annot"><span class="annottext">(ArchiveEntry -&gt; [ArchiveEntry] -&gt; [ArchiveEntry])
+-&gt; (ArchiveEntry, [ArchiveEntry]) -&gt; [ArchiveEntry]
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><a href="../../base-4.18.2.1/src/Data.Tuple.html#uncurry/Data.Tuple.html#uncurry"><span class="hs-identifier hs-var">uncurry</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">:</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">((ArchiveEntry, [ArchiveEntry]) -&gt; [ArchiveEntry])
+-&gt; ([ArchiveEntry] -&gt; (ArchiveEntry, [ArchiveEntry]))
+-&gt; [ArchiveEntry]
+-&gt; [ArchiveEntry]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">(ArchiveEntry -&gt; ArchiveEntry -&gt; (ArchiveEntry, ArchiveEntry))
+-&gt; ArchiveEntry -&gt; [ArchiveEntry] -&gt; (ArchiveEntry, [ArchiveEntry])
+forall (t :: * -&gt; *) s a b.
+Traversable t =&gt;
+(s -&gt; a -&gt; (s, b)) -&gt; s -&gt; t a -&gt; (s, t b)
+</span><a href="../../base-4.18.2.1/src/Data.Traversable.html#mapAccumL/Data.Traversable.html#mapAccumL"><span class="hs-identifier hs-var">mapAccumL</span></a></span><span> </span><span class="annot"><span class="annottext">ArchiveEntry -&gt; ArchiveEntry -&gt; (ArchiveEntry, ArchiveEntry)
+</span><a href="#local-6989586621681495988"><span class="hs-identifier hs-var">processEntry</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+-&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; ByteString -&gt; ArchiveEntry
+</span><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-var">ArchiveEntry</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;//&quot;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+forall a. Monoid a =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mempty/GHC.Base.html#mempty"><span class="hs-identifier hs-var">mempty</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-232"></span><span>
+</span><span id="line-233"></span><span class="annot"><a href="GHC.SysTools.Ar.html#parseAr"><span class="hs-identifier hs-type">parseAr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">B.ByteString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span>
+</span><span id="line-234"></span><span id="parseAr"><span class="annot"><span class="annottext">parseAr :: ByteString -&gt; Archive
+</span><a href="GHC.SysTools.Ar.html#parseAr"><span class="hs-identifier hs-var hs-var">parseAr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Get Archive -&gt; ByteString -&gt; Archive
+forall a. Get a -&gt; ByteString -&gt; a
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Get.html#runGet/Data.Binary.Get.html#runGet"><span class="hs-identifier hs-var">runGet</span></a></span><span> </span><span class="annot"><span class="annottext">Get Archive
+</span><a href="GHC.SysTools.Ar.html#getArch"><span class="hs-identifier hs-var">getArch</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Archive)
+-&gt; (ByteString -&gt; ByteString) -&gt; ByteString -&gt; Archive
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Lazy.html#fromChunks/Data.ByteString.Lazy.html#fromChunks"><span class="hs-identifier hs-var">L.fromChunks</span></a></span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; ByteString)
+-&gt; (ByteString -&gt; [ByteString]) -&gt; ByteString -&gt; ByteString
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [ByteString]
+forall a. a -&gt; [a]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span>
+</span><span id="line-235"></span><span>
+</span><span id="line-236"></span><span class="annot"><a href="GHC.SysTools.Ar.html#writeBSDAr"><span class="hs-identifier hs-type">writeBSDAr</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#writeGNUAr"><span class="hs-identifier hs-type">writeGNUAr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.html#FilePath/GHC.IO.html#FilePath"><span class="hs-identifier hs-type">FilePath</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-237"></span><span id="writeBSDAr"><span class="annot"><span class="annottext">writeBSDAr :: [Char] -&gt; Archive -&gt; IO ()
+</span><a href="GHC.SysTools.Ar.html#writeBSDAr"><span class="hs-identifier hs-var hs-var">writeBSDAr</span></a></span></span><span> </span><span id="local-6989586621681495996"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495996"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ByteString -&gt; IO ()
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Lazy.html#writeFile/Data.ByteString.Lazy.html#writeFile"><span class="hs-identifier hs-var">L.writeFile</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495996"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ())
+-&gt; (Archive -&gt; ByteString) -&gt; Archive -&gt; IO ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Put -&gt; ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#runPut/Data.Binary.Put.html#runPut"><span class="hs-identifier hs-var">runPut</span></a></span><span> </span><span class="annot"><span class="annottext">(Put -&gt; ByteString) -&gt; (Archive -&gt; Put) -&gt; Archive -&gt; ByteString
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Archive -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putBSDArch"><span class="hs-identifier hs-var">putBSDArch</span></a></span><span>
+</span><span id="line-238"></span><span id="writeGNUAr"><span class="annot"><span class="annottext">writeGNUAr :: [Char] -&gt; Archive -&gt; IO ()
+</span><a href="GHC.SysTools.Ar.html#writeGNUAr"><span class="hs-identifier hs-var hs-var">writeGNUAr</span></a></span></span><span> </span><span id="local-6989586621681495999"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495999"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ByteString -&gt; IO ()
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Lazy.html#writeFile/Data.ByteString.Lazy.html#writeFile"><span class="hs-identifier hs-var">L.writeFile</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681495999"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ())
+-&gt; (Archive -&gt; ByteString) -&gt; Archive -&gt; IO ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Put -&gt; ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#runPut/Data.Binary.Put.html#runPut"><span class="hs-identifier hs-var">runPut</span></a></span><span> </span><span class="annot"><span class="annottext">(Put -&gt; ByteString) -&gt; (Archive -&gt; Put) -&gt; Archive -&gt; ByteString
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Archive -&gt; Put
+</span><a href="GHC.SysTools.Ar.html#putGNUArch"><span class="hs-identifier hs-var">putGNUArch</span></a></span><span>
+</span><span id="line-239"></span><span>
+</span><span id="line-240"></span><span class="annot"><a href="GHC.SysTools.Ar.html#loadAr"><span class="hs-identifier hs-type">loadAr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.html#FilePath/GHC.IO.html#FilePath"><span class="hs-identifier hs-type">FilePath</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#Archive"><span class="hs-identifier hs-type">Archive</span></a></span><span>
+</span><span id="line-241"></span><span id="loadAr"><span class="annot"><span class="annottext">loadAr :: [Char] -&gt; IO Archive
+</span><a href="GHC.SysTools.Ar.html#loadAr"><span class="hs-identifier hs-var hs-var">loadAr</span></a></span></span><span> </span><span id="local-6989586621681496000"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681496000"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Archive
+</span><a href="GHC.SysTools.Ar.html#parseAr"><span class="hs-identifier hs-var">parseAr</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Archive) -&gt; IO ByteString -&gt; IO Archive
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; IO ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#readFile/Data.ByteString.html#readFile"><span class="hs-identifier hs-var">B.readFile</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681496000"><span class="hs-identifier hs-var">fp</span></a></span><span>
+</span><span id="line-242"></span><span>
+</span><span id="line-243"></span><span class="annot"><a href="GHC.SysTools.Ar.html#loadObj"><span class="hs-identifier hs-type">loadObj</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.html#FilePath/GHC.IO.html#FilePath"><span class="hs-identifier hs-type">FilePath</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-type">ArchiveEntry</span></a></span><span>
+</span><span id="line-244"></span><span id="loadObj"><span class="annot"><span class="annottext">loadObj :: [Char] -&gt; IO ArchiveEntry
+</span><a href="GHC.SysTools.Ar.html#loadObj"><span class="hs-identifier hs-var hs-var">loadObj</span></a></span></span><span> </span><span id="local-6989586621681496002"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681496002"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-245"></span><span>  </span><span id="local-6989586621681496003"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681496003"><span class="hs-identifier hs-var">payload</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; IO ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#readFile/Data.ByteString.html#readFile"><span class="hs-identifier hs-var">B.readFile</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681496002"><span class="hs-identifier hs-var">fp</span></a></span><span>
+</span><span id="line-246"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621681496004"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496004"><span class="hs-identifier hs-var">modt</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681496005"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496005"><span class="hs-identifier hs-var">own</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681496006"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496006"><span class="hs-identifier hs-var">grp</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681496007"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496007"><span class="hs-identifier hs-var">mode</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; IO (Int, Int, Int, Int)
+</span><a href="GHC.SysTools.Ar.html#fileInfo"><span class="hs-identifier hs-var">fileInfo</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681496002"><span class="hs-identifier hs-var">fp</span></a></span><span>
+</span><span id="line-247"></span><span>  </span><span class="annot"><span class="annottext">ArchiveEntry -&gt; IO ArchiveEntry
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(ArchiveEntry -&gt; IO ArchiveEntry)
+-&gt; ArchiveEntry -&gt; IO ArchiveEntry
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+-&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; ByteString -&gt; ArchiveEntry
+</span><a href="GHC.SysTools.Ar.html#ArchiveEntry"><span class="hs-identifier hs-var">ArchiveEntry</span></a></span><span>
+</span><span id="line-248"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ShowS
+</span><a href="../../filepath-1.4.300.1/src/System.FilePath.Posix.html#takeFileName/System.FilePath.Posix.html#takeFileName"><span class="hs-identifier hs-var">takeFileName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681496002"><span class="hs-identifier hs-var">fp</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496004"><span class="hs-identifier hs-var">modt</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496005"><span class="hs-identifier hs-var">own</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496006"><span class="hs-identifier hs-var">grp</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496007"><span class="hs-identifier hs-var">mode</span></a></span><span>
+</span><span id="line-249"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#length/Data.ByteString.html#length"><span class="hs-identifier hs-var">B.length</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681496003"><span class="hs-identifier hs-var">payload</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681496003"><span class="hs-identifier hs-var">payload</span></a></span><span>
+</span><span id="line-250"></span><span>
+</span><span id="line-251"></span><span class="annot"><span class="hs-comment">-- | Take a filePath and return (mod time, own, grp, mode in decimal)</span></span><span>
+</span><span id="line-252"></span><span class="annot"><a href="GHC.SysTools.Ar.html#fileInfo"><span class="hs-identifier hs-type">fileInfo</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.html#FilePath/GHC.IO.html#FilePath"><span class="hs-identifier hs-type">FilePath</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-comment">-- ^ mod time, own, grp, mode (in decimal)</span></span><span class="hs-cpp">
+#if defined(mingw32_HOST_OS)
+</span><span class="hs-comment">-- on windows mod time, owner group and mode are zero.</span><span>
+</span><span id="line-255"></span><span class="hs-identifier">fileInfo</span><span> </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="hs-number">0</span><span class="hs-special">,</span><span class="hs-number">0</span><span class="hs-special">,</span><span class="hs-number">0</span><span class="hs-special">,</span><span class="hs-number">0</span><span class="hs-special">)</span><span class="hs-cpp">
+#else
+</span><span id="fileInfo"><span class="annot"><span class="annottext">fileInfo :: [Char] -&gt; IO (Int, Int, Int, Int)
+</span><a href="GHC.SysTools.Ar.html#fileInfo"><span class="hs-identifier hs-var hs-var">fileInfo</span></a></span></span><span> </span><span id="local-6989586621681496010"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681496010"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FileStatus -&gt; (Int, Int, Int, Int)
+forall {b} {c}. (Num b, Num c) =&gt; FileStatus -&gt; (Int, b, c, Int)
+</span><a href="#local-6989586621681496011"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">(FileStatus -&gt; (Int, Int, Int, Int))
+-&gt; IO FileStatus -&gt; IO (Int, Int, Int, Int)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; IO FileStatus
+</span><a href="../../unix-2.8.4.0/src/System.Posix.Files.html#getFileStatus/System.Posix.Files.html#getFileStatus"><span class="hs-identifier hs-var">POSIX.getFileStatus</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621681496010"><span class="hs-identifier hs-var">fp</span></a></span><span>
+</span><span id="line-258"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621681496011"><span class="annot"><span class="annottext">go :: FileStatus -&gt; (Int, b, c, Int)
+</span><a href="#local-6989586621681496011"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621681496026"><span class="annot"><span class="annottext">FileStatus
+</span><a href="#local-6989586621681496026"><span class="hs-identifier hs-var">status</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">EpochTime -&gt; Int
+forall a. Enum a =&gt; a -&gt; Int
+</span><a href="../../base-4.18.2.1/src/GHC.Enum.html#fromEnum/GHC.Enum.html#fromEnum"><span class="hs-identifier hs-var">fromEnum</span></a></span><span> </span><span class="annot"><span class="annottext">(EpochTime -&gt; Int) -&gt; EpochTime -&gt; Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">FileStatus -&gt; EpochTime
+</span><a href="../../unix-2.8.4.0/src/System.Posix.Files.Common.html#modificationTime/System.Posix.Files.Common.html#modificationTime"><span class="hs-identifier hs-var">POSIX.modificationTime</span></a></span><span> </span><span class="annot"><span class="annottext">FileStatus
+</span><a href="#local-6989586621681496026"><span class="hs-identifier hs-var">status</span></a></span><span>
+</span><span id="line-259"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">UserID -&gt; b
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#fromIntegral/GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">(UserID -&gt; b) -&gt; UserID -&gt; b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">FileStatus -&gt; UserID
+</span><a href="../../unix-2.8.4.0/src/System.Posix.Files.Common.html#fileOwner/System.Posix.Files.Common.html#fileOwner"><span class="hs-identifier hs-var">POSIX.fileOwner</span></a></span><span> </span><span class="annot"><span class="annottext">FileStatus
+</span><a href="#local-6989586621681496026"><span class="hs-identifier hs-var">status</span></a></span><span>
+</span><span id="line-260"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">GroupID -&gt; c
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#fromIntegral/GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">(GroupID -&gt; c) -&gt; GroupID -&gt; c
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">FileStatus -&gt; GroupID
+</span><a href="../../unix-2.8.4.0/src/System.Posix.Files.Common.html#fileGroup/System.Posix.Files.Common.html#fileGroup"><span class="hs-identifier hs-var">POSIX.fileGroup</span></a></span><span> </span><span class="annot"><span class="annottext">FileStatus
+</span><a href="#local-6989586621681496026"><span class="hs-identifier hs-var">status</span></a></span><span>
+</span><span id="line-261"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#oct2dec"><span class="hs-identifier hs-var">oct2dec</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Int) -&gt; (FileMode -&gt; Int) -&gt; FileMode -&gt; Int
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">FileMode -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#fromIntegral/GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">(FileMode -&gt; Int) -&gt; FileMode -&gt; Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">FileStatus -&gt; FileMode
+</span><a href="../../unix-2.8.4.0/src/System.Posix.Files.Common.html#fileMode/System.Posix.Files.Common.html#fileMode"><span class="hs-identifier hs-var">POSIX.fileMode</span></a></span><span> </span><span class="annot"><span class="annottext">FileStatus
+</span><a href="#local-6989586621681496026"><span class="hs-identifier hs-var">status</span></a></span><span>
+</span><span id="line-262"></span><span>                    </span><span class="hs-special">)</span><span>
+</span><span id="line-263"></span><span>
+</span><span id="line-264"></span><span class="annot"><a href="GHC.SysTools.Ar.html#oct2dec"><span class="hs-identifier hs-type">oct2dec</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-265"></span><span id="oct2dec"><span class="annot"><span class="annottext">oct2dec :: Int -&gt; Int
+</span><a href="GHC.SysTools.Ar.html#oct2dec"><span class="hs-identifier hs-var hs-var">oct2dec</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Int -&gt; Int) -&gt; Int -&gt; [Int] -&gt; Int
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; [a] -&gt; b
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#foldl%27/Data.Foldable.html#foldl%27"><span class="hs-identifier hs-var">foldl'</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621681496034"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496034"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621681496035"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496035"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496034"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2A/GHC.Num.html#%2A"><span class="hs-operator hs-var">*</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681496035"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">([Int] -&gt; Int) -&gt; (Int -&gt; [Int]) -&gt; Int -&gt; Int
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [Int]
+forall a. [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#reverse/GHC.List.html#reverse"><span class="hs-identifier hs-var">reverse</span></a></span><span> </span><span class="annot"><span class="annottext">([Int] -&gt; [Int]) -&gt; (Int -&gt; [Int]) -&gt; Int -&gt; [Int]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; [Int]
+forall {t}. Integral t =&gt; t -&gt; t -&gt; [t]
+</span><a href="#local-6989586621681496037"><span class="hs-identifier hs-var">dec</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span>
+</span><span id="line-266"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621681496037"><span class="annot"><span class="annottext">dec :: t -&gt; t -&gt; [t]
+</span><a href="#local-6989586621681496037"><span class="hs-identifier hs-var hs-var">dec</span></a></span></span><span> </span><span class="annot"><span class="annottext">t
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">t
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-267"></span><span>        </span><span class="annot"><a href="#local-6989586621681496037"><span class="hs-identifier hs-var">dec</span></a></span><span> </span><span id="local-6989586621681496057"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621681496057"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621681496058"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621681496058"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681496059"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621681496059"><span class="hs-identifier hs-var">rest</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681496060"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621681496060"><span class="hs-identifier hs-var">last</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621681496058"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">t -&gt; t -&gt; (t, t)
+forall a. Integral a =&gt; a -&gt; a -&gt; (a, a)
+</span><a href="../../base-4.18.2.1/src/GHC.Real.html#quotRem/GHC.Real.html#quotRem"><span class="hs-operator hs-var">`quotRem`</span></a></span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621681496057"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-268"></span><span>                  </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621681496060"><span class="hs-identifier hs-var">last</span></a></span><span class="annot"><span class="annottext">t -&gt; [t] -&gt; [t]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="annot"><span class="annottext">t -&gt; t -&gt; [t]
+</span><a href="#local-6989586621681496037"><span class="hs-identifier hs-var">dec</span></a></span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621681496057"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621681496059"><span class="hs-identifier hs-var">rest</span></a></span><span class="hs-cpp">
+
+#endif
+</span></pre></body></html>

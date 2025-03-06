@@ -1,0 +1,1144 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE MultiWayIf #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | Checking for representation-polymorphism using the Concrete mechanism.</span><span>
+</span><span id="line-4"></span><span class="hs-comment">--</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- This module contains the logic for enforcing the representation-polymorphism</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- invariants by way of emitting constraints.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Tc.Utils.Concrete</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- * Ensuring that a type has a fixed runtime representation</span></span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="GHC.Tc.Utils.Concrete.html#hasFixedRuntimeRep"><span class="hs-identifier">hasFixedRuntimeRep</span></a></span><span>
+</span><span id="line-10"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.Concrete.html#hasFixedRuntimeRep_syntactic"><span class="hs-identifier">hasFixedRuntimeRep_syntactic</span></a></span><span>
+</span><span id="line-11"></span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Making a type concrete</span></span><span>
+</span><span id="line-13"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.Concrete.html#makeTypeConcrete"><span class="hs-identifier">makeTypeConcrete</span></a></span><span>
+</span><span id="line-14"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-15"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-16"></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Builtin.Types.html"><span class="hs-identifier">GHC.Builtin.Types</span></a></span><span>       </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Builtin.Types.html#liftedTypeKindTyCon"><span class="hs-identifier">liftedTypeKindTyCon</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Builtin.Types.html#unliftedTypeKindTyCon"><span class="hs-identifier">unliftedTypeKindTyCon</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.Coercion.html"><span class="hs-identifier">GHC.Core.Coercion</span></a></span><span>       </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Core.Coercion.html#coToMCo"><span class="hs-identifier">coToMCo</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Coercion.html#mkCastTyMCo"><span class="hs-identifier">mkCastTyMCo</span></a></span><span>
+</span><span id="line-22"></span><span>                               </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Coercion.html#mkGReflRightMCo"><span class="hs-identifier">mkGReflRightMCo</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Coercion.html#mkNomReflCo"><span class="hs-identifier">mkNomReflCo</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.TyCo.Rep.html"><span class="hs-identifier">GHC.Core.TyCo.Rep</span></a></span><span>       </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#Type"><span class="hs-identifier">Type</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#MCoercion"><span class="hs-identifier">MCoercion</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html"><span class="hs-identifier">GHC.Core.TyCon</span></a></span><span>          </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Core.TyCon.html#isConcreteTyCon"><span class="hs-identifier">isConcreteTyCon</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.Type.html"><span class="hs-identifier">GHC.Core.Type</span></a></span><span>           </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Core.Type.html#isConcrete"><span class="hs-identifier">isConcrete</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Type.html#typeKind"><span class="hs-identifier">typeKind</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Types.Var.html#tyVarKind"><span class="hs-identifier">tyVarKind</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Type.html#coreView"><span class="hs-identifier">coreView</span></a></span><span>
+</span><span id="line-26"></span><span>                               </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#mkTyVarTy"><span class="hs-identifier">mkTyVarTy</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Type.html#mkTyConApp"><span class="hs-identifier">mkTyConApp</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#mkFunTy"><span class="hs-identifier">mkFunTy</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.Type.html#mkAppTy"><span class="hs-identifier">mkAppTy</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html"><span class="hs-identifier">GHC.Tc.Types</span></a></span><span>            </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier">TcM</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#ThStage"><span class="hs-identifier">ThStage</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#PendingStuff"><span class="hs-identifier">PendingStuff</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Constraint.html"><span class="hs-identifier">GHC.Tc.Types.Constraint</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Constraint.html#NotConcreteError"><span class="hs-identifier">NotConcreteError</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Constraint.html#NotConcreteReason"><span class="hs-identifier">NotConcreteReason</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Evidence.html"><span class="hs-identifier">GHC.Tc.Types.Evidence</span></a></span><span>   </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Language.Haskell.Syntax.Basic.html#Role"><span class="hs-identifier">Role</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Evidence.html#TcCoercionN"><span class="hs-identifier">TcCoercionN</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Evidence.html#TcMCoercionN"><span class="hs-identifier">TcMCoercionN</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html"><span class="hs-identifier">GHC.Tc.Types.Origin</span></a></span><span>     </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#CtOrigin"><span class="hs-identifier">CtOrigin</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepContext"><span class="hs-identifier">FixedRuntimeRepContext</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepOrigin"><span class="hs-identifier">FixedRuntimeRepOrigin</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.Monad.html"><span class="hs-identifier">GHC.Tc.Utils.Monad</span></a></span><span>      </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.Monad.html#emitNotConcreteError"><span class="hs-identifier">emitNotConcreteError</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.Monad.html#setTcLevel"><span class="hs-identifier">setTcLevel</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.Monad.html#getCtLocM"><span class="hs-identifier">getCtLocM</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.Monad.html#getStage"><span class="hs-identifier">getStage</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.Monad.html#traceTc"><span class="hs-identifier">traceTc</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html"><span class="hs-identifier">GHC.Tc.Utils.TcType</span></a></span><span>     </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier">TcType</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcKind"><span class="hs-identifier">TcKind</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcTypeFRR"><span class="hs-identifier">TcTypeFRR</span></a></span><span>
+</span><span id="line-34"></span><span>                               </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#MetaInfo"><span class="hs-identifier">MetaInfo</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#ConcreteTvOrigin"><span class="hs-identifier">ConcreteTvOrigin</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span>                               </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#isMetaTyVar"><span class="hs-identifier">isMetaTyVar</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#metaTyVarInfo"><span class="hs-identifier">metaTyVarInfo</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#tcTyVarLevel"><span class="hs-identifier">tcTyVarLevel</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcMType.html"><span class="hs-identifier">GHC.Tc.Utils.TcMType</span></a></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcMType.html#newConcreteTyVar"><span class="hs-identifier">newConcreteTyVar</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcMType.html#isFilledMetaTyVar_maybe"><span class="hs-identifier">isFilledMetaTyVar_maybe</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcMType.html#writeMetaTyVar"><span class="hs-identifier">writeMetaTyVar</span></a></span><span>
+</span><span id="line-37"></span><span>                               </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcMType.html#emitWantedEq"><span class="hs-identifier">emitWantedEq</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Basic.html"><span class="hs-identifier">GHC.Types.Basic</span></a></span><span>         </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Types.Basic.html#TypeOrKind"><span class="hs-identifier">TypeOrKind</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html"><span class="hs-identifier">GHC.Utils.Misc</span></a></span><span>          </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier">HasDebugCallStack</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html"><span class="hs-identifier">GHC.Utils.Outputable</span></a></span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.html#/Control.Monad.html"><span class="hs-identifier">Control.Monad</span></a></span><span>      </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Functor.html#void/Data.Functor.html#void"><span class="hs-identifier">void</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Functor.html#/Data.Functor.html"><span class="hs-identifier">Data.Functor</span></a></span><span>       </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Functor.html#%24%3E/Data.Functor.html#%24%3E"><span class="hs-operator">($&gt;)</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.List.NonEmpty.html#/Data.List.NonEmpty.html"><span class="hs-identifier">Data.List.NonEmpty</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#NonEmpty/GHC.Base.html#NonEmpty"><span class="hs-identifier">NonEmpty</span></a></span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#%3A%7C/GHC.Base.html#%3A%7C"><span class="hs-operator">(:|)</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Class.html#/Control.Monad.Trans.Class.html"><span class="hs-identifier">Control.Monad.Trans.Class</span></a></span><span>      </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Class.html#lift/Control.Monad.Trans.Class.html#lift"><span class="hs-identifier">lift</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#/Control.Monad.Trans.Writer.CPS.html"><span class="hs-identifier">Control.Monad.Trans.Writer.CPS</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#WriterT/Control.Monad.Trans.Writer.CPS.html#WriterT"><span class="hs-identifier">WriterT</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#runWriterT/Control.Monad.Trans.Writer.CPS.html#runWriterT"><span class="hs-identifier">runWriterT</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#tell/Control.Monad.Trans.Writer.CPS.html#tell"><span class="hs-identifier">tell</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="hs-comment">{- Note [Concrete overview]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+GHC ensures that certain types have a fixed runtime representation in the
+typechecker, by emitting certain constraints.
+Emitting constraints to be solved later allows us to accept more programs:
+if we directly inspected the type (using e.g. `typePrimRep`), we might not
+have enough information available (e.g. if the type has kind `TYPE r` for
+a metavariable `r` which has not yet been filled in.)
+
+We give here an overview of the various moving parts, to serve
+as a central point of reference for this topic.
+
+  * Representation polymorphism
+    Note [Representation polymorphism invariants] in GHC.Core
+    Note [Representation polymorphism checking]
+
+    The first note explains why we require that certain types have
+    a fixed runtime representation.
+
+    The second note details why we sometimes need a constraint to
+    perform such checks in the typechecker: we might not know immediately
+    whether a type has a fixed runtime representation. For example, we might
+    need further unification to take place before being able to decide.
+    So, instead of checking immediately, we emit a constraint.
+
+  * What does it mean for a type to be concrete?
+    Note [Concrete types] explains what it means for a type to be concrete.
+
+    To compute which representation to use for a type, `typePrimRep` expects
+    its kind to be concrete: something specific like `BoxedRep Lifted` or
+    `IntRep`; certainly not a type involving type variables or type families.
+
+  * What constraints do we emit?
+    Note [The Concrete mechanism]
+
+    Instead of simply checking that a type `ty` is concrete (i.e. computing
+    'isConcrete`), we emit an equality constraint:
+
+       co :: ty ~# concrete_ty
+
+    where 'concrete_ty' is a concrete metavariable: a metavariable whose 'MetaInfo'
+    is 'ConcreteTv', signifying that it can only be unified with a concrete type.
+
+    The Note explains that this allows us to accept more programs. The Note
+    also explains that the implementation is happening in two phases
+    (PHASE 1 and PHASE 2).
+    In PHASE 1 (the current implementation) we only allow trivial evidence
+    of the form `co = Refl`.
+
+  * Fixed runtime representation vs fixed RuntimeRep
+    Note [Fixed RuntimeRep]
+
+    We currently enforce the representation-polymorphism invariants by checking
+    that binders and function arguments have a &quot;fixed RuntimeRep&quot;.
+
+    This is slightly less general than we might like, as this rules out
+    types with kind `TYPE (BoxedRep l)`: we know that this will be represented
+    by a pointer, which should be enough to go on in many situations.
+
+  * When do we emit these constraints?
+    Note [hasFixedRuntimeRep]
+
+    We introduce constraints to satisfy the representation-polymorphism
+    invariants outlined in Note [Representation polymorphism invariants] in GHC.Core,
+    which mostly amounts to the following two cases:
+
+      - checking that a binder has a fixed runtime representation,
+      - checking that a function argument has a fixed runtime representation.
+
+    The Note explains precisely how and where these constraints are emitted.
+
+  * Reporting unsolved constraints
+    Note [Reporting representation-polymorphism errors] in GHC.Tc.Types.Origin
+
+    When we emit a constraint to enforce a fixed representation, we also provide
+    a 'FixedRuntimeRepOrigin' which gives context about the check being done.
+    This origin gets reported to the user if we end up with such an an unsolved Wanted constraint.
+
+Note [Representation polymorphism checking]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+According to the &quot;Levity Polymorphism&quot; paper (PLDI '17),
+there are two places in which we must know that a type has a
+fixed runtime representation, as explained in
+  Note [Representation polymorphism invariants] in GHC.Core:
+
+  I1. the type of a bound term-level variable,
+  I2. the type of an argument to a function.
+
+The paper explains the restrictions more fully, but briefly:
+expressions in these contexts need to be stored in registers, and it's
+hard (read: impossible) to store something that does not have a
+fixed runtime representation.
+
+In practice, we enforce these types to have a /fixed RuntimeRep/, which is slightly
+stronger, as explained in Note [Fixed RuntimeRep].
+
+There are two different ways we check whether a given type
+has a fixed runtime representation, both in the typechecker:
+
+  1. When typechecking type declarations (e.g. datatypes, typeclass, pattern synonyms),
+     under the GHC.Tc.TyCl module hierarchy.
+     In these situations, we can immediately reject bad representation polymorphism.
+
+     For instance, the following datatype declaration
+
+       data Foo (r :: RuntimeRep) (a :: TYPE r) = Foo a
+
+     is rejected in GHC.Tc.TyCl.checkValidDataCon upon seeing that the type 'a'
+     is representation-polymorphic.
+
+     Such checks are done using `GHC.Tc.Utils.TcMType.checkTypeHasFixedRuntimeRep`,
+     with `GHC.Tc.Errors.Types.FixedRuntimeRepProvenance` describing the different
+     contexts in which bad representation polymorphism can occur while validity checking.
+
+  2. When typechecking value-level declarations (functions, expressions, patterns, ...),
+     under the GHC.Tc.Gen module hierarchy.
+     In these situations, the typechecker might need to do some work to figure out
+     whether a type has a fixed runtime representation or not. For instance,
+     GHC might introduce a metavariable (rr :: RuntimeRep), which is only later
+     (through constraint solving) discovered to be equal to FloatRep.
+
+     This is handled by the Concrete mechanism outlined in
+     Note [The Concrete mechanism] in GHC.Tc.Utils.Concrete.
+     See Note [Concrete overview] in GHC.Tc.Utils.Concrete for an overview
+     of the various moving parts.
+
+Note [Concrete types]
+~~~~~~~~~~~~~~~~~~~~~
+Definition: a type is /concrete/ iff it is:
+            - a concrete type constructor (as defined below), or
+            - a concrete type variable (see Note [ConcreteTv] below), or
+            - an application of a concrete type to another concrete type
+GHC.Core.Type.isConcrete checks whether a type meets this definition.
+
+Definition: a /concrete type constructor/ is defined by
+            - a promoted data constructor
+            - a class, data type or newtype
+            - a primitive type like Array# or Int#
+            - an abstract type as defined in a Backpack signature file
+              (see Note [Synonyms implement abstract data] in GHC.Tc.Module)
+            In particular, type and data families are not concrete.
+GHC.Core.TyCon.isConcreteTyCon checks whether a TyCon meets this definition.
+
+Examples of concrete types:
+   Lifted, BoxedRep Lifted, TYPE (BoxedRep Lifted) are all concrete
+Examples of non-concrete types
+   F Int, TYPE (F Int), TYPE r, a[sk]
+   NB: (F Int) is not concrete because F is a type function
+
+The recursive definition of concreteness entails the following property:
+
+Concrete Congruence Property (CCP)
+  All sub-trees of a concrete type tree are concrete.
+
+The following property also holds due to the invariant that the kind of a
+concrete metavariable is itself concrete (see Note [ConcreteTv]):
+
+Concrete Kinds Property (CKP)
+  The kind of a concrete type is concrete.
+
+Note [ConcreteTv]
+~~~~~~~~~~~~~~~~~
+A concrete metavariable is a metavariable whose 'MetaInfo' is 'ConcreteTv'.
+Similar to 'TyVarTv's which are type variables which can only be unified with
+other type variables, a 'ConcreteTv' type variable is a type variable which can
+only be unified with a concrete type (in the sense of Note [Concrete types]).
+
+INVARIANT: the kind of a concrete metavariable is concrete.
+
+This invariant is upheld at the time of creation of a new concrete metavariable.
+
+Concrete metavariables are useful for representation-polymorphism checks:
+they allow us to refer to a type whose representation is not yet known but will
+be figured out by the typechecker (see Note [The Concrete mechanism]).
+
+Note [The Concrete mechanism]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+To check (ty :: ki) has a fixed runtime representation, we proceed as follows:
+
+  - Create a new concrete metavariable `concrete_tv`, i.e. a metavariable
+    with 'ConcreteTv' 'MetaInfo' (see Note [ConcreteTv]).
+
+  - Emit an equality constraint:
+
+      ki ~# concrete_tv
+
+    The origin for such an equality constraint uses
+    `GHC.Tc.Types.Origin.FixedRuntimeRepOrigin`, so that we can report the
+    appropriate representation-polymorphism error if any such constraint
+    goes unsolved.
+
+To solve `ki ~# concrete_ki`, we must unify `concrete_tv := concrete_ki`,
+where `concrete_ki` is some concrete type. We can then compute `kindPrimRep`
+on `concrete_ki` to compute the representation: this means `ty` indeed
+has a fixed runtime representation.
+
+-------------------------
+-- PHASE 1 and PHASE 2 --
+-------------------------
+
+The Concrete mechanism is being implemented in two separate phases.
+
+In PHASE 1, we enforce that we only solve the emitted constraints
+`co :: ki ~# concrete_tv` with `Refl`. This forbids any program
+which requires type family evaluation in order to determine that a 'RuntimeRep'
+is fixed.
+To achieve this, instead of creating a new concrete metavariable, we directly
+ensure that 'ki' is concrete, using 'makeTypeConcrete'. If it fails, then
+we report an error (even though rewriting might have allowed us to proceed).
+
+In PHASE 2, we lift this restriction. This means we replace a call to
+`hasFixedRuntimeRep_syntactic` with a call to `hasFixedRuntimeRep`, and insert the
+obtained coercion in the typechecked result. To illustrate what this entails,
+recall that the code generator needs to be able to compute 'PrimRep's, so that it
+can put function arguments in the correct registers, etc.
+As a result, we must insert additional casts in Core to ensure that no type family
+reduction is needed to be able to compute 'PrimRep's. For example, the Core
+
+  f = /\ ( a :: F Int ). \ ( x :: a ). some_expression
+
+is problematic when 'F' is a type family: we don't know what runtime representation to use
+for 'x', so we can't compile this function (we can't evaluate type family applications
+after we are done with typechecking). Instead, we ensure the 'RuntimeRep' is always
+explicitly visible:
+
+  f = /\ ( a :: F Int ). \ ( x :: ( a |&gt; kco ) ). some_expression
+
+where 'kco' is the appropriate coercion; for example if `F Int = TYPE Int#`
+this would be:
+
+  kco :: F Int ~# TYPE Int#
+
+As `( a |&gt; kco ) :: TYPE Int#`, the code generator knows to use a machine-sized
+integer register for `x`, and all is good again.
+
+Because we can convert calls from hasFixedRuntimeRep_syntactic to
+hasFixedRuntimeRep one at a time, we can migrate from PHASE 1 to PHASE 2
+incrementally.
+
+Example test cases that require PHASE 2: T13105, T17021, T20363b.
+
+Note [Fixed RuntimeRep]
+~~~~~~~~~~~~~~~~~~~~~~~
+Definitions:
+
+  FRR.
+
+    The type `ty :: ki` has a /syntactically fixed RuntimeRep/
+    (we also say that `ty` is an `FRRType`)
+      &lt;=&gt;
+    the kind `ki` is concrete (in the sense of Note [Concrete types])
+      &lt;=&gt;
+    `typePrimRep ty` (= `kindPrimRep ki`) does not crash
+    (assuming that typechecking succeeded, so that all metavariables
+    in `ty` have been filled)
+
+  Fixed RuntimeRep.
+
+    The type `ty :: ki` has a /fixed RuntimeRep/
+      &lt;=&gt;
+    there exists an FRR type `ty'` with `ty ~# ty'`
+      &lt;=&gt;
+    there exists a concrete type `concrete_ki` such that
+    `ki ~ concrete_ki`
+
+These definitions are crafted to be useful to satisfy the invariants of
+Core; see Note [Representation polymorphism invariants] in GHC.Core.
+
+Notice that &quot;fixed RuntimeRep&quot; means (for now anyway) that
+  * we know the runtime representation, and
+  * we know the levity.
+
+For example (ty :: TYPE (BoxedRep l)), where `l` is a levity variable
+is /not/ &quot;fixed RuntimeRep&quot;, even though it is always represented by
+a heap pointer, because we don't know the levity.  In due course we
+will want to make finer distinctions, as explained in the paper
+Kinds are Calling Conventions [ICFP'20], but this suffices for now.
+
+Note [hasFixedRuntimeRep]
+~~~~~~~~~~~~~~~~~~~~~~~~~
+The 'hasFixedRuntimeRep' function is responsible for taking a type 'ty'
+and emitting a constraint to ensure that 'ty' has a fixed `RuntimeRep`,
+as outlined in Note [The Concrete mechanism].
+
+To do so, we compute the kind 'ki' of 'ty', create a new concrete metavariable
+`concrete_tv` of kind `ki`, and emit a constraint `ki ~# concrete_tv`,
+which will only be solved if we can prove that 'ty' indeed has a fixed RuntimeRep.
+
+If we can solve the equality constraint, i.e. produce a coercion
+`kco :: ki ~# concrete_tv`, then 'hasFixedRuntimeRep' returns the coercion
+
+  co = GRefl ty kco :: ty ~# ty |&gt; kco
+
+The RHS of the coercion `co` is `ty |&gt; kco`. The kind of this type is
+concrete (by construction), which means that `ty |&gt; kco` is an FRRType
+in the sense of Note [Fixed RuntimeRep], so that we can directely compute
+its runtime representation using `typePrimRep`.
+
+  [Wrinkle: Typed Template Haskell]
+    We don't perform any checks when type-checking a typed Template Haskell quote:
+    we want to allow representation polymorphic quotes, as long as they are
+    monomorphised at splice site.
+
+    Example:
+
+      Module1
+
+        repPolyId :: forall r (a :: TYPE r). CodeQ (a -&gt; a)
+        repPolyId = [|| \ x -&gt; x ||]
+
+      Module2
+
+        import Module1
+
+        id1 :: Int -&gt; Int
+        id1 = $$repPolyId
+
+        id2 :: Int# -&gt; Int#
+        id2 = $$repPolyId
+
+    We implement this skip by inspecting the TH stage in `hasFixedRuntimeRep`.
+
+    A better solution would be to use 'CodeC' constraints, as in the paper
+      &quot;Staging With Class&quot;, POPL 2022
+        by Ningning Xie, Matthew Pickering, Andres L&#246;h, Nicolas Wu, Jeremy Yallop, Meng Wang
+    but for the moment, as we will typecheck again when splicing,
+    this shouldn't cause any problems in practice.  See ticket #18170.
+
+    Test case: rep-poly/T18170a.
+-}</span><span>
+</span><span id="line-380"></span><span>
+</span><span id="line-381"></span><span class="hs-comment">-- | Given a type @ty :: ki@, this function ensures that @ty@</span><span>
+</span><span id="line-382"></span><span class="hs-comment">-- has a __fixed__ 'RuntimeRep', by emitting a new equality constraint</span><span>
+</span><span id="line-383"></span><span class="hs-comment">-- @ki ~ concrete_tv@ for a concrete metavariable @concrete_tv@.</span><span>
+</span><span id="line-384"></span><span class="hs-comment">--</span><span>
+</span><span id="line-385"></span><span class="hs-comment">-- Returns a coercion @co :: ty ~# concrete_ty@ as evidence.</span><span>
+</span><span id="line-386"></span><span class="hs-comment">-- If @ty@ obviously has a fixed 'RuntimeRep', e.g @ki = IntRep@,</span><span>
+</span><span id="line-387"></span><span class="hs-comment">-- then this function immediately returns 'MRefl',</span><span>
+</span><span id="line-388"></span><span class="hs-comment">-- without emitting any constraints.</span><span>
+</span><span id="line-389"></span><span class="annot"><a href="GHC.Tc.Utils.Concrete.html#hasFixedRuntimeRep"><span class="hs-identifier hs-type">hasFixedRuntimeRep</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span>
+</span><span id="line-390"></span><span>                   </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepContext"><span class="hs-identifier hs-type">FixedRuntimeRepContext</span></a></span><span>
+</span><span id="line-391"></span><span>                        </span><span class="hs-comment">-- ^ Context to be reported to the user</span><span>
+</span><span id="line-392"></span><span>                        </span><span class="hs-comment">-- if the type ends up not having a fixed</span><span>
+</span><span id="line-393"></span><span>                        </span><span class="hs-comment">-- 'RuntimeRep'.</span><span>
+</span><span id="line-394"></span><span>                   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span>
+</span><span id="line-395"></span><span>                        </span><span class="annot"><span class="hs-comment">-- ^ The type to check (we only look at its kind).</span></span><span>
+</span><span id="line-396"></span><span>                   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier hs-type">TcM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Tc.Types.Evidence.html#TcCoercionN"><span class="hs-identifier hs-type">TcCoercionN</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcTypeFRR"><span class="hs-identifier hs-type">TcTypeFRR</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-397"></span><span>                        </span><span class="hs-comment">-- ^ @(co, ty')@ where @ty' :: ki'@,</span><span>
+</span><span id="line-398"></span><span>                        </span><span class="hs-comment">-- @ki@ is concrete, and @co :: ty ~# ty'@.</span><span>
+</span><span id="line-399"></span><span>                        </span><span class="hs-comment">-- That is, @ty'@ has a syntactically fixed RuntimeRep</span><span>
+</span><span id="line-400"></span><span>                        </span><span class="hs-comment">-- in the sense of Note [Fixed RuntimeRep].</span><span>
+</span><span id="line-401"></span><span id="hasFixedRuntimeRep"><span class="annot"><span class="annottext">hasFixedRuntimeRep :: (() :: Constraint) =&gt;
+FixedRuntimeRepContext -&gt; TcType -&gt; TcM (TcCoercionN, TcType)
+</span><a href="GHC.Tc.Utils.Concrete.html#hasFixedRuntimeRep"><span class="hs-identifier hs-var hs-var">hasFixedRuntimeRep</span></a></span></span><span> </span><span id="local-6989586621681926556"><span class="annot"><span class="annottext">FixedRuntimeRepContext
+</span><a href="#local-6989586621681926556"><span class="hs-identifier hs-var">frr_ctxt</span></a></span></span><span> </span><span id="local-6989586621681926557"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926557"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt;
+(FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN)
+-&gt; FixedRuntimeRepContext -&gt; TcType -&gt; TcM (TcCoercionN, TcType)
+(FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN)
+-&gt; FixedRuntimeRepContext -&gt; TcType -&gt; TcM (TcCoercionN, TcType)
+</span><a href="GHC.Tc.Utils.Concrete.html#checkFRR_with"><span class="hs-identifier hs-var">checkFRR_with</span></a></span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt;
+FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN
+FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN
+</span><a href="GHC.Tc.Utils.Concrete.html#unifyConcrete"><span class="hs-identifier hs-var">unifyConcrete</span></a></span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepContext
+</span><a href="#local-6989586621681926556"><span class="hs-identifier hs-var">frr_ctxt</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926557"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-402"></span><span>
+</span><span id="line-403"></span><span class="hs-comment">-- | Like 'hasFixedRuntimeRep', but we perform an eager syntactic check.</span><span>
+</span><span id="line-404"></span><span class="hs-comment">--</span><span>
+</span><span id="line-405"></span><span class="hs-comment">-- Throws an error in the 'TcM' monad if the check fails.</span><span>
+</span><span id="line-406"></span><span class="hs-comment">--</span><span>
+</span><span id="line-407"></span><span class="hs-comment">-- This is useful if we are not actually going to use the coercion returned</span><span>
+</span><span id="line-408"></span><span class="hs-comment">-- from 'hasFixedRuntimeRep'; it would generally be unsound to allow a non-reflexive</span><span>
+</span><span id="line-409"></span><span class="hs-comment">-- coercion but not actually make use of it in a cast.</span><span>
+</span><span id="line-410"></span><span class="hs-comment">--</span><span>
+</span><span id="line-411"></span><span class="hs-comment">-- The goal is to eliminate all uses of this function and replace them with</span><span>
+</span><span id="line-412"></span><span class="hs-comment">-- 'hasFixedRuntimeRep', making use of the returned coercion. This is what</span><span>
+</span><span id="line-413"></span><span class="hs-comment">-- is meant by going from PHASE 1 to PHASE 2, in Note [The Concrete mechanism].</span><span>
+</span><span id="line-414"></span><span class="annot"><a href="GHC.Tc.Utils.Concrete.html#hasFixedRuntimeRep_syntactic"><span class="hs-identifier hs-type">hasFixedRuntimeRep_syntactic</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span>
+</span><span id="line-415"></span><span>                             </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepContext"><span class="hs-identifier hs-type">FixedRuntimeRepContext</span></a></span><span>
+</span><span id="line-416"></span><span>                                  </span><span class="hs-comment">-- ^ Context to be reported to the user</span><span>
+</span><span id="line-417"></span><span>                                  </span><span class="hs-comment">-- if the type does not have a syntactically</span><span>
+</span><span id="line-418"></span><span>                                  </span><span class="hs-comment">-- fixed 'RuntimeRep'.</span><span>
+</span><span id="line-419"></span><span>                             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span>
+</span><span id="line-420"></span><span>                                  </span><span class="annot"><span class="hs-comment">-- ^ The type to check (we only look at its kind).</span></span><span>
+</span><span id="line-421"></span><span>                             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier hs-type">TcM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-422"></span><span id="hasFixedRuntimeRep_syntactic"><span class="annot"><span class="annottext">hasFixedRuntimeRep_syntactic :: (() :: Constraint) =&gt; FixedRuntimeRepContext -&gt; TcType -&gt; TcM ()
+</span><a href="GHC.Tc.Utils.Concrete.html#hasFixedRuntimeRep_syntactic"><span class="hs-identifier hs-var hs-var">hasFixedRuntimeRep_syntactic</span></a></span></span><span> </span><span id="local-6989586621681926565"><span class="annot"><span class="annottext">FixedRuntimeRepContext
+</span><a href="#local-6989586621681926565"><span class="hs-identifier hs-var">frr_ctxt</span></a></span></span><span> </span><span id="local-6989586621681926566"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926566"><span class="hs-identifier hs-var">ty</span></a></span></span><span>
+</span><span id="line-423"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TcM (TcCoercionN, TcType) -&gt; TcM ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#void/Data.Functor.html#void"><span class="hs-identifier hs-var">void</span></a></span><span> </span><span class="annot"><span class="annottext">(TcM (TcCoercionN, TcType) -&gt; TcM ())
+-&gt; TcM (TcCoercionN, TcType) -&gt; TcM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt;
+(FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN)
+-&gt; FixedRuntimeRepContext -&gt; TcType -&gt; TcM (TcCoercionN, TcType)
+(FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN)
+-&gt; FixedRuntimeRepContext -&gt; TcType -&gt; TcM (TcCoercionN, TcType)
+</span><a href="GHC.Tc.Utils.Concrete.html#checkFRR_with"><span class="hs-identifier hs-var">checkFRR_with</span></a></span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN
+</span><a href="#local-6989586621681926567"><span class="hs-identifier hs-var">ensure_conc</span></a></span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepContext
+</span><a href="#local-6989586621681926565"><span class="hs-identifier hs-var">frr_ctxt</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926566"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-424"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-425"></span><span>      </span><span class="annot"><a href="#local-6989586621681926567"><span class="hs-identifier hs-type">ensure_conc</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepOrigin"><span class="hs-identifier hs-type">FixedRuntimeRepOrigin</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcKind"><span class="hs-identifier hs-type">TcKind</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier hs-type">TcM</span></a></span><span> </span><span class="annot"><a href="GHC.Tc.Types.Evidence.html#TcMCoercionN"><span class="hs-identifier hs-type">TcMCoercionN</span></a></span><span>
+</span><span id="line-426"></span><span>      </span><span id="local-6989586621681926567"><span class="annot"><span class="annottext">ensure_conc :: FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN
+</span><a href="#local-6989586621681926567"><span class="hs-identifier hs-var hs-var">ensure_conc</span></a></span></span><span> </span><span id="local-6989586621681926568"><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926568"><span class="hs-identifier hs-var">frr_orig</span></a></span></span><span> </span><span id="local-6989586621681926569"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926569"><span class="hs-identifier hs-var">ki</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcType
+FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcType
+</span><a href="GHC.Tc.Utils.Concrete.html#ensureConcrete"><span class="hs-identifier hs-var">ensureConcrete</span></a></span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926568"><span class="hs-identifier hs-var">frr_orig</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926569"><span class="hs-identifier hs-var">ki</span></a></span><span> </span><span class="annot"><span class="annottext">TcM TcType -&gt; TcMCoercionN -&gt; TcM TcMCoercionN
+forall (f :: * -&gt; *) a b. Functor f =&gt; f a -&gt; b -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%24%3E/Data.Functor.html#%24%3E"><span class="hs-operator hs-var">$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">TcMCoercionN
+</span><a href="GHC.Core.TyCo.Rep.html#MRefl"><span class="hs-identifier hs-var">MRefl</span></a></span><span>
+</span><span id="line-427"></span><span>
+</span><span id="line-428"></span><span class="hs-comment">-- | Internal function to check whether the given type has a fixed 'RuntimeRep'.</span><span>
+</span><span id="line-429"></span><span class="hs-comment">--</span><span>
+</span><span id="line-430"></span><span class="hs-comment">-- Use 'hasFixedRuntimeRep' to allow rewriting, or 'hasFixedRuntimeRep_syntactic'</span><span>
+</span><span id="line-431"></span><span class="hs-comment">-- to perform a syntactic check.</span><span>
+</span><span id="line-432"></span><span class="annot"><a href="GHC.Tc.Utils.Concrete.html#checkFRR_with"><span class="hs-identifier hs-type">checkFRR_with</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span>
+</span><span id="line-433"></span><span>              </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepOrigin"><span class="hs-identifier hs-type">FixedRuntimeRepOrigin</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcKind"><span class="hs-identifier hs-type">TcKind</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier hs-type">TcM</span></a></span><span> </span><span class="annot"><a href="GHC.Tc.Types.Evidence.html#TcMCoercionN"><span class="hs-identifier hs-type">TcMCoercionN</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-434"></span><span>                   </span><span class="annot"><span class="hs-comment">-- ^ The check to perform on the kind.</span></span><span>
+</span><span id="line-435"></span><span>              </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepContext"><span class="hs-identifier hs-type">FixedRuntimeRepContext</span></a></span><span>
+</span><span id="line-436"></span><span>                   </span><span class="hs-comment">-- ^ The context which required a fixed 'RuntimeRep',</span><span>
+</span><span id="line-437"></span><span>                   </span><span class="hs-comment">-- e.g. an application, a lambda abstraction, ...</span><span>
+</span><span id="line-438"></span><span>              </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span>
+</span><span id="line-439"></span><span>                   </span><span class="annot"><span class="hs-comment">-- ^ The type @ty@ to check (the check itself only looks at its kind).</span></span><span>
+</span><span id="line-440"></span><span>              </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier hs-type">TcM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Tc.Types.Evidence.html#TcCoercionN"><span class="hs-identifier hs-type">TcCoercionN</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcTypeFRR"><span class="hs-identifier hs-type">TcTypeFRR</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-441"></span><span>                  </span><span class="hs-comment">-- ^ Returns @(co, frr_ty)@ with @co :: ty ~# frr_ty@</span><span>
+</span><span id="line-442"></span><span>                  </span><span class="hs-comment">-- and @frr_@ty has a fixed 'RuntimeRep'.</span><span>
+</span><span id="line-443"></span><span id="checkFRR_with"><span class="annot"><span class="annottext">checkFRR_with :: (() :: Constraint) =&gt;
+(FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN)
+-&gt; FixedRuntimeRepContext -&gt; TcType -&gt; TcM (TcCoercionN, TcType)
+</span><a href="GHC.Tc.Utils.Concrete.html#checkFRR_with"><span class="hs-identifier hs-var hs-var">checkFRR_with</span></a></span></span><span> </span><span id="local-6989586621681926581"><span class="annot"><span class="annottext">FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN
+</span><a href="#local-6989586621681926581"><span class="hs-identifier hs-var">check_kind</span></a></span></span><span> </span><span id="local-6989586621681926582"><span class="annot"><span class="annottext">FixedRuntimeRepContext
+</span><a href="#local-6989586621681926582"><span class="hs-identifier hs-var">frr_ctxt</span></a></span></span><span> </span><span id="local-6989586621681926583"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926583"><span class="hs-identifier hs-var">ty</span></a></span></span><span>
+</span><span id="line-444"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span id="local-6989586621681926584"><span class="annot"><span class="annottext">ThStage
+</span><a href="#local-6989586621681926584"><span class="hs-identifier hs-var">th_stage</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcM ThStage
+</span><a href="GHC.Tc.Utils.Monad.html#getStage"><span class="hs-identifier hs-var">getStage</span></a></span><span>
+</span><span id="line-445"></span><span>       </span><span class="hs-special">;</span><span> </span><span class="hs-keyword">if</span><span>
+</span><span id="line-446"></span><span>          </span><span class="hs-comment">-- Shortcut: check for 'Type' and 'UnliftedType' type synonyms.</span><span>
+</span><span id="line-447"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#TyConApp"><span class="hs-identifier hs-type">TyConApp</span></a></span><span> </span><span id="local-6989586621681926586"><span class="annot"><span class="annottext">TyCon
+</span><a href="#local-6989586621681926586"><span class="hs-identifier hs-var">tc</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926587"><span class="hs-identifier hs-var">ki</span></a></span><span>
+</span><span id="line-448"></span><span>          </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">TyCon
+</span><a href="#local-6989586621681926586"><span class="hs-identifier hs-var">tc</span></a></span><span> </span><span class="annot"><span class="annottext">TyCon -&gt; TyCon -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">TyCon
+</span><a href="GHC.Builtin.Types.html#liftedTypeKindTyCon"><span class="hs-identifier hs-var">liftedTypeKindTyCon</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">TyCon
+</span><a href="#local-6989586621681926586"><span class="hs-identifier hs-var">tc</span></a></span><span> </span><span class="annot"><span class="annottext">TyCon -&gt; TyCon -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">TyCon
+</span><a href="GHC.Builtin.Types.html#unliftedTypeKindTyCon"><span class="hs-identifier hs-var">unliftedTypeKindTyCon</span></a></span><span>
+</span><span id="line-449"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(TcCoercionN, TcType) -&gt; TcM (TcCoercionN, TcType)
+forall a. a -&gt; IOEnv (Env TcGblEnv TcLclEnv) a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(TcCoercionN, TcType)
+</span><a href="#local-6989586621681926589"><span class="hs-identifier hs-var">refl</span></a></span><span>
+</span><span id="line-450"></span><span>
+</span><span id="line-451"></span><span>          </span><span class="hs-comment">-- See [Wrinkle: Typed Template Haskell] in Note [hasFixedRuntimeRep].</span><span>
+</span><span id="line-452"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#Brack"><span class="hs-identifier hs-type">Brack</span></a></span><span> </span><span class="annot"><span class="annottext">ThStage
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Tc.Types.html#TcPending"><span class="hs-identifier hs-type">TcPending</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ThStage
+</span><a href="#local-6989586621681926584"><span class="hs-identifier hs-var">th_stage</span></a></span><span>
+</span><span id="line-453"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(TcCoercionN, TcType) -&gt; TcM (TcCoercionN, TcType)
+forall a. a -&gt; IOEnv (Env TcGblEnv TcLclEnv) a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(TcCoercionN, TcType)
+</span><a href="#local-6989586621681926589"><span class="hs-identifier hs-var">refl</span></a></span><span>
+</span><span id="line-454"></span><span>
+</span><span id="line-455"></span><span>          </span><span class="hs-comment">-- Otherwise: ensure that the kind 'ki' of 'ty' is concrete.</span><span>
+</span><span id="line-456"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-457"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span id="local-6989586621681926592"><span class="annot"><span class="annottext">TcMCoercionN
+</span><a href="#local-6989586621681926592"><span class="hs-identifier hs-var">kco</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN
+</span><a href="#local-6989586621681926581"><span class="hs-identifier hs-var">check_kind</span></a></span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926593"><span class="hs-identifier hs-var">frr_orig</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926587"><span class="hs-identifier hs-var">ki</span></a></span><span>
+</span><span id="line-458"></span><span>                </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">(TcCoercionN, TcType) -&gt; TcM (TcCoercionN, TcType)
+forall a. a -&gt; IOEnv (Env TcGblEnv TcLclEnv) a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Role -&gt; TcType -&gt; TcMCoercionN -&gt; TcCoercionN
+</span><a href="GHC.Core.Coercion.html#mkGReflRightMCo"><span class="hs-identifier hs-var">mkGReflRightMCo</span></a></span><span> </span><span class="annot"><span class="annottext">Role
+</span><a href="Language.Haskell.Syntax.Basic.html#Nominal"><span class="hs-identifier hs-var">Nominal</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926583"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="annot"><span class="annottext">TcMCoercionN
+</span><a href="#local-6989586621681926592"><span class="hs-identifier hs-var">kco</span></a></span><span>
+</span><span id="line-459"></span><span>                         </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; TcMCoercionN -&gt; TcType
+</span><a href="GHC.Core.Coercion.html#mkCastTyMCo"><span class="hs-identifier hs-var">mkCastTyMCo</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926583"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="annot"><span class="annottext">TcMCoercionN
+</span><a href="#local-6989586621681926592"><span class="hs-identifier hs-var">kco</span></a></span><span> </span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-460"></span><span>
+</span><span id="line-461"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-462"></span><span>    </span><span class="annot"><a href="#local-6989586621681926589"><span class="hs-identifier hs-type">refl</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Tc.Types.Evidence.html#TcCoercionN"><span class="hs-identifier hs-type">TcCoercionN</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-463"></span><span>    </span><span id="local-6989586621681926589"><span class="annot"><span class="annottext">refl :: (TcCoercionN, TcType)
+</span><a href="#local-6989586621681926589"><span class="hs-identifier hs-var hs-var">refl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TcType -&gt; TcCoercionN
+</span><a href="GHC.Core.Coercion.html#mkNomReflCo"><span class="hs-identifier hs-var">mkNomReflCo</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926583"><span class="hs-identifier hs-var">ty</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926583"><span class="hs-identifier hs-var">ty</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-464"></span><span>    </span><span class="annot"><a href="#local-6989586621681926587"><span class="hs-identifier hs-type">ki</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcKind"><span class="hs-identifier hs-type">TcKind</span></a></span><span>
+</span><span id="line-465"></span><span>    </span><span id="local-6989586621681926587"><span class="annot"><span class="annottext">ki :: TcType
+</span><a href="#local-6989586621681926587"><span class="hs-identifier hs-var hs-var">ki</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; TcType -&gt; TcType
+TcType -&gt; TcType
+</span><a href="GHC.Core.Type.html#typeKind"><span class="hs-identifier hs-var">typeKind</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926583"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-466"></span><span>    </span><span class="annot"><a href="#local-6989586621681926593"><span class="hs-identifier hs-type">frr_orig</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepOrigin"><span class="hs-identifier hs-type">FixedRuntimeRepOrigin</span></a></span><span>
+</span><span id="line-467"></span><span>    </span><span id="local-6989586621681926593"><span class="annot"><span class="annottext">frr_orig :: FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926593"><span class="hs-identifier hs-var hs-var">frr_orig</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepOrigin"><span class="hs-identifier hs-type">FixedRuntimeRepOrigin</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">frr_type :: TcType
+</span><a href="GHC.Tc.Types.Origin.html#frr_type"><span class="hs-identifier hs-var">frr_type</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926583"><span class="hs-identifier hs-var">ty</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">frr_context :: FixedRuntimeRepContext
+</span><a href="GHC.Tc.Types.Origin.html#frr_context"><span class="hs-identifier hs-var">frr_context</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepContext
+</span><a href="#local-6989586621681926582"><span class="hs-identifier hs-var">frr_ctxt</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-468"></span><span>
+</span><span id="line-469"></span><span class="hs-comment">-- | Ensure that the given type @ty@ can unify with a concrete type,</span><span>
+</span><span id="line-470"></span><span class="hs-comment">-- in the sense of Note [Concrete types].</span><span>
+</span><span id="line-471"></span><span class="hs-comment">--</span><span>
+</span><span id="line-472"></span><span class="hs-comment">-- Returns a coercion @co :: ty ~# conc_ty@, where @conc_ty@ is</span><span>
+</span><span id="line-473"></span><span class="hs-comment">-- concrete.</span><span>
+</span><span id="line-474"></span><span class="hs-comment">--</span><span>
+</span><span id="line-475"></span><span class="hs-comment">-- If the type is already syntactically concrete, this</span><span>
+</span><span id="line-476"></span><span class="hs-comment">-- immediately returns a reflexive coercion. Otherwise,</span><span>
+</span><span id="line-477"></span><span class="hs-comment">-- it creates a new concrete metavariable @concrete_tv@</span><span>
+</span><span id="line-478"></span><span class="hs-comment">-- and emits an equality constraint @ty ~# concrete_tv@,</span><span>
+</span><span id="line-479"></span><span class="hs-comment">-- to be handled by the constraint solver.</span><span>
+</span><span id="line-480"></span><span class="hs-comment">--</span><span>
+</span><span id="line-481"></span><span class="hs-comment">-- Invariant: the kind of the supplied type must be concrete.</span><span>
+</span><span id="line-482"></span><span class="hs-comment">--</span><span>
+</span><span id="line-483"></span><span class="hs-comment">-- We assume the provided type is already at the kind-level</span><span>
+</span><span id="line-484"></span><span class="hs-comment">-- (this only matters for error messages).</span><span>
+</span><span id="line-485"></span><span class="annot"><a href="GHC.Tc.Utils.Concrete.html#unifyConcrete"><span class="hs-identifier hs-type">unifyConcrete</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span>
+</span><span id="line-486"></span><span>              </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepOrigin"><span class="hs-identifier hs-type">FixedRuntimeRepOrigin</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier hs-type">TcM</span></a></span><span> </span><span class="annot"><a href="GHC.Tc.Types.Evidence.html#TcMCoercionN"><span class="hs-identifier hs-type">TcMCoercionN</span></a></span><span>
+</span><span id="line-487"></span><span id="unifyConcrete"><span class="annot"><span class="annottext">unifyConcrete :: (() :: Constraint) =&gt;
+FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcMCoercionN
+</span><a href="GHC.Tc.Utils.Concrete.html#unifyConcrete"><span class="hs-identifier hs-var hs-var">unifyConcrete</span></a></span></span><span> </span><span id="local-6989586621681926605"><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926605"><span class="hs-identifier hs-var">frr_orig</span></a></span></span><span> </span><span id="local-6989586621681926606"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926606"><span class="hs-identifier hs-var">ty</span></a></span></span><span>
+</span><span id="line-488"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681926607"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926607"><span class="hs-identifier hs-var">ty</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681926608"><span class="annot"><span class="annottext">[NotConcreteReason]
+</span><a href="#local-6989586621681926608"><span class="hs-identifier hs-var">errs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ConcreteTvOrigin -&gt; TcType -&gt; TcM (TcType, [NotConcreteReason])
+</span><a href="GHC.Tc.Utils.Concrete.html#makeTypeConcrete"><span class="hs-identifier hs-var">makeTypeConcrete</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin -&gt; ConcreteTvOrigin
+</span><a href="GHC.Tc.Utils.TcType.html#ConcreteFRR"><span class="hs-identifier hs-var">ConcreteFRR</span></a></span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926605"><span class="hs-identifier hs-var">frr_orig</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926606"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-489"></span><span>       </span><span class="hs-special">;</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">[NotConcreteReason]
+</span><a href="#local-6989586621681926608"><span class="hs-identifier hs-var">errs</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-490"></span><span>           </span><span class="hs-comment">-- We were able to make the type fully concrete.</span><span>
+</span><span id="line-491"></span><span>         </span><span class="hs-special">{</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">TcMCoercionN -&gt; TcM TcMCoercionN
+forall a. a -&gt; IOEnv (Env TcGblEnv TcLclEnv) a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">TcMCoercionN
+</span><a href="GHC.Core.TyCo.Rep.html#MRefl"><span class="hs-identifier hs-var">MRefl</span></a></span><span>
+</span><span id="line-492"></span><span>           </span><span class="hs-comment">-- The type could not be made concrete; perhaps it contains</span><span>
+</span><span id="line-493"></span><span>           </span><span class="hs-comment">-- a skolem type variable, a type family application, ...</span><span>
+</span><span id="line-494"></span><span>           </span><span class="hs-comment">--</span><span>
+</span><span id="line-495"></span><span>           </span><span class="hs-comment">-- Create a new ConcreteTv metavariable @concrete_tv@</span><span>
+</span><span id="line-496"></span><span>           </span><span class="hs-comment">-- and unify @ty ~# concrete_tv@.</span><span>
+</span><span id="line-497"></span><span>         </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">[NotConcreteReason]
+</span><span class="hs-identifier">_</span></span><span>  </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-498"></span><span>    </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span id="local-6989586621681926610"><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926610"><span class="hs-identifier hs-var">conc_tv</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; ConcreteTvOrigin -&gt; TcType -&gt; TcM TcTyVar
+ConcreteTvOrigin -&gt; TcType -&gt; TcM TcTyVar
+</span><a href="GHC.Tc.Utils.TcMType.html#newConcreteTyVar"><span class="hs-identifier hs-var">newConcreteTyVar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin -&gt; ConcreteTvOrigin
+</span><a href="GHC.Tc.Utils.TcType.html#ConcreteFRR"><span class="hs-identifier hs-var">ConcreteFRR</span></a></span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926605"><span class="hs-identifier hs-var">frr_orig</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926611"><span class="hs-identifier hs-var">ki</span></a></span><span>
+</span><span id="line-499"></span><span>           </span><span class="hs-comment">-- NB: newConcreteTyVar asserts that 'ki' is concrete.</span><span>
+</span><span id="line-500"></span><span>       </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">TcCoercionN -&gt; TcMCoercionN
+</span><a href="GHC.Core.Coercion.html#coToMCo"><span class="hs-identifier hs-var">coToMCo</span></a></span><span> </span><span class="annot"><span class="annottext">(TcCoercionN -&gt; TcMCoercionN)
+-&gt; IOEnv (Env TcGblEnv TcLclEnv) TcCoercionN -&gt; TcM TcMCoercionN
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">CtOrigin
+-&gt; TypeOrKind
+-&gt; Role
+-&gt; TcType
+-&gt; TcType
+-&gt; IOEnv (Env TcGblEnv TcLclEnv) TcCoercionN
+</span><a href="GHC.Tc.Utils.TcMType.html#emitWantedEq"><span class="hs-identifier hs-var">emitWantedEq</span></a></span><span> </span><span class="annot"><span class="annottext">CtOrigin
+</span><a href="#local-6989586621681926613"><span class="hs-identifier hs-var">orig</span></a></span><span> </span><span class="annot"><span class="annottext">TypeOrKind
+</span><a href="GHC.Types.Basic.html#KindLevel"><span class="hs-identifier hs-var">KindLevel</span></a></span><span> </span><span class="annot"><span class="annottext">Role
+</span><a href="Language.Haskell.Syntax.Basic.html#Nominal"><span class="hs-identifier hs-var">Nominal</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926607"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TcTyVar -&gt; TcType
+</span><a href="GHC.Core.TyCo.Rep.html#mkTyVarTy"><span class="hs-identifier hs-var">mkTyVarTy</span></a></span><span> </span><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926610"><span class="hs-identifier hs-var">conc_tv</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span> </span><span class="hs-special">}</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-501"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-502"></span><span>    </span><span class="annot"><a href="#local-6989586621681926611"><span class="hs-identifier hs-type">ki</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcKind"><span class="hs-identifier hs-type">TcKind</span></a></span><span>
+</span><span id="line-503"></span><span>    </span><span id="local-6989586621681926611"><span class="annot"><span class="annottext">ki :: TcType
+</span><a href="#local-6989586621681926611"><span class="hs-identifier hs-var hs-var">ki</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; TcType -&gt; TcType
+TcType -&gt; TcType
+</span><a href="GHC.Core.Type.html#typeKind"><span class="hs-identifier hs-var">typeKind</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926606"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-504"></span><span>    </span><span class="annot"><a href="#local-6989586621681926613"><span class="hs-identifier hs-type">orig</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#CtOrigin"><span class="hs-identifier hs-type">CtOrigin</span></a></span><span>
+</span><span id="line-505"></span><span>    </span><span id="local-6989586621681926613"><span class="annot"><span class="annottext">orig :: CtOrigin
+</span><a href="#local-6989586621681926613"><span class="hs-identifier hs-var hs-var">orig</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin -&gt; CtOrigin
+</span><a href="GHC.Tc.Types.Origin.html#FRROrigin"><span class="hs-identifier hs-var">FRROrigin</span></a></span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926605"><span class="hs-identifier hs-var">frr_orig</span></a></span><span>
+</span><span id="line-506"></span><span>
+</span><span id="line-507"></span><span class="hs-comment">-- | Ensure that the given type is concrete.</span><span>
+</span><span id="line-508"></span><span class="hs-comment">--</span><span>
+</span><span id="line-509"></span><span class="hs-comment">-- This is an eager syntactic check, and never defers</span><span>
+</span><span id="line-510"></span><span class="hs-comment">-- any work to the constraint solver.</span><span>
+</span><span id="line-511"></span><span class="hs-comment">--</span><span>
+</span><span id="line-512"></span><span class="hs-comment">-- Invariant: the kind of the supplied type must be concrete.</span><span>
+</span><span id="line-513"></span><span class="hs-comment">-- Invariant: the output type is equal to the input type,</span><span>
+</span><span id="line-514"></span><span class="hs-comment">--            up to zonking.</span><span>
+</span><span id="line-515"></span><span class="hs-comment">--</span><span>
+</span><span id="line-516"></span><span class="hs-comment">-- We assume the provided type is already at the kind-level</span><span>
+</span><span id="line-517"></span><span class="hs-comment">-- (this only matters for error messages).</span><span>
+</span><span id="line-518"></span><span class="annot"><a href="GHC.Tc.Utils.Concrete.html#ensureConcrete"><span class="hs-identifier hs-type">ensureConcrete</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#HasDebugCallStack"><span class="hs-identifier hs-type">HasDebugCallStack</span></a></span><span>
+</span><span id="line-519"></span><span>               </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Origin.html#FixedRuntimeRepOrigin"><span class="hs-identifier hs-type">FixedRuntimeRepOrigin</span></a></span><span>
+</span><span id="line-520"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span>
+</span><span id="line-521"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier hs-type">TcM</span></a></span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span>
+</span><span id="line-522"></span><span id="ensureConcrete"><span class="annot"><span class="annottext">ensureConcrete :: (() :: Constraint) =&gt; FixedRuntimeRepOrigin -&gt; TcType -&gt; TcM TcType
+</span><a href="GHC.Tc.Utils.Concrete.html#ensureConcrete"><span class="hs-identifier hs-var hs-var">ensureConcrete</span></a></span></span><span> </span><span id="local-6989586621681926636"><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926636"><span class="hs-identifier hs-var">frr_orig</span></a></span></span><span> </span><span id="local-6989586621681926637"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926637"><span class="hs-identifier hs-var">ty</span></a></span></span><span>
+</span><span id="line-523"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681926638"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926638"><span class="hs-identifier hs-var">ty'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681926639"><span class="annot"><span class="annottext">[NotConcreteReason]
+</span><a href="#local-6989586621681926639"><span class="hs-identifier hs-var">errs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ConcreteTvOrigin -&gt; TcType -&gt; TcM (TcType, [NotConcreteReason])
+</span><a href="GHC.Tc.Utils.Concrete.html#makeTypeConcrete"><span class="hs-identifier hs-var">makeTypeConcrete</span></a></span><span> </span><span class="annot"><span class="annottext">ConcreteTvOrigin
+</span><a href="#local-6989586621681926640"><span class="hs-identifier hs-var">conc_orig</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926637"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-524"></span><span>       </span><span class="hs-special">;</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">[NotConcreteReason]
+</span><a href="#local-6989586621681926639"><span class="hs-identifier hs-var">errs</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-525"></span><span>          </span><span class="hs-special">{</span><span> </span><span id="local-6989586621681926641"><span class="annot"><span class="annottext">NotConcreteReason
+</span><a href="#local-6989586621681926641"><span class="hs-identifier hs-var">err</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621681926642"><span class="annot"><span class="annottext">[NotConcreteReason]
+</span><a href="#local-6989586621681926642"><span class="hs-identifier hs-var">errs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-526"></span><span>              </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; TcM ()
+</span><a href="GHC.Tc.Utils.Monad.html#traceTc"><span class="hs-identifier hs-var">traceTc</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;ensureConcrete } failure&quot;</span></span><span> </span><span class="annot"><span class="annottext">(SDoc -&gt; TcM ()) -&gt; SDoc -&gt; TcM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-527"></span><span>                     </span><span class="annot"><span class="annottext">[SDoc] -&gt; SDoc
+forall doc. IsDoc doc =&gt; [doc] -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#vcat"><span class="hs-identifier hs-var">vcat</span></a></span><span> </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;ty:&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">TcType -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926637"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-528"></span><span>                          </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;ty':&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">TcType -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926638"><span class="hs-identifier hs-var">ty'</span></a></span><span> </span><span class="hs-special">]</span><span>
+</span><span id="line-529"></span><span>                 </span><span class="hs-special">;</span><span> </span><span id="local-6989586621681926647"><span class="annot"><span class="annottext">CtLoc
+</span><a href="#local-6989586621681926647"><span class="hs-identifier hs-var">loc</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CtOrigin -&gt; Maybe TypeOrKind -&gt; TcM CtLoc
+</span><a href="GHC.Tc.Utils.Monad.html#getCtLocM"><span class="hs-identifier hs-var">getCtLocM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin -&gt; CtOrigin
+</span><a href="GHC.Tc.Types.Origin.html#FRROrigin"><span class="hs-identifier hs-var">FRROrigin</span></a></span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926636"><span class="hs-identifier hs-var">frr_orig</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeOrKind -&gt; Maybe TypeOrKind
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">TypeOrKind
+</span><a href="GHC.Types.Basic.html#KindLevel"><span class="hs-identifier hs-var">KindLevel</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-530"></span><span>                 </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">NotConcreteError -&gt; TcM ()
+</span><a href="GHC.Tc.Utils.Monad.html#emitNotConcreteError"><span class="hs-identifier hs-var">emitNotConcreteError</span></a></span><span> </span><span class="annot"><span class="annottext">(NotConcreteError -&gt; TcM ()) -&gt; NotConcreteError -&gt; TcM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-531"></span><span>                     </span><span class="annot"><a href="GHC.Tc.Types.Constraint.html#NCE_FRR"><span class="hs-identifier hs-type">NCE_FRR</span></a></span><span>
+</span><span id="line-532"></span><span>                       </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">nce_loc :: CtLoc
+</span><a href="GHC.Tc.Types.Constraint.html#nce_loc"><span class="hs-identifier hs-var">nce_loc</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CtLoc
+</span><a href="#local-6989586621681926647"><span class="hs-identifier hs-var">loc</span></a></span><span>
+</span><span id="line-533"></span><span>                       </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">nce_frr_origin :: FixedRuntimeRepOrigin
+</span><a href="GHC.Tc.Types.Constraint.html#nce_frr_origin"><span class="hs-identifier hs-var">nce_frr_origin</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926636"><span class="hs-identifier hs-var">frr_orig</span></a></span><span>
+</span><span id="line-534"></span><span>                       </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">nce_reasons :: NonEmpty NotConcreteReason
+</span><a href="GHC.Tc.Types.Constraint.html#nce_reasons"><span class="hs-identifier hs-var">nce_reasons</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NotConcreteReason
+</span><a href="#local-6989586621681926641"><span class="hs-identifier hs-var">err</span></a></span><span> </span><span class="annot"><span class="annottext">NotConcreteReason
+-&gt; [NotConcreteReason] -&gt; NonEmpty NotConcreteReason
+forall a. a -&gt; [a] -&gt; NonEmpty a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3A%7C/GHC.Base.html#%3A%7C"><span class="hs-operator hs-var">:|</span></a></span><span> </span><span class="annot"><span class="annottext">[NotConcreteReason]
+</span><a href="#local-6989586621681926642"><span class="hs-identifier hs-var">errs</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-535"></span><span>                 </span><span class="hs-special">}</span><span>
+</span><span id="line-536"></span><span>          </span><span class="hs-special">;</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-537"></span><span>              </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; TcM ()
+</span><a href="GHC.Tc.Utils.Monad.html#traceTc"><span class="hs-identifier hs-var">traceTc</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;ensureConcrete } success&quot;</span></span><span> </span><span class="annot"><span class="annottext">(SDoc -&gt; TcM ()) -&gt; SDoc -&gt; TcM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-538"></span><span>                </span><span class="annot"><span class="annottext">[SDoc] -&gt; SDoc
+forall doc. IsDoc doc =&gt; [doc] -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#vcat"><span class="hs-identifier hs-var">vcat</span></a></span><span> </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;ty: &quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">TcType -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926637"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-539"></span><span>                     </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;ty':&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">TcType -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926638"><span class="hs-identifier hs-var">ty'</span></a></span><span> </span><span class="hs-special">]</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-540"></span><span>        </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; TcM TcType
+forall a. a -&gt; IOEnv (Env TcGblEnv TcLclEnv) a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926638"><span class="hs-identifier hs-var">ty'</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-541"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-542"></span><span>    </span><span class="annot"><a href="#local-6989586621681926640"><span class="hs-identifier hs-type">conc_orig</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#ConcreteTvOrigin"><span class="hs-identifier hs-type">ConcreteTvOrigin</span></a></span><span>
+</span><span id="line-543"></span><span>    </span><span id="local-6989586621681926640"><span class="annot"><span class="annottext">conc_orig :: ConcreteTvOrigin
+</span><a href="#local-6989586621681926640"><span class="hs-identifier hs-var hs-var">conc_orig</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin -&gt; ConcreteTvOrigin
+</span><a href="GHC.Tc.Utils.TcType.html#ConcreteFRR"><span class="hs-identifier hs-var">ConcreteFRR</span></a></span><span> </span><span class="annot"><span class="annottext">FixedRuntimeRepOrigin
+</span><a href="#local-6989586621681926636"><span class="hs-identifier hs-var">frr_orig</span></a></span><span>
+</span><span id="line-544"></span><span>
+</span><span id="line-545"></span><span class="annot"><span class="hs-comment">{-***********************************************************************
+%*                                                                      *
+                    Making a type concrete
+%*                                                                      *
+%************************************************************************
+
+Note [Unifying concrete metavariables]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Unifying concrete metavariables (as defined in Note [ConcreteTv]) is not
+an all-or-nothing affair as it is for other sorts of metavariables.
+
+Consider the following unification problem in which all metavariables
+are unfilled (and ignoring any TcLevel considerations):
+
+  alpha[conc] ~# TYPE (TupleRep '[ beta[conc], IntRep, gamma[tau] ])
+
+We can't immediately unify `alpha` with the RHS, because the RHS is not
+a concrete type (in the sense of Note [Concrete types]). Instead, we
+proceed as follows:
+
+  - create a fresh concrete metavariable variable `gamma'[conc]`,
+  - write gamma[tau] := gamma'[conc],
+  - write alpha[conc] := TYPE (TupleRep '[ beta[conc], IntRep, gamma'[conc] ]).
+
+Thus, in general, to unify `alpha[conc] ~# rhs`, we first try to turn
+`rhs` into a concrete type (see the 'makeTypeConcrete' function).
+If this succeeds, resulting in a concrete type `rhs'`, we simply fill
+`alpha[conc] := rhs'`. If it fails, then syntactic unification fails.
+
+Example 1:
+
+    alpha[conc] ~# TYPE (TupleRep '[ beta[conc], IntRep, gamma[tau] ])
+
+  We proceed by filling metavariables:
+
+    gamma[tau] := gamma[conc]
+    alpha[conc] := TYPE (TupleRep '[ beta[conc], IntRep, gamma[conc] ])
+
+  This successfully unifies alpha.
+
+Example 2:
+
+  For a type family `F :: Type -&gt; Type`:
+
+    delta[conc] ~# TYPE (SumRep '[ zeta[tau], a[sk], F omega[tau] ])
+
+  We write zeta[tau] := zeta[conc], and then fail, providing the following
+  two reasons:
+
+    - `a[sk]` is not a concrete type variable, so the overall type
+      cannot be concrete
+    - `F` is not a concrete type constructor, in the sense of
+       Note [Concrete types]. So we keep it as is; in particular,
+       we /should not/ try to make its argument `omega[tau]` into
+       a ConcreteTv.
+
+  Note that making zeta concrete allows us to propagate information.
+  For example, after more typechecking, we might try to unify
+  `zeta ~# rr[sk]`. If we made zeta a ConcreteTv, we will report
+  this unsolved equality using the 'ConcreteTvOrigin' stored in zeta[conc].
+  This allows us to report ALL the problems in a representation-polymorphism
+  check (instead of only a non-empty subset).
+-}</span></span><span>
+</span><span id="line-608"></span><span>
+</span><span id="line-609"></span><span class="hs-comment">-- | Try to turn the provided type into a concrete type, by ensuring</span><span>
+</span><span id="line-610"></span><span class="hs-comment">-- unfilled metavariables are appropriately marked as concrete.</span><span>
+</span><span id="line-611"></span><span class="hs-comment">--</span><span>
+</span><span id="line-612"></span><span class="hs-comment">-- Returns a zonked type which is &quot;as concrete as possible&quot;, and</span><span>
+</span><span id="line-613"></span><span class="hs-comment">-- a list of problems encountered when trying to make it concrete.</span><span>
+</span><span id="line-614"></span><span class="hs-comment">--</span><span>
+</span><span id="line-615"></span><span class="hs-comment">-- INVARIANT: the returned type is equal to the input type, up to zonking.</span><span>
+</span><span id="line-616"></span><span class="hs-comment">-- INVARIANT: if this function returns an empty list of 'NotConcreteReasons',</span><span>
+</span><span id="line-617"></span><span class="hs-comment">-- then the returned type is concrete, in the sense of Note [Concrete types].</span><span>
+</span><span id="line-618"></span><span class="annot"><a href="GHC.Tc.Utils.Concrete.html#makeTypeConcrete"><span class="hs-identifier hs-type">makeTypeConcrete</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#ConcreteTvOrigin"><span class="hs-identifier hs-type">ConcreteTvOrigin</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier hs-type">TcM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Tc.Types.Constraint.html#NotConcreteReason"><span class="hs-identifier hs-type">NotConcreteReason</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-619"></span><span class="hs-comment">-- TODO: it could be worthwhile to return enough information to continue solving.</span><span>
+</span><span id="line-620"></span><span class="hs-comment">-- Consider unifying `alpha[conc] ~# TupleRep '[ beta[tau], F Int ]` for</span><span>
+</span><span id="line-621"></span><span class="hs-comment">-- a type family 'F'.</span><span>
+</span><span id="line-622"></span><span class="hs-comment">-- This function will concretise `beta[tau] := beta[conc]` and return</span><span>
+</span><span id="line-623"></span><span class="hs-comment">-- that `TupleRep '[ beta[conc], F Int ]` is not concrete because of the</span><span>
+</span><span id="line-624"></span><span class="hs-comment">-- type family application `F Int`. But we could decompose by setting</span><span>
+</span><span id="line-625"></span><span class="hs-comment">-- alpha := TupleRep '[ beta, gamma[conc] ] and emitting `[W] gamma[conc] ~ F Int`.</span><span>
+</span><span id="line-626"></span><span class="hs-comment">--</span><span>
+</span><span id="line-627"></span><span class="hs-comment">-- This would be useful in startSolvingByUnification.</span><span>
+</span><span id="line-628"></span><span id="makeTypeConcrete"><span class="annot"><span class="annottext">makeTypeConcrete :: ConcreteTvOrigin -&gt; TcType -&gt; TcM (TcType, [NotConcreteReason])
+</span><a href="GHC.Tc.Utils.Concrete.html#makeTypeConcrete"><span class="hs-identifier hs-var hs-var">makeTypeConcrete</span></a></span></span><span> </span><span id="local-6989586621681926652"><span class="annot"><span class="annottext">ConcreteTvOrigin
+</span><a href="#local-6989586621681926652"><span class="hs-identifier hs-var">conc_orig</span></a></span></span><span> </span><span id="local-6989586621681926653"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926653"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-629"></span><span>  </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span id="local-6989586621681926654"><span class="annot"><span class="annottext">res :: (TcType, [NotConcreteReason])
+</span><a href="#local-6989586621681926654"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span id="local-6989586621681926655"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926655"><span class="hs-identifier hs-var">ty'</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[NotConcreteReason]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">WriterT [NotConcreteReason] TcM TcType
+-&gt; TcM (TcType, [NotConcreteReason])
+forall w (m :: * -&gt; *) a. Monoid w =&gt; WriterT w m a -&gt; m (a, w)
+</span><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#runWriterT/Control.Monad.Trans.Writer.CPS.html#runWriterT"><span class="hs-identifier hs-var">runWriterT</span></a></span><span> </span><span class="annot"><span class="annottext">(WriterT [NotConcreteReason] TcM TcType
+ -&gt; TcM (TcType, [NotConcreteReason]))
+-&gt; WriterT [NotConcreteReason] TcM TcType
+-&gt; TcM (TcType, [NotConcreteReason])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926653"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-630"></span><span>     </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; TcM ()
+</span><a href="GHC.Tc.Utils.Monad.html#traceTc"><span class="hs-identifier hs-var">traceTc</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;makeTypeConcrete&quot;</span></span><span> </span><span class="annot"><span class="annottext">(SDoc -&gt; TcM ()) -&gt; SDoc -&gt; TcM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-631"></span><span>        </span><span class="annot"><span class="annottext">[SDoc] -&gt; SDoc
+forall doc. IsDoc doc =&gt; [doc] -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#vcat"><span class="hs-identifier hs-var">vcat</span></a></span><span> </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;ty:&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">TcType -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926653"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-632"></span><span>             </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;ty':&quot;</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">TcType -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926655"><span class="hs-identifier hs-var">ty'</span></a></span><span> </span><span class="hs-special">]</span><span>
+</span><span id="line-633"></span><span>     </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">(TcType, [NotConcreteReason]) -&gt; TcM (TcType, [NotConcreteReason])
+forall a. a -&gt; IOEnv (Env TcGblEnv TcLclEnv) a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(TcType, [NotConcreteReason])
+</span><a href="#local-6989586621681926654"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-634"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-635"></span><span>    </span><span class="annot"><a href="#local-6989586621681926656"><span class="hs-identifier hs-type">go</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#WriterT/Control.Monad.Trans.Writer.CPS.html#WriterT"><span class="hs-identifier hs-type">WriterT</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Tc.Types.Constraint.html#NotConcreteReason"><span class="hs-identifier hs-type">NotConcreteReason</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier hs-type">TcM</span></a></span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span>
+</span><span id="line-636"></span><span>    </span><span id="local-6989586621681926656"><span class="annot"><span class="annottext">go :: TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621681926657"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926657"><span class="hs-identifier hs-var">ty</span></a></span></span><span>
+</span><span id="line-637"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681926658"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926658"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; Maybe TcType
+</span><a href="GHC.Core.Type.html#coreView"><span class="hs-identifier hs-var">coreView</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926657"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-638"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926658"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-639"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; Bool
+</span><a href="GHC.Core.Type.html#isConcrete"><span class="hs-identifier hs-var">isConcrete</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926657"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-640"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+forall a. a -&gt; WriterT [NotConcreteReason] TcM a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926657"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-641"></span><span>    </span><span class="annot"><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681926659"><span class="annot"><span class="annottext">ty :: TcType
+</span><a href="#local-6989586621681926659"><span class="hs-identifier hs-var">ty</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#TyVarTy"><span class="hs-identifier hs-type">TyVarTy</span></a></span><span> </span><span id="local-6989586621681926661"><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926661"><span class="hs-identifier hs-var">tv</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-comment">-- not a ConcreteTv (already handled above)</span><span>
+</span><span id="line-642"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span id="local-6989586621681926662"><span class="annot"><span class="annottext">Maybe TcType
+</span><a href="#local-6989586621681926662"><span class="hs-identifier hs-var">mb_filled</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IOEnv (Env TcGblEnv TcLclEnv) (Maybe TcType)
+-&gt; WriterT [NotConcreteReason] TcM (Maybe TcType)
+forall (m :: * -&gt; *) a.
+Monad m =&gt;
+m a -&gt; WriterT [NotConcreteReason] m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Class.html#lift/Control.Monad.Trans.Class.html#lift"><span class="hs-identifier hs-var">lift</span></a></span><span> </span><span class="annot"><span class="annottext">(IOEnv (Env TcGblEnv TcLclEnv) (Maybe TcType)
+ -&gt; WriterT [NotConcreteReason] TcM (Maybe TcType))
+-&gt; IOEnv (Env TcGblEnv TcLclEnv) (Maybe TcType)
+-&gt; WriterT [NotConcreteReason] TcM (Maybe TcType)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">TcTyVar -&gt; IOEnv (Env TcGblEnv TcLclEnv) (Maybe TcType)
+</span><a href="GHC.Tc.Utils.TcMType.html#isFilledMetaTyVar_maybe"><span class="hs-identifier hs-var">isFilledMetaTyVar_maybe</span></a></span><span> </span><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926661"><span class="hs-identifier hs-var">tv</span></a></span><span>
+</span><span id="line-643"></span><span>           </span><span class="hs-special">;</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe TcType
+</span><a href="#local-6989586621681926662"><span class="hs-identifier hs-var">mb_filled</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-644"></span><span>           </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681926663"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926663"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926663"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-645"></span><span>           </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">Maybe TcType
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-646"></span><span>               </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">TcTyVar -&gt; Bool
+</span><a href="GHC.Tc.Utils.TcType.html#isMetaTyVar"><span class="hs-identifier hs-var">isMetaTyVar</span></a></span><span> </span><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926661"><span class="hs-identifier hs-var">tv</span></a></span><span>
+</span><span id="line-647"></span><span>               </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">MetaInfo
+</span><a href="GHC.Tc.Utils.TcType.html#TauTv"><span class="hs-identifier hs-var">TauTv</span></a></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcTyVar -&gt; MetaInfo
+</span><a href="GHC.Tc.Utils.TcType.html#metaTyVarInfo"><span class="hs-identifier hs-var">metaTyVarInfo</span></a></span><span> </span><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926661"><span class="hs-identifier hs-var">tv</span></a></span><span>
+</span><span id="line-648"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-comment">-- Change the MetaInfo to ConcreteTv, but retain the TcLevel</span><span>
+</span><span id="line-649"></span><span>               </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span id="local-6989586621681926665"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926665"><span class="hs-identifier hs-var">kind</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TcTyVar -&gt; TcType
+</span><a href="GHC.Types.Var.html#tyVarKind"><span class="hs-identifier hs-var">tyVarKind</span></a></span><span> </span><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926661"><span class="hs-identifier hs-var">tv</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-650"></span><span>                  </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">TcM TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+forall (m :: * -&gt; *) a.
+Monad m =&gt;
+m a -&gt; WriterT [NotConcreteReason] m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Class.html#lift/Control.Monad.Trans.Class.html#lift"><span class="hs-identifier hs-var">lift</span></a></span><span> </span><span class="annot"><span class="annottext">(TcM TcType -&gt; WriterT [NotConcreteReason] TcM TcType)
+-&gt; TcM TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-651"></span><span>                    </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span id="local-6989586621681926666"><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926666"><span class="hs-identifier hs-var">conc_tv</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcLevel -&gt; TcM TcTyVar -&gt; TcM TcTyVar
+forall a. TcLevel -&gt; TcM a -&gt; TcM a
+</span><a href="GHC.Tc.Utils.Monad.html#setTcLevel"><span class="hs-identifier hs-var">setTcLevel</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TcTyVar -&gt; TcLevel
+</span><a href="GHC.Tc.Utils.TcType.html#tcTyVarLevel"><span class="hs-identifier hs-var">tcTyVarLevel</span></a></span><span> </span><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926661"><span class="hs-identifier hs-var">tv</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(TcM TcTyVar -&gt; TcM TcTyVar) -&gt; TcM TcTyVar -&gt; TcM TcTyVar
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-652"></span><span>                                    </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; ConcreteTvOrigin -&gt; TcType -&gt; TcM TcTyVar
+ConcreteTvOrigin -&gt; TcType -&gt; TcM TcTyVar
+</span><a href="GHC.Tc.Utils.TcMType.html#newConcreteTyVar"><span class="hs-identifier hs-var">newConcreteTyVar</span></a></span><span> </span><span class="annot"><span class="annottext">ConcreteTvOrigin
+</span><a href="#local-6989586621681926652"><span class="hs-identifier hs-var">conc_orig</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926665"><span class="hs-identifier hs-var">kind</span></a></span><span>
+</span><span id="line-653"></span><span>                       </span><span class="hs-special">;</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681926667"><span class="annot"><span class="annottext">conc_ty :: TcType
+</span><a href="#local-6989586621681926667"><span class="hs-identifier hs-var hs-var">conc_ty</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TcTyVar -&gt; TcType
+</span><a href="GHC.Core.TyCo.Rep.html#mkTyVarTy"><span class="hs-identifier hs-var">mkTyVarTy</span></a></span><span> </span><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926666"><span class="hs-identifier hs-var">conc_tv</span></a></span><span>
+</span><span id="line-654"></span><span>                       </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; TcTyVar -&gt; TcType -&gt; TcM ()
+TcTyVar -&gt; TcType -&gt; TcM ()
+</span><a href="GHC.Tc.Utils.TcMType.html#writeMetaTyVar"><span class="hs-identifier hs-var">writeMetaTyVar</span></a></span><span> </span><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926661"><span class="hs-identifier hs-var">tv</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926667"><span class="hs-identifier hs-var">conc_ty</span></a></span><span>
+</span><span id="line-655"></span><span>                       </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; TcM TcType
+forall a. a -&gt; IOEnv (Env TcGblEnv TcLclEnv) a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926667"><span class="hs-identifier hs-var">conc_ty</span></a></span><span> </span><span class="hs-special">}</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-656"></span><span>               </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-657"></span><span>               </span><span class="hs-comment">-- Don't attempt to make other type variables concrete</span><span>
+</span><span id="line-658"></span><span>               </span><span class="hs-comment">-- (e.g. SkolemTv, TyVarTv, CycleBreakerTv, RuntimeUnkTv).</span><span>
+</span><span id="line-659"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">TcType
+-&gt; NotConcreteReason -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926668"><span class="hs-identifier hs-var">bale_out</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926659"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TcTyVar -&gt; NotConcreteReason
+</span><a href="GHC.Tc.Types.Constraint.html#NonConcretisableTyVar"><span class="hs-identifier hs-var">NonConcretisableTyVar</span></a></span><span> </span><span class="annot"><span class="annottext">TcTyVar
+</span><a href="#local-6989586621681926661"><span class="hs-identifier hs-var">tv</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-660"></span><span>    </span><span class="annot"><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681926670"><span class="annot"><span class="annottext">ty :: TcType
+</span><a href="#local-6989586621681926670"><span class="hs-identifier hs-var">ty</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#TyConApp"><span class="hs-identifier hs-type">TyConApp</span></a></span><span> </span><span id="local-6989586621681926671"><span class="annot"><span class="annottext">TyCon
+</span><a href="#local-6989586621681926671"><span class="hs-identifier hs-var">tc</span></a></span></span><span> </span><span id="local-6989586621681926672"><span class="annot"><span class="annottext">[TcType]
+</span><a href="#local-6989586621681926672"><span class="hs-identifier hs-var">tys</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-661"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">TyCon -&gt; Bool
+</span><a href="GHC.Core.TyCon.html#isConcreteTyCon"><span class="hs-identifier hs-var">isConcreteTyCon</span></a></span><span> </span><span class="annot"><span class="annottext">TyCon
+</span><a href="#local-6989586621681926671"><span class="hs-identifier hs-var">tc</span></a></span><span>
+</span><span id="line-662"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TyCon -&gt; [TcType] -&gt; TcType
+</span><a href="GHC.Core.Type.html#mkTyConApp"><span class="hs-identifier hs-var">mkTyConApp</span></a></span><span> </span><span class="annot"><span class="annottext">TyCon
+</span><a href="#local-6989586621681926671"><span class="hs-identifier hs-var">tc</span></a></span><span> </span><span class="annot"><span class="annottext">([TcType] -&gt; TcType)
+-&gt; WriterT [NotConcreteReason] TcM [TcType]
+-&gt; WriterT [NotConcreteReason] TcM TcType
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">(TcType -&gt; WriterT [NotConcreteReason] TcM TcType)
+-&gt; [TcType] -&gt; WriterT [NotConcreteReason] TcM [TcType]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; [a] -&gt; m [b]
+</span><a href="../../base-4.18.2.1/src/Data.Traversable.html#mapM/Data.Traversable.html#mapM"><span class="hs-identifier hs-var">mapM</span></a></span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[TcType]
+</span><a href="#local-6989586621681926672"><span class="hs-identifier hs-var">tys</span></a></span><span>
+</span><span id="line-663"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-664"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TcType
+-&gt; NotConcreteReason -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926668"><span class="hs-identifier hs-var">bale_out</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926670"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TyCon -&gt; [TcType] -&gt; NotConcreteReason
+</span><a href="GHC.Tc.Types.Constraint.html#NonConcreteTyCon"><span class="hs-identifier hs-var">NonConcreteTyCon</span></a></span><span> </span><span class="annot"><span class="annottext">TyCon
+</span><a href="#local-6989586621681926671"><span class="hs-identifier hs-var">tc</span></a></span><span> </span><span class="annot"><span class="annottext">[TcType]
+</span><a href="#local-6989586621681926672"><span class="hs-identifier hs-var">tys</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-665"></span><span>    </span><span class="annot"><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#FunTy"><span class="hs-identifier hs-type">FunTy</span></a></span><span> </span><span id="local-6989586621681926676"><span class="annot"><span class="annottext">FunTyFlag
+</span><a href="#local-6989586621681926676"><span class="hs-identifier hs-var">af</span></a></span></span><span> </span><span id="local-6989586621681926677"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926677"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621681926678"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926678"><span class="hs-identifier hs-var">ty1</span></a></span></span><span> </span><span id="local-6989586621681926679"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926679"><span class="hs-identifier hs-var">ty2</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-666"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span id="local-6989586621681926680"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926680"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926677"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-667"></span><span>           </span><span class="hs-special">;</span><span> </span><span id="local-6989586621681926681"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926681"><span class="hs-identifier hs-var">ty1</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926678"><span class="hs-identifier hs-var">ty1</span></a></span><span>
+</span><span id="line-668"></span><span>           </span><span class="hs-special">;</span><span> </span><span id="local-6989586621681926682"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926682"><span class="hs-identifier hs-var">ty2</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926679"><span class="hs-identifier hs-var">ty2</span></a></span><span>
+</span><span id="line-669"></span><span>           </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+forall a. a -&gt; WriterT [NotConcreteReason] TcM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(TcType -&gt; WriterT [NotConcreteReason] TcM TcType)
+-&gt; TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt;
+FunTyFlag -&gt; TcType -&gt; TcType -&gt; TcType -&gt; TcType
+FunTyFlag -&gt; TcType -&gt; TcType -&gt; TcType -&gt; TcType
+</span><a href="GHC.Core.TyCo.Rep.html#mkFunTy"><span class="hs-identifier hs-var">mkFunTy</span></a></span><span> </span><span class="annot"><span class="annottext">FunTyFlag
+</span><a href="#local-6989586621681926676"><span class="hs-identifier hs-var">af</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926680"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926681"><span class="hs-identifier hs-var">ty1</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926682"><span class="hs-identifier hs-var">ty2</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-670"></span><span>    </span><span class="annot"><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#AppTy"><span class="hs-identifier hs-type">AppTy</span></a></span><span> </span><span id="local-6989586621681926684"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926684"><span class="hs-identifier hs-var">ty1</span></a></span></span><span> </span><span id="local-6989586621681926685"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926685"><span class="hs-identifier hs-var">ty2</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-671"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span id="local-6989586621681926686"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926686"><span class="hs-identifier hs-var">ty1</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926684"><span class="hs-identifier hs-var">ty1</span></a></span><span>
+</span><span id="line-672"></span><span>           </span><span class="hs-special">;</span><span> </span><span id="local-6989586621681926687"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926687"><span class="hs-identifier hs-var">ty2</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926685"><span class="hs-identifier hs-var">ty2</span></a></span><span>
+</span><span id="line-673"></span><span>           </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+forall a. a -&gt; WriterT [NotConcreteReason] TcM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(TcType -&gt; WriterT [NotConcreteReason] TcM TcType)
+-&gt; TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">TcType -&gt; TcType -&gt; TcType
+</span><a href="GHC.Core.Type.html#mkAppTy"><span class="hs-identifier hs-var">mkAppTy</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926686"><span class="hs-identifier hs-var">ty1</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926687"><span class="hs-identifier hs-var">ty2</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-674"></span><span>    </span><span class="annot"><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681926688"><span class="annot"><span class="annottext">ty :: TcType
+</span><a href="#local-6989586621681926688"><span class="hs-identifier hs-var">ty</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#LitTy"><span class="hs-identifier hs-type">LitTy</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-675"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+forall a. a -&gt; WriterT [NotConcreteReason] TcM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926688"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-676"></span><span>    </span><span class="annot"><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681926690"><span class="annot"><span class="annottext">ty :: TcType
+</span><a href="#local-6989586621681926690"><span class="hs-identifier hs-var">ty</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#CastTy"><span class="hs-identifier hs-type">CastTy</span></a></span><span> </span><span id="local-6989586621681926692"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926692"><span class="hs-identifier hs-var">cast_ty</span></a></span></span><span> </span><span id="local-6989586621681926693"><span class="annot"><span class="annottext">TcCoercionN
+</span><a href="#local-6989586621681926693"><span class="hs-identifier hs-var">kco</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-677"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TcType
+-&gt; NotConcreteReason -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926668"><span class="hs-identifier hs-var">bale_out</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926690"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TcType -&gt; TcCoercionN -&gt; NotConcreteReason
+</span><a href="GHC.Tc.Types.Constraint.html#ContainsCast"><span class="hs-identifier hs-var">ContainsCast</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926692"><span class="hs-identifier hs-var">cast_ty</span></a></span><span> </span><span class="annot"><span class="annottext">TcCoercionN
+</span><a href="#local-6989586621681926693"><span class="hs-identifier hs-var">kco</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-678"></span><span>    </span><span class="annot"><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681926695"><span class="annot"><span class="annottext">ty :: TcType
+</span><a href="#local-6989586621681926695"><span class="hs-identifier hs-var">ty</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#ForAllTy"><span class="hs-identifier hs-type">ForAllTy</span></a></span><span> </span><span id="local-6989586621681926697"><span class="annot"><span class="annottext">ForAllTyBinder
+</span><a href="#local-6989586621681926697"><span class="hs-identifier hs-var">tcv</span></a></span></span><span> </span><span id="local-6989586621681926698"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926698"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-679"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TcType
+-&gt; NotConcreteReason -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926668"><span class="hs-identifier hs-var">bale_out</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926695"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ForAllTyBinder -&gt; TcType -&gt; NotConcreteReason
+</span><a href="GHC.Tc.Types.Constraint.html#ContainsForall"><span class="hs-identifier hs-var">ContainsForall</span></a></span><span> </span><span class="annot"><span class="annottext">ForAllTyBinder
+</span><a href="#local-6989586621681926697"><span class="hs-identifier hs-var">tcv</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926698"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-680"></span><span>    </span><span class="annot"><a href="#local-6989586621681926656"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681926700"><span class="annot"><span class="annottext">ty :: TcType
+</span><a href="#local-6989586621681926700"><span class="hs-identifier hs-var">ty</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#CoercionTy"><span class="hs-identifier hs-type">CoercionTy</span></a></span><span> </span><span id="local-6989586621681926702"><span class="annot"><span class="annottext">TcCoercionN
+</span><a href="#local-6989586621681926702"><span class="hs-identifier hs-var">co</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-681"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TcType
+-&gt; NotConcreteReason -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926668"><span class="hs-identifier hs-var">bale_out</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926700"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TcCoercionN -&gt; NotConcreteReason
+</span><a href="GHC.Tc.Types.Constraint.html#ContainsCoercionTy"><span class="hs-identifier hs-var">ContainsCoercionTy</span></a></span><span> </span><span class="annot"><span class="annottext">TcCoercionN
+</span><a href="#local-6989586621681926702"><span class="hs-identifier hs-var">co</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-682"></span><span>
+</span><span id="line-683"></span><span>    </span><span class="annot"><a href="#local-6989586621681926668"><span class="hs-identifier hs-type">bale_out</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Tc.Types.Constraint.html#NotConcreteReason"><span class="hs-identifier hs-type">NotConcreteReason</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#WriterT/Control.Monad.Trans.Writer.CPS.html#WriterT"><span class="hs-identifier hs-type">WriterT</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Tc.Types.Constraint.html#NotConcreteReason"><span class="hs-identifier hs-type">NotConcreteReason</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><a href="GHC.Tc.Types.html#TcM"><span class="hs-identifier hs-type">TcM</span></a></span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#TcType"><span class="hs-identifier hs-type">TcType</span></a></span><span>
+</span><span id="line-684"></span><span>    </span><span id="local-6989586621681926668"><span class="annot"><span class="annottext">bale_out :: TcType
+-&gt; NotConcreteReason -&gt; WriterT [NotConcreteReason] TcM TcType
+</span><a href="#local-6989586621681926668"><span class="hs-identifier hs-var hs-var">bale_out</span></a></span></span><span> </span><span id="local-6989586621681926704"><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926704"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span id="local-6989586621681926705"><span class="annot"><span class="annottext">NotConcreteReason
+</span><a href="#local-6989586621681926705"><span class="hs-identifier hs-var">reason</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">[NotConcreteReason] -&gt; WriterT [NotConcreteReason] TcM ()
+forall w (m :: * -&gt; *). (Monoid w, Monad m) =&gt; w -&gt; WriterT w m ()
+</span><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#tell/Control.Monad.Trans.Writer.CPS.html#tell"><span class="hs-identifier hs-var">tell</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">NotConcreteReason
+</span><a href="#local-6989586621681926705"><span class="hs-identifier hs-var">reason</span></a></span><span class="hs-special">]</span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">TcType -&gt; WriterT [NotConcreteReason] TcM TcType
+forall a. a -&gt; WriterT [NotConcreteReason] TcM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">TcType
+</span><a href="#local-6989586621681926704"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-685"></span></pre></body></html>

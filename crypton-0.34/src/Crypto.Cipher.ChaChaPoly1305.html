@@ -1,0 +1,725 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module      : Crypto.Cipher.ChaChaPoly1305</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Maintainer  : Vincent Hanquez &lt;vincent@snarc.org&gt;</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Stability   : stable</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Portability : good</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- A simple AEAD scheme using ChaCha20 and Poly1305. See</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- &lt;https://tools.ietf.org/html/rfc7539 RFC 7539&gt;.</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- The State is not modified in place, so each function changing the State,</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- returns a new State.</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- Authenticated Data need to be added before any call to 'encrypt' or 'decrypt',</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- and once all the data has been added, then 'finalizeAAD' need to be called.</span><span>
+</span><span id="line-16"></span><span class="hs-comment">--</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- Once 'finalizeAAD' has been called, no further 'appendAAD' call should be make.</span><span>
+</span><span id="line-18"></span><span class="hs-comment">--</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- &gt;import Data.ByteString.Char8 as B</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- &gt;import Data.ByteArray</span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- &gt;import Crypto.Error</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- &gt;import Crypto.Cipher.ChaChaPoly1305 as C</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- &gt;encrypt</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- &gt;    :: ByteString -- nonce (12 random bytes)</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- &gt;    -&gt; ByteString -- symmetric key</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- &gt;    -&gt; ByteString -- optional associated data (won't be encrypted)</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- &gt;    -&gt; ByteString -- input plaintext to be encrypted</span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- &gt;    -&gt; CryptoFailable ByteString -- ciphertext with a 128-bit tag attached</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- &gt;encrypt nonce key header plaintext = do</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- &gt;    st1 &lt;- C.nonce12 nonce &gt;&gt;= C.initialize key</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- &gt;    let</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- &gt;        st2 = C.finalizeAAD $ C.appendAAD header st1</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- &gt;        (out, st3) = C.encrypt plaintext st2</span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- &gt;        auth = C.finalize st3</span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- &gt;    return $ out `B.append` Data.ByteArray.convert auth</span><span>
+</span><span id="line-37"></span><span class="hs-comment">--</span><span>
+</span><span id="line-38"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Crypto.Cipher.ChaChaPoly1305</span><span>
+</span><span id="line-39"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier">State</span></a></span><span>
+</span><span id="line-40"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce"><span class="hs-identifier">Nonce</span></a></span><span>
+</span><span id="line-41"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#XNonce"><span class="hs-identifier">XNonce</span></a></span><span>
+</span><span id="line-42"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#nonce12"><span class="hs-identifier">nonce12</span></a></span><span>
+</span><span id="line-43"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#nonce8"><span class="hs-identifier">nonce8</span></a></span><span>
+</span><span id="line-44"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#nonce24"><span class="hs-identifier">nonce24</span></a></span><span>
+</span><span id="line-45"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#incrementNonce"><span class="hs-identifier">incrementNonce</span></a></span><span>
+</span><span id="line-46"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#initialize"><span class="hs-identifier">initialize</span></a></span><span>
+</span><span id="line-47"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#initializeX"><span class="hs-identifier">initializeX</span></a></span><span>
+</span><span id="line-48"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#appendAAD"><span class="hs-identifier">appendAAD</span></a></span><span>
+</span><span id="line-49"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#finalizeAAD"><span class="hs-identifier">finalizeAAD</span></a></span><span>
+</span><span id="line-50"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#encrypt"><span class="hs-identifier">encrypt</span></a></span><span>
+</span><span id="line-51"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#decrypt"><span class="hs-identifier">decrypt</span></a></span><span>
+</span><span id="line-52"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#finalize"><span class="hs-identifier">finalize</span></a></span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>             </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">when</span></span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.ByteArray.html"><span class="hs-identifier">Crypto.Internal.ByteArray</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteArrayAccess</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ByteArray</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Bytes</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ScrubbedBytes</span></span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Crypto.Internal.ByteArray.html"><span class="hs-identifier">Crypto.Internal.ByteArray</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-58"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.Imports.html"><span class="hs-identifier">Crypto.Internal.Imports</span></a></span><span>
+</span><span id="line-59"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Error.html"><span class="hs-identifier">Crypto.Error</span></a></span><span>
+</span><span id="line-60"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaCha.html"><span class="hs-identifier">Crypto.Cipher.ChaCha</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">ChaCha</span></span><span>
+</span><span id="line-61"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Crypto.MAC.Poly1305.html"><span class="hs-identifier">Crypto.MAC.Poly1305</span></a></span><span>  </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Poly1305</span></span><span>
+</span><span id="line-62"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Memory.Endian</span></span><span>
+</span><span id="line-63"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteArray.Pack</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">P</span></span><span>
+</span><span id="line-64"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span>
+</span><span id="line-65"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Storable</span></span><span>
+</span><span id="line-66"></span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- | A ChaChaPoly1305 State.</span><span>
+</span><span id="line-68"></span><span class="hs-comment">--</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- The state is immutable, and only new state can be created</span><span>
+</span><span id="line-70"></span><span class="hs-keyword">data</span><span> </span><span id="State"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-var">State</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="State"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-var">State</span></a></span></span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="Crypto.Cipher.ChaCha.html#State"><span class="hs-identifier hs-type">ChaCha.State</span></a></span><span>
+</span><span id="line-71"></span><span>                   </span><span class="hs-glyph">!</span><span class="annot"><a href="Crypto.MAC.Poly1305.html#State"><span class="hs-identifier hs-type">Poly1305.State</span></a></span><span>
+</span><span id="line-72"></span><span>                   </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span> </span><span class="hs-comment">-- AAD length</span><span>
+</span><span id="line-73"></span><span>                   </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span> </span><span class="hs-comment">-- ciphertext length</span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- | Valid Nonce for ChaChaPoly1305.</span><span>
+</span><span id="line-76"></span><span class="hs-comment">--</span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- It can be created with 'nonce8' or 'nonce12'</span><span>
+</span><span id="line-78"></span><span class="hs-keyword">data</span><span> </span><span id="Nonce"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce"><span class="hs-identifier hs-var">Nonce</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Nonce8"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce8"><span class="hs-identifier hs-var">Nonce8</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="Nonce12"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce12"><span class="hs-identifier hs-var">Nonce12</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679232470"><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-81"></span><span>  </span><span id="local-6989586621679232476"><span class="annot"><span class="annottext">length :: Nonce -&gt; Int
+</span><a href="#local-6989586621679232476"><span class="hs-identifier hs-var hs-var hs-var hs-var">length</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce8"><span class="hs-identifier hs-type">Nonce8</span></a></span><span>  </span><span id="local-6989586621679232478"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232478"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232478"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-82"></span><span>  </span><span class="annot"><span class="hs-identifier hs-var">length</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce12"><span class="hs-identifier hs-type">Nonce12</span></a></span><span> </span><span id="local-6989586621679232479"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232479"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232479"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span>  </span><span id="local-6989586621679232482"><span class="annot"><span class="annottext">withByteArray :: forall p a. Nonce -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><a href="#local-6989586621679232482"><span class="hs-identifier hs-var hs-var hs-var hs-var">withByteArray</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce8"><span class="hs-identifier hs-type">Nonce8</span></a></span><span>  </span><span id="local-6989586621679232484"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232484"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232484"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-85"></span><span>  </span><span class="annot"><span class="hs-identifier hs-var">withByteArray</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce12"><span class="hs-identifier hs-type">Nonce12</span></a></span><span> </span><span id="local-6989586621679232485"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232485"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232485"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-86"></span><span>
+</span><span id="line-87"></span><span class="annot"><span class="hs-comment">-- | Extended nonce for XChaChaPoly1305.</span></span><span>
+</span><span id="line-88"></span><span class="hs-keyword">newtype</span><span> </span><span id="XNonce"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#XNonce"><span class="hs-identifier hs-var">XNonce</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Nonce24"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce24"><span class="hs-identifier hs-var">Nonce24</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-89"></span><span>
+</span><span id="line-90"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679232490"><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#XNonce"><span class="hs-identifier hs-type">XNonce</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-91"></span><span>  </span><span id="local-6989586621679232494"><span class="annot"><span class="annottext">length :: XNonce -&gt; Int
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">length</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce24"><span class="hs-identifier hs-type">Nonce24</span></a></span><span> </span><span id="local-6989586621679232495"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232495"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232495"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-92"></span><span>  </span><span id="local-6989586621679232497"><span class="annot"><span class="annottext">withByteArray :: forall p a. XNonce -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">withByteArray</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce24"><span class="hs-identifier hs-type">Nonce24</span></a></span><span> </span><span id="local-6989586621679232498"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232498"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232498"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="hs-comment">-- Based on the following pseudo code:</span><span>
+</span><span id="line-96"></span><span class="hs-comment">--</span><span>
+</span><span id="line-97"></span><span class="hs-comment">-- chacha20_aead_encrypt(aad, key, iv, constant, plaintext):</span><span>
+</span><span id="line-98"></span><span class="hs-comment">--     nonce = constant | iv</span><span>
+</span><span id="line-99"></span><span class="hs-comment">--     otk = poly1305_key_gen(key, nonce)</span><span>
+</span><span id="line-100"></span><span class="hs-comment">--     ciphertext = chacha20_encrypt(key, 1, nonce, plaintext)</span><span>
+</span><span id="line-101"></span><span class="hs-comment">--     mac_data = aad | pad16(aad)</span><span>
+</span><span id="line-102"></span><span class="hs-comment">--     mac_data |= ciphertext | pad16(ciphertext)</span><span>
+</span><span id="line-103"></span><span class="hs-comment">--     mac_data |= num_to_4_le_bytes(aad.length)</span><span>
+</span><span id="line-104"></span><span class="hs-comment">--     mac_data |= num_to_4_le_bytes(ciphertext.length)</span><span>
+</span><span id="line-105"></span><span class="hs-comment">--     tag = poly1305_mac(mac_data, otk)</span><span>
+</span><span id="line-106"></span><span class="hs-comment">--     return (ciphertext, tag)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#pad16"><span class="hs-identifier hs-type">pad16</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-109"></span><span id="pad16"><span class="annot"><span class="annottext">pad16 :: Word64 -&gt; Bytes
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#pad16"><span class="hs-identifier hs-var hs-var">pad16</span></a></span></span><span> </span><span id="local-6989586621679232500"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232500"><span class="hs-identifier hs-var">n</span></a></span></span><span>
+</span><span id="line-110"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679232501"><span class="hs-identifier hs-var">modLen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes
+forall a. ByteArray a =&gt; a
+</span><span class="hs-identifier hs-var">B.empty</span></span><span>
+</span><span id="line-111"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8 -&gt; Bytes
+forall ba. ByteArray ba =&gt; Int -&gt; Word8 -&gt; ba
+</span><span class="hs-identifier hs-var">B.replicate</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679232501"><span class="hs-identifier hs-var">modLen</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-112"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-113"></span><span>    </span><span id="local-6989586621679232501"><span class="annot"><span class="annottext">modLen :: Int
+</span><a href="#local-6989586621679232501"><span class="hs-identifier hs-var hs-var">modLen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232500"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`mod`</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">16</span></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>
+</span><span id="line-115"></span><span class="annot"><span class="hs-comment">-- | Nonce smart constructor 12 bytes IV, nonce constructor</span></span><span>
+</span><span id="line-116"></span><span id="local-6989586621679232323"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#nonce12"><span class="hs-identifier hs-type">nonce12</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679232323"><span class="hs-identifier hs-type">iv</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679232323"><span class="hs-identifier hs-type">iv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Error.Types.html#CryptoFailable"><span class="hs-identifier hs-type">CryptoFailable</span></a></span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span></span><span>
+</span><span id="line-117"></span><span id="nonce12"><span class="annot"><span class="annottext">nonce12 :: forall iv. ByteArrayAccess iv =&gt; iv -&gt; CryptoFailable Nonce
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#nonce12"><span class="hs-identifier hs-var hs-var">nonce12</span></a></span></span><span> </span><span id="local-6989586621679232516"><span class="annot"><span class="annottext">iv
+</span><a href="#local-6989586621679232516"><span class="hs-identifier hs-var">iv</span></a></span></span><span>
+</span><span id="line-118"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">iv -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">iv
+</span><a href="#local-6989586621679232516"><span class="hs-identifier hs-var">iv</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">12</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoError -&gt; CryptoFailable Nonce
+forall a. CryptoError -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoFailed"><span class="hs-identifier hs-var">CryptoFailed</span></a></span><span> </span><span class="annot"><span class="annottext">CryptoError
+</span><a href="Crypto.Error.Types.html#CryptoError_IvSizeInvalid"><span class="hs-identifier hs-var">CryptoError_IvSizeInvalid</span></a></span><span>
+</span><span id="line-119"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nonce -&gt; CryptoFailable Nonce
+forall a. a -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoPassed"><span class="hs-identifier hs-var">CryptoPassed</span></a></span><span> </span><span class="annot"><span class="annottext">(Nonce -&gt; CryptoFailable Nonce)
+-&gt; (iv -&gt; Nonce) -&gt; iv -&gt; CryptoFailable Nonce
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Nonce
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce12"><span class="hs-identifier hs-var">Nonce12</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Nonce) -&gt; (iv -&gt; Bytes) -&gt; iv -&gt; Nonce
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">iv -&gt; Bytes
+forall bin bout.
+(ByteArrayAccess bin, ByteArray bout) =&gt;
+bin -&gt; bout
+</span><span class="hs-identifier hs-var">B.convert</span></span><span> </span><span class="annot"><span class="annottext">(iv -&gt; CryptoFailable Nonce) -&gt; iv -&gt; CryptoFailable Nonce
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">iv
+</span><a href="#local-6989586621679232516"><span class="hs-identifier hs-var">iv</span></a></span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="annot"><span class="hs-comment">-- | 8 bytes IV, nonce constructor</span></span><span>
+</span><span id="line-122"></span><span id="local-6989586621679232336"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#nonce8"><span class="hs-identifier hs-type">nonce8</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679232336"><span class="hs-identifier hs-type">ba</span></a></span><span>
+</span><span id="line-123"></span><span>       </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679232336"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="annot"><span class="hs-comment">-- ^ 4 bytes constant</span></span><span>
+</span><span id="line-124"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679232336"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="annot"><span class="hs-comment">-- ^ 8 bytes IV</span></span><span>
+</span><span id="line-125"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Error.Types.html#CryptoFailable"><span class="hs-identifier hs-type">CryptoFailable</span></a></span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span></span><span>
+</span><span id="line-126"></span><span id="nonce8"><span class="annot"><span class="annottext">nonce8 :: forall ba. ByteArrayAccess ba =&gt; ba -&gt; ba -&gt; CryptoFailable Nonce
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#nonce8"><span class="hs-identifier hs-var hs-var">nonce8</span></a></span></span><span> </span><span id="local-6989586621679232532"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232532"><span class="hs-identifier hs-var">constant</span></a></span></span><span> </span><span id="local-6989586621679232533"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232533"><span class="hs-identifier hs-var">iv</span></a></span></span><span>
+</span><span id="line-127"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232532"><span class="hs-identifier hs-var">constant</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoError -&gt; CryptoFailable Nonce
+forall a. CryptoError -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoFailed"><span class="hs-identifier hs-var">CryptoFailed</span></a></span><span> </span><span class="annot"><span class="annottext">CryptoError
+</span><a href="Crypto.Error.Types.html#CryptoError_IvSizeInvalid"><span class="hs-identifier hs-var">CryptoError_IvSizeInvalid</span></a></span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232533"><span class="hs-identifier hs-var">iv</span></a></span><span>       </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoError -&gt; CryptoFailable Nonce
+forall a. CryptoError -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoFailed"><span class="hs-identifier hs-var">CryptoFailed</span></a></span><span> </span><span class="annot"><span class="annottext">CryptoError
+</span><a href="Crypto.Error.Types.html#CryptoError_IvSizeInvalid"><span class="hs-identifier hs-var">CryptoError_IvSizeInvalid</span></a></span><span>
+</span><span id="line-129"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>              </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nonce -&gt; CryptoFailable Nonce
+forall a. a -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoPassed"><span class="hs-identifier hs-var">CryptoPassed</span></a></span><span> </span><span class="annot"><span class="annottext">(Nonce -&gt; CryptoFailable Nonce)
+-&gt; ([ba] -&gt; Nonce) -&gt; [ba] -&gt; CryptoFailable Nonce
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Nonce
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce8"><span class="hs-identifier hs-var">Nonce8</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Nonce) -&gt; ([ba] -&gt; Bytes) -&gt; [ba] -&gt; Nonce
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[ba] -&gt; Bytes
+forall bin bout.
+(ByteArrayAccess bin, ByteArray bout) =&gt;
+[bin] -&gt; bout
+</span><span class="hs-identifier hs-var">B.concat</span></span><span> </span><span class="annot"><span class="annottext">([ba] -&gt; CryptoFailable Nonce) -&gt; [ba] -&gt; CryptoFailable Nonce
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232532"><span class="hs-identifier hs-var">constant</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232533"><span class="hs-identifier hs-var">iv</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span class="annot"><span class="hs-comment">-- | 24 bytes IV, extended nonce constructor</span></span><span>
+</span><span id="line-132"></span><span id="local-6989586621679232340"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#nonce24"><span class="hs-identifier hs-type">nonce24</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679232340"><span class="hs-identifier hs-type">ba</span></a></span><span>
+</span><span id="line-133"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679232340"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Error.Types.html#CryptoFailable"><span class="hs-identifier hs-type">CryptoFailable</span></a></span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#XNonce"><span class="hs-identifier hs-type">XNonce</span></a></span></span><span>
+</span><span id="line-134"></span><span id="nonce24"><span class="annot"><span class="annottext">nonce24 :: forall ba. ByteArrayAccess ba =&gt; ba -&gt; CryptoFailable XNonce
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#nonce24"><span class="hs-identifier hs-var hs-var">nonce24</span></a></span></span><span> </span><span id="local-6989586621679232541"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232541"><span class="hs-identifier hs-var">iv</span></a></span></span><span>
+</span><span id="line-135"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232541"><span class="hs-identifier hs-var">iv</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">24</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoError -&gt; CryptoFailable XNonce
+forall a. CryptoError -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoFailed"><span class="hs-identifier hs-var">CryptoFailed</span></a></span><span> </span><span class="annot"><span class="annottext">CryptoError
+</span><a href="Crypto.Error.Types.html#CryptoError_IvSizeInvalid"><span class="hs-identifier hs-var">CryptoError_IvSizeInvalid</span></a></span><span>
+</span><span id="line-136"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">XNonce -&gt; CryptoFailable XNonce
+forall a. a -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoPassed"><span class="hs-identifier hs-var">CryptoPassed</span></a></span><span> </span><span class="annot"><span class="annottext">(XNonce -&gt; CryptoFailable XNonce)
+-&gt; (ba -&gt; XNonce) -&gt; ba -&gt; CryptoFailable XNonce
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; XNonce
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce24"><span class="hs-identifier hs-var">Nonce24</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; XNonce) -&gt; (ba -&gt; Bytes) -&gt; ba -&gt; XNonce
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ba -&gt; Bytes
+forall bin bout.
+(ByteArrayAccess bin, ByteArray bout) =&gt;
+bin -&gt; bout
+</span><span class="hs-identifier hs-var">B.convert</span></span><span> </span><span class="annot"><span class="annottext">(ba -&gt; CryptoFailable XNonce) -&gt; ba -&gt; CryptoFailable XNonce
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232541"><span class="hs-identifier hs-var">iv</span></a></span><span>
+</span><span id="line-137"></span><span>
+</span><span id="line-138"></span><span class="annot"><span class="hs-comment">-- | Increment a nonce</span></span><span>
+</span><span id="line-139"></span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#incrementNonce"><span class="hs-identifier hs-type">incrementNonce</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span>
+</span><span id="line-140"></span><span id="incrementNonce"><span class="annot"><span class="annottext">incrementNonce :: Nonce -&gt; Nonce
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#incrementNonce"><span class="hs-identifier hs-var hs-var">incrementNonce</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce8"><span class="hs-identifier hs-type">Nonce8</span></a></span><span>  </span><span id="local-6989586621679232542"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232542"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Nonce
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce8"><span class="hs-identifier hs-var">Nonce8</span></a></span><span>  </span><span class="annot"><span class="annottext">(Bytes -&gt; Nonce) -&gt; Bytes -&gt; Nonce
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Int -&gt; Bytes
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#incrementNonce%27"><span class="hs-identifier hs-var">incrementNonce'</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232542"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span>
+</span><span id="line-141"></span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#incrementNonce"><span class="hs-identifier hs-var">incrementNonce</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce12"><span class="hs-identifier hs-type">Nonce12</span></a></span><span> </span><span id="local-6989586621679232544"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232544"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Nonce
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce12"><span class="hs-identifier hs-var">Nonce12</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Nonce) -&gt; Bytes -&gt; Nonce
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Int -&gt; Bytes
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#incrementNonce%27"><span class="hs-identifier hs-var">incrementNonce'</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232544"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-142"></span><span>
+</span><span id="line-143"></span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#incrementNonce%27"><span class="hs-identifier hs-type">incrementNonce'</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-144"></span><span id="incrementNonce%27"><span class="annot"><span class="annottext">incrementNonce' :: Bytes -&gt; Int -&gt; Bytes
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#incrementNonce%27"><span class="hs-identifier hs-var hs-var">incrementNonce'</span></a></span></span><span> </span><span id="local-6989586621679232545"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232545"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621679232546"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679232546"><span class="hs-identifier hs-var">offset</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Bytes
+forall bs1 bs2 p.
+(ByteArrayAccess bs1, ByteArray bs2) =&gt;
+bs1 -&gt; (Ptr p -&gt; IO ()) -&gt; bs2
+</span><span class="hs-identifier hs-var">B.copyAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232545"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679232548"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232548"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-145"></span><span>    </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679232549"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232548"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232548"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679232546"><span class="hs-identifier hs-var">offset</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-146"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-147"></span><span>      </span><span class="annot"><a href="#local-6989586621679232549"><span class="hs-identifier hs-type">loop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-148"></span><span>      </span><span id="local-6989586621679232549"><span class="annot"><span class="annottext">loop :: Ptr Word8 -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679232549"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621679232551"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232551"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679232552"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232552"><span class="hs-identifier hs-var">p</span></a></span></span><span>
+</span><span id="line-149"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232551"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232552"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bytes -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232545"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679232546"><span class="hs-identifier hs-var">offset</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO Word8
+forall a. Storable a =&gt; Ptr a -&gt; IO a
+</span><span class="hs-identifier hs-var">peek</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232551"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">IO Word8 -&gt; (Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">poke</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232551"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">(Word8 -&gt; IO ()) -&gt; (Word8 -&gt; Word8) -&gt; Word8 -&gt; IO ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(+)</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-150"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-151"></span><span>              </span><span id="local-6989586621679232556"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679232556"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(+)</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">(Word8 -&gt; Word8) -&gt; IO Word8 -&gt; IO Word8
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO Word8
+forall a. Storable a =&gt; Ptr a -&gt; IO a
+</span><span class="hs-identifier hs-var">peek</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232552"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-152"></span><span>              </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">poke</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232552"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679232556"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-153"></span><span>              </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679232556"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679232549"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232551"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679232552"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-154"></span><span>
+</span><span id="line-155"></span><span class="hs-comment">-- | Initialize a new ChaChaPoly1305 State</span><span>
+</span><span id="line-156"></span><span class="hs-comment">--</span><span>
+</span><span id="line-157"></span><span class="hs-comment">-- The key length need to be 256 bits, and the nonce</span><span>
+</span><span id="line-158"></span><span class="hs-comment">-- procured using either `nonce8` or `nonce12`</span><span>
+</span><span id="line-159"></span><span id="local-6989586621679232355"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#initialize"><span class="hs-identifier hs-type">initialize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679232355"><span class="hs-identifier hs-type">key</span></a></span><span>
+</span><span id="line-160"></span><span>           </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679232355"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Error.Types.html#CryptoFailable"><span class="hs-identifier hs-type">CryptoFailable</span></a></span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span></span><span>
+</span><span id="line-161"></span><span id="initialize"><span class="annot"><span class="annottext">initialize :: forall key.
+ByteArrayAccess key =&gt;
+key -&gt; Nonce -&gt; CryptoFailable State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#initialize"><span class="hs-identifier hs-var hs-var">initialize</span></a></span></span><span> </span><span id="local-6989586621679232561"><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679232561"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce8"><span class="hs-identifier hs-type">Nonce8</span></a></span><span>  </span><span id="local-6989586621679232562"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232562"><span class="hs-identifier hs-var">nonce</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">key -&gt; Bytes -&gt; CryptoFailable State
+forall key.
+ByteArrayAccess key =&gt;
+key -&gt; Bytes -&gt; CryptoFailable State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#initialize%27"><span class="hs-identifier hs-var">initialize'</span></a></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679232561"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232562"><span class="hs-identifier hs-var">nonce</span></a></span><span>
+</span><span id="line-162"></span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#initialize"><span class="hs-identifier hs-var">initialize</span></a></span><span> </span><span id="local-6989586621679232564"><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679232564"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce12"><span class="hs-identifier hs-type">Nonce12</span></a></span><span> </span><span id="local-6989586621679232565"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232565"><span class="hs-identifier hs-var">nonce</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">key -&gt; Bytes -&gt; CryptoFailable State
+forall key.
+ByteArrayAccess key =&gt;
+key -&gt; Bytes -&gt; CryptoFailable State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#initialize%27"><span class="hs-identifier hs-var">initialize'</span></a></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679232564"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232565"><span class="hs-identifier hs-var">nonce</span></a></span><span>
+</span><span id="line-163"></span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span id="local-6989586621679232358"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#initialize%27"><span class="hs-identifier hs-type">initialize'</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679232358"><span class="hs-identifier hs-type">key</span></a></span><span>
+</span><span id="line-166"></span><span>            </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679232358"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Error.Types.html#CryptoFailable"><span class="hs-identifier hs-type">CryptoFailable</span></a></span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span></span><span>
+</span><span id="line-167"></span><span id="initialize%27"><span class="annot"><span class="annottext">initialize' :: forall key.
+ByteArrayAccess key =&gt;
+key -&gt; Bytes -&gt; CryptoFailable State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#initialize%27"><span class="hs-identifier hs-var hs-var">initialize'</span></a></span></span><span> </span><span id="local-6989586621679232570"><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679232570"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span id="local-6989586621679232571"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232571"><span class="hs-identifier hs-var">nonce</span></a></span></span><span>
+</span><span id="line-168"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">key -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679232570"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoError -&gt; CryptoFailable State
+forall a. CryptoError -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoFailed"><span class="hs-identifier hs-var">CryptoFailed</span></a></span><span> </span><span class="annot"><span class="annottext">CryptoError
+</span><a href="Crypto.Error.Types.html#CryptoError_KeySizeInvalid"><span class="hs-identifier hs-var">CryptoError_KeySizeInvalid</span></a></span><span>
+</span><span id="line-169"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>          </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; CryptoFailable State
+forall a. a -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoPassed"><span class="hs-identifier hs-var">CryptoPassed</span></a></span><span> </span><span class="annot"><span class="annottext">(State -&gt; CryptoFailable State) -&gt; State -&gt; CryptoFailable State
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">State -&gt; State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#initFromRootState"><span class="hs-identifier hs-var">initFromRootState</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232574"><span class="hs-identifier hs-var">rootState</span></a></span><span>
+</span><span id="line-170"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679232574"><span class="annot"><span class="annottext">rootState :: State
+</span><a href="#local-6989586621679232574"><span class="hs-identifier hs-var hs-var">rootState</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; key -&gt; Bytes -&gt; State
+forall key nonce.
+(ByteArrayAccess key, ByteArrayAccess nonce) =&gt;
+Int -&gt; key -&gt; nonce -&gt; State
+</span><a href="Crypto.Cipher.ChaCha.html#initialize"><span class="hs-identifier hs-var">ChaCha.initialize</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">20</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679232570"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232571"><span class="hs-identifier hs-var">nonce</span></a></span><span>
+</span><span id="line-171"></span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#initFromRootState"><span class="hs-identifier hs-type">initFromRootState</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaCha.html#State"><span class="hs-identifier hs-type">ChaCha.State</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span>
+</span><span id="line-174"></span><span id="initFromRootState"><span class="annot"><span class="annottext">initFromRootState :: State -&gt; State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#initFromRootState"><span class="hs-identifier hs-var hs-var">initFromRootState</span></a></span></span><span> </span><span id="local-6989586621679232578"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232578"><span class="hs-identifier hs-var">rootState</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; State -&gt; Word64 -&gt; Word64 -&gt; State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232579"><span class="hs-identifier hs-var">encState</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232580"><span class="hs-identifier hs-var">polyState</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-175"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-176"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621679232594"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679232594"><span class="hs-identifier hs-var">polyKey</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679232579"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232579"><span class="hs-identifier hs-var">encState</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; Int -&gt; (ScrubbedBytes, State)
+forall ba. ByteArray ba =&gt; State -&gt; Int -&gt; (ba, State)
+</span><a href="Crypto.Cipher.ChaCha.html#generate"><span class="hs-identifier hs-var">ChaCha.generate</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232578"><span class="hs-identifier hs-var">rootState</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">64</span></span><span>
+</span><span id="line-177"></span><span>    </span><span id="local-6989586621679232580"><span class="annot"><span class="annottext">polyState :: State
+</span><a href="#local-6989586621679232580"><span class="hs-identifier hs-var hs-var">polyState</span></a></span></span><span>           </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoFailable State -&gt; State
+forall a. CryptoFailable a -&gt; a
+</span><a href="Crypto.Error.Types.html#throwCryptoError"><span class="hs-identifier hs-var">throwCryptoError</span></a></span><span> </span><span class="annot"><span class="annottext">(CryptoFailable State -&gt; State) -&gt; CryptoFailable State -&gt; State
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; CryptoFailable State
+forall key. ByteArrayAccess key =&gt; key -&gt; CryptoFailable State
+</span><a href="Crypto.MAC.Poly1305.html#initialize"><span class="hs-identifier hs-var">Poly1305.initialize</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; ScrubbedBytes -&gt; ScrubbedBytes
+forall bs. ByteArray bs =&gt; Int -&gt; bs -&gt; bs
+</span><span class="hs-identifier hs-var">B.take</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679232594"><span class="hs-identifier hs-var">polyKey</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span><span class="hs-special">)</span><span>
+</span><span id="line-178"></span><span>
+</span><span id="line-179"></span><span>
+</span><span id="line-180"></span><span class="hs-comment">-- | Initialize a new XChaChaPoly1305 State</span><span>
+</span><span id="line-181"></span><span class="hs-comment">--</span><span>
+</span><span id="line-182"></span><span class="hs-comment">-- The key length needs to be 256 bits, and the nonce</span><span>
+</span><span id="line-183"></span><span class="hs-comment">-- procured using `nonce24`.</span><span>
+</span><span id="line-184"></span><span id="local-6989586621679232369"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#initializeX"><span class="hs-identifier hs-type">initializeX</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679232369"><span class="hs-identifier hs-type">key</span></a></span><span>
+</span><span id="line-185"></span><span>            </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679232369"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#XNonce"><span class="hs-identifier hs-type">XNonce</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Error.Types.html#CryptoFailable"><span class="hs-identifier hs-type">CryptoFailable</span></a></span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span></span><span>
+</span><span id="line-186"></span><span id="initializeX"><span class="annot"><span class="annottext">initializeX :: forall key.
+ByteArrayAccess key =&gt;
+key -&gt; XNonce -&gt; CryptoFailable State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#initializeX"><span class="hs-identifier hs-var hs-var">initializeX</span></a></span></span><span> </span><span id="local-6989586621679232605"><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679232605"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#Nonce24"><span class="hs-identifier hs-type">Nonce24</span></a></span><span> </span><span id="local-6989586621679232606"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232606"><span class="hs-identifier hs-var">nonce</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-187"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">key -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679232605"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoError -&gt; CryptoFailable State
+forall a. CryptoError -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoFailed"><span class="hs-identifier hs-var">CryptoFailed</span></a></span><span> </span><span class="annot"><span class="annottext">CryptoError
+</span><a href="Crypto.Error.Types.html#CryptoError_KeySizeInvalid"><span class="hs-identifier hs-var">CryptoError_KeySizeInvalid</span></a></span><span>
+</span><span id="line-188"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>          </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; CryptoFailable State
+forall a. a -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoPassed"><span class="hs-identifier hs-var">CryptoPassed</span></a></span><span> </span><span class="annot"><span class="annottext">(State -&gt; CryptoFailable State) -&gt; State -&gt; CryptoFailable State
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">State -&gt; State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#initFromRootState"><span class="hs-identifier hs-var">initFromRootState</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232607"><span class="hs-identifier hs-var">rootState</span></a></span><span>
+</span><span id="line-189"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679232607"><span class="annot"><span class="annottext">rootState :: State
+</span><a href="#local-6989586621679232607"><span class="hs-identifier hs-var hs-var">rootState</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; key -&gt; Bytes -&gt; State
+forall key nonce.
+(ByteArrayAccess key, ByteArrayAccess nonce) =&gt;
+Int -&gt; key -&gt; nonce -&gt; State
+</span><a href="Crypto.Cipher.ChaCha.html#initializeX"><span class="hs-identifier hs-var">ChaCha.initializeX</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">20</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679232605"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679232606"><span class="hs-identifier hs-var">nonce</span></a></span><span>
+</span><span id="line-190"></span><span>
+</span><span id="line-191"></span><span>
+</span><span id="line-192"></span><span class="hs-comment">-- | Append Authenticated Data to the State and return</span><span>
+</span><span id="line-193"></span><span class="hs-comment">-- the new modified State.</span><span>
+</span><span id="line-194"></span><span class="hs-comment">--</span><span>
+</span><span id="line-195"></span><span class="hs-comment">-- Once no further call to this function need to be make,</span><span>
+</span><span id="line-196"></span><span class="hs-comment">-- the user should call 'finalizeAAD'</span><span>
+</span><span id="line-197"></span><span id="local-6989586621679232371"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#appendAAD"><span class="hs-identifier hs-type">appendAAD</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679232371"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679232371"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span></span><span>
+</span><span id="line-198"></span><span id="appendAAD"><span class="annot"><span class="annottext">appendAAD :: forall ba. ByteArrayAccess ba =&gt; ba -&gt; State -&gt; State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#appendAAD"><span class="hs-identifier hs-var hs-var">appendAAD</span></a></span></span><span> </span><span id="local-6989586621679232612"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232612"><span class="hs-identifier hs-var">ba</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span id="local-6989586621679232613"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232613"><span class="hs-identifier hs-var">encState</span></a></span></span><span> </span><span id="local-6989586621679232614"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232614"><span class="hs-identifier hs-var">macState</span></a></span></span><span> </span><span id="local-6989586621679232615"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232615"><span class="hs-identifier hs-var">aadLength</span></a></span></span><span> </span><span id="local-6989586621679232616"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232616"><span class="hs-identifier hs-var">plainLength</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-199"></span><span>    </span><span class="annot"><span class="annottext">State -&gt; State -&gt; Word64 -&gt; Word64 -&gt; State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232613"><span class="hs-identifier hs-var">encState</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232617"><span class="hs-identifier hs-var">newMacState</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232618"><span class="hs-identifier hs-var">newLength</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232616"><span class="hs-identifier hs-var">plainLength</span></a></span><span>
+</span><span id="line-200"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-201"></span><span>    </span><span id="local-6989586621679232617"><span class="annot"><span class="annottext">newMacState :: State
+</span><a href="#local-6989586621679232617"><span class="hs-identifier hs-var hs-var">newMacState</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; ba -&gt; State
+forall ba. ByteArrayAccess ba =&gt; State -&gt; ba -&gt; State
+</span><a href="Crypto.MAC.Poly1305.html#update"><span class="hs-identifier hs-var">Poly1305.update</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232614"><span class="hs-identifier hs-var">macState</span></a></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232612"><span class="hs-identifier hs-var">ba</span></a></span><span>
+</span><span id="line-202"></span><span>    </span><span id="local-6989586621679232618"><span class="annot"><span class="annottext">newLength :: Word64
+</span><a href="#local-6989586621679232618"><span class="hs-identifier hs-var hs-var">newLength</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232615"><span class="hs-identifier hs-var">aadLength</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232612"><span class="hs-identifier hs-var">ba</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-203"></span><span>
+</span><span id="line-204"></span><span class="annot"><span class="hs-comment">-- | Finalize the Authenticated Data and return the finalized State</span></span><span>
+</span><span id="line-205"></span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#finalizeAAD"><span class="hs-identifier hs-type">finalizeAAD</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span>
+</span><span id="line-206"></span><span id="finalizeAAD"><span class="annot"><span class="annottext">finalizeAAD :: State -&gt; State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#finalizeAAD"><span class="hs-identifier hs-var hs-var">finalizeAAD</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span id="local-6989586621679232626"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232626"><span class="hs-identifier hs-var">encState</span></a></span></span><span> </span><span id="local-6989586621679232627"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232627"><span class="hs-identifier hs-var">macState</span></a></span></span><span> </span><span id="local-6989586621679232628"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232628"><span class="hs-identifier hs-var">aadLength</span></a></span></span><span> </span><span id="local-6989586621679232629"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232629"><span class="hs-identifier hs-var">plainLength</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-207"></span><span>    </span><span class="annot"><span class="annottext">State -&gt; State -&gt; Word64 -&gt; Word64 -&gt; State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232626"><span class="hs-identifier hs-var">encState</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232630"><span class="hs-identifier hs-var">newMacState</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232628"><span class="hs-identifier hs-var">aadLength</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232629"><span class="hs-identifier hs-var">plainLength</span></a></span><span>
+</span><span id="line-208"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-209"></span><span>    </span><span id="local-6989586621679232630"><span class="annot"><span class="annottext">newMacState :: State
+</span><a href="#local-6989586621679232630"><span class="hs-identifier hs-var hs-var">newMacState</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; Bytes -&gt; State
+forall ba. ByteArrayAccess ba =&gt; State -&gt; ba -&gt; State
+</span><a href="Crypto.MAC.Poly1305.html#update"><span class="hs-identifier hs-var">Poly1305.update</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232627"><span class="hs-identifier hs-var">macState</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; State) -&gt; Bytes -&gt; State
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Bytes
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#pad16"><span class="hs-identifier hs-var">pad16</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232628"><span class="hs-identifier hs-var">aadLength</span></a></span><span>
+</span><span id="line-210"></span><span>
+</span><span id="line-211"></span><span class="hs-comment">-- | Encrypt a piece of data and returns the encrypted Data and the</span><span>
+</span><span id="line-212"></span><span class="hs-comment">-- updated State.</span><span>
+</span><span id="line-213"></span><span id="local-6989586621679232374"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#encrypt"><span class="hs-identifier hs-type">encrypt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679232374"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679232374"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679232374"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-214"></span><span id="encrypt"><span class="annot"><span class="annottext">encrypt :: forall ba. ByteArray ba =&gt; ba -&gt; State -&gt; (ba, State)
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#encrypt"><span class="hs-identifier hs-var hs-var">encrypt</span></a></span></span><span> </span><span id="local-6989586621679232643"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232643"><span class="hs-identifier hs-var">input</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span id="local-6989586621679232644"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232644"><span class="hs-identifier hs-var">encState</span></a></span></span><span> </span><span id="local-6989586621679232645"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232645"><span class="hs-identifier hs-var">macState</span></a></span></span><span> </span><span id="local-6989586621679232646"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232646"><span class="hs-identifier hs-var">aadLength</span></a></span></span><span> </span><span id="local-6989586621679232647"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232647"><span class="hs-identifier hs-var">plainLength</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-215"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232648"><span class="hs-identifier hs-var">output</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">State -&gt; State -&gt; Word64 -&gt; Word64 -&gt; State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232649"><span class="hs-identifier hs-var">newEncState</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232650"><span class="hs-identifier hs-var">newMacState</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232646"><span class="hs-identifier hs-var">aadLength</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232651"><span class="hs-identifier hs-var">newPlainLength</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-216"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-217"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621679232648"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232648"><span class="hs-identifier hs-var">output</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679232649"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232649"><span class="hs-identifier hs-var">newEncState</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; ba -&gt; (ba, State)
+forall ba. ByteArray ba =&gt; State -&gt; ba -&gt; (ba, State)
+</span><a href="Crypto.Cipher.ChaCha.html#combine"><span class="hs-identifier hs-var">ChaCha.combine</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232644"><span class="hs-identifier hs-var">encState</span></a></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232643"><span class="hs-identifier hs-var">input</span></a></span><span>
+</span><span id="line-218"></span><span>    </span><span id="local-6989586621679232650"><span class="annot"><span class="annottext">newMacState :: State
+</span><a href="#local-6989586621679232650"><span class="hs-identifier hs-var hs-var">newMacState</span></a></span></span><span>           </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; ba -&gt; State
+forall ba. ByteArrayAccess ba =&gt; State -&gt; ba -&gt; State
+</span><a href="Crypto.MAC.Poly1305.html#update"><span class="hs-identifier hs-var">Poly1305.update</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232645"><span class="hs-identifier hs-var">macState</span></a></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232648"><span class="hs-identifier hs-var">output</span></a></span><span>
+</span><span id="line-219"></span><span>    </span><span id="local-6989586621679232651"><span class="annot"><span class="annottext">newPlainLength :: Word64
+</span><a href="#local-6989586621679232651"><span class="hs-identifier hs-var hs-var">newPlainLength</span></a></span></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232647"><span class="hs-identifier hs-var">plainLength</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232643"><span class="hs-identifier hs-var">input</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-220"></span><span>
+</span><span id="line-221"></span><span class="hs-comment">-- | Decrypt a piece of data and returns the decrypted Data and the</span><span>
+</span><span id="line-222"></span><span class="hs-comment">-- updated State.</span><span>
+</span><span id="line-223"></span><span id="local-6989586621679232665"><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#decrypt"><span class="hs-identifier hs-type">decrypt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679232665"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679232665"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679232665"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-224"></span><span id="decrypt"><span class="annot"><span class="annottext">decrypt :: forall ba. ByteArray ba =&gt; ba -&gt; State -&gt; (ba, State)
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#decrypt"><span class="hs-identifier hs-var hs-var">decrypt</span></a></span></span><span> </span><span id="local-6989586621679232672"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232672"><span class="hs-identifier hs-var">input</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span id="local-6989586621679232673"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232673"><span class="hs-identifier hs-var">encState</span></a></span></span><span> </span><span id="local-6989586621679232674"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232674"><span class="hs-identifier hs-var">macState</span></a></span></span><span> </span><span id="local-6989586621679232675"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232675"><span class="hs-identifier hs-var">aadLength</span></a></span></span><span> </span><span id="local-6989586621679232676"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232676"><span class="hs-identifier hs-var">plainLength</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-225"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232677"><span class="hs-identifier hs-var">output</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">State -&gt; State -&gt; Word64 -&gt; Word64 -&gt; State
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232678"><span class="hs-identifier hs-var">newEncState</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232679"><span class="hs-identifier hs-var">newMacState</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232675"><span class="hs-identifier hs-var">aadLength</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232680"><span class="hs-identifier hs-var">newPlainLength</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-226"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-227"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621679232677"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232677"><span class="hs-identifier hs-var">output</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679232678"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232678"><span class="hs-identifier hs-var">newEncState</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; ba -&gt; (ba, State)
+forall ba. ByteArray ba =&gt; State -&gt; ba -&gt; (ba, State)
+</span><a href="Crypto.Cipher.ChaCha.html#combine"><span class="hs-identifier hs-var">ChaCha.combine</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232673"><span class="hs-identifier hs-var">encState</span></a></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232672"><span class="hs-identifier hs-var">input</span></a></span><span>
+</span><span id="line-228"></span><span>    </span><span id="local-6989586621679232679"><span class="annot"><span class="annottext">newMacState :: State
+</span><a href="#local-6989586621679232679"><span class="hs-identifier hs-var hs-var">newMacState</span></a></span></span><span>           </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; ba -&gt; State
+forall ba. ByteArrayAccess ba =&gt; State -&gt; ba -&gt; State
+</span><a href="Crypto.MAC.Poly1305.html#update"><span class="hs-identifier hs-var">Poly1305.update</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232674"><span class="hs-identifier hs-var">macState</span></a></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232672"><span class="hs-identifier hs-var">input</span></a></span><span>
+</span><span id="line-229"></span><span>    </span><span id="local-6989586621679232680"><span class="annot"><span class="annottext">newPlainLength :: Word64
+</span><a href="#local-6989586621679232680"><span class="hs-identifier hs-var hs-var">newPlainLength</span></a></span></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232676"><span class="hs-identifier hs-var">plainLength</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679232672"><span class="hs-identifier hs-var">input</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-230"></span><span>
+</span><span id="line-231"></span><span class="annot"><span class="hs-comment">-- | Generate an authentication tag from the State.</span></span><span>
+</span><span id="line-232"></span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#finalize"><span class="hs-identifier hs-type">finalize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.MAC.Poly1305.html#Auth"><span class="hs-identifier hs-type">Poly1305.Auth</span></a></span><span>
+</span><span id="line-233"></span><span id="finalize"><span class="annot"><span class="annottext">finalize :: State -&gt; Auth
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#finalize"><span class="hs-identifier hs-var hs-var">finalize</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.ChaChaPoly1305.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679232693"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232693"><span class="hs-identifier hs-var">macState</span></a></span></span><span> </span><span id="local-6989586621679232694"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232694"><span class="hs-identifier hs-var">aadLength</span></a></span></span><span> </span><span id="local-6989586621679232695"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232695"><span class="hs-identifier hs-var">plainLength</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-234"></span><span>    </span><span class="annot"><span class="annottext">State -&gt; Auth
+</span><a href="Crypto.MAC.Poly1305.html#finalize"><span class="hs-identifier hs-var">Poly1305.finalize</span></a></span><span> </span><span class="annot"><span class="annottext">(State -&gt; Auth) -&gt; State -&gt; Auth
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">State -&gt; [Bytes] -&gt; State
+forall ba. ByteArrayAccess ba =&gt; State -&gt; [ba] -&gt; State
+</span><a href="Crypto.MAC.Poly1305.html#updates"><span class="hs-identifier hs-var">Poly1305.updates</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679232693"><span class="hs-identifier hs-var">macState</span></a></span><span>
+</span><span id="line-235"></span><span>        </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Bytes
+</span><a href="Crypto.Cipher.ChaChaPoly1305.html#pad16"><span class="hs-identifier hs-var">pad16</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232695"><span class="hs-identifier hs-var">plainLength</span></a></span><span>
+</span><span id="line-236"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Bytes)
+-&gt; (Bytes -&gt; Bytes) -&gt; Either String Bytes -&gt; Bytes
+forall a c b. (a -&gt; c) -&gt; (b -&gt; c) -&gt; Either a b -&gt; c
+</span><span class="hs-identifier hs-var">either</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; String -&gt; Bytes
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;finalize: internal error&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Bytes
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="annot"><span class="annottext">(Either String Bytes -&gt; Bytes) -&gt; Either String Bytes -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Packer () -&gt; Either String Bytes
+forall byteArray a.
+ByteArray byteArray =&gt;
+Int -&gt; Packer a -&gt; Either String byteArray
+</span><span class="hs-identifier hs-var">P.fill</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LE Word64 -&gt; Packer ()
+forall storable. Storable storable =&gt; storable -&gt; Packer ()
+</span><span class="hs-identifier hs-var">P.putStorable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64 -&gt; LE Word64
+forall a. ByteSwap a =&gt; a -&gt; LE a
+</span><span class="hs-identifier hs-var">toLE</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232694"><span class="hs-identifier hs-var">aadLength</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Packer () -&gt; Packer () -&gt; Packer ()
+forall a b. Packer a -&gt; Packer b -&gt; Packer b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">LE Word64 -&gt; Packer ()
+forall storable. Storable storable =&gt; storable -&gt; Packer ()
+</span><span class="hs-identifier hs-var">P.putStorable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64 -&gt; LE Word64
+forall a. ByteSwap a =&gt; a -&gt; LE a
+</span><span class="hs-identifier hs-var">toLE</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679232695"><span class="hs-identifier hs-var">plainLength</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-237"></span><span>        </span><span class="hs-special">]</span><span>
+</span><span id="line-238"></span></pre></body></html>

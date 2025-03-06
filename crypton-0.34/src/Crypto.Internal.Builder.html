@@ -1,0 +1,129 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module      : Crypto.Internal.Builder</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Maintainer  : Olivier Ch&#233;ron &lt;olivier.cheron@gmail.com&gt;</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Stability   : stable</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Portability : Good</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Delaying and merging ByteArray allocations.  This is similar to module</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- &quot;Data.ByteArray.Pack&quot; except the total length is computed automatically based</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- on what is appended.</span><span>
+</span><span id="line-11"></span><span class="hs-comment">--</span><span>
+</span><span id="line-12"></span><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Crypto.Internal.Builder</span><span>
+</span><span id="line-14"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier">Builder</span></a></span><span>
+</span><span id="line-15"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#buildAndFreeze"><span class="hs-identifier">buildAndFreeze</span></a></span><span>
+</span><span id="line-16"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#builderLength"><span class="hs-identifier">builderLength</span></a></span><span>
+</span><span id="line-17"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#byte"><span class="hs-identifier">byte</span></a></span><span>
+</span><span id="line-18"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#bytes"><span class="hs-identifier">bytes</span></a></span><span>
+</span><span id="line-19"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#zero"><span class="hs-identifier">zero</span></a></span><span>
+</span><span id="line-20"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteArray</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteArray</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ByteArrayAccess</span></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteArray</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Memory.PtrMethods</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">memSet</span></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Ptr</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">plusPtr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Storable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">poke</span></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.Imports.html"><span class="hs-identifier">Crypto.Internal.Imports</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">empty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">data</span><span> </span><span id="Builder"><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-var">Builder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>  </span><span id="Builder"><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-var">Builder</span></a></span></span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>  </span><span class="hs-comment">-- size and initializer</span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679212947"><span id="local-6989586621679212951"><span class="annot"><span class="hs-identifier hs-type">Semigroup</span></span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-34"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span> </span><span id="local-6989586621679212957"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212957"><span class="hs-identifier hs-var">s1</span></a></span></span><span> </span><span id="local-6989586621679212958"><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679212958"><span class="hs-identifier hs-var">f1</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679212959"><span class="annot"><span class="annottext">&lt;&gt; :: Builder -&gt; Builder -&gt; Builder
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;&gt;</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span> </span><span id="local-6989586621679212960"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212960"><span class="hs-identifier hs-var">s2</span></a></span></span><span> </span><span id="local-6989586621679212961"><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679212961"><span class="hs-identifier hs-var">f2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Builder
+</span><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-var">Builder</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212957"><span class="hs-identifier hs-var">s1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212960"><span class="hs-identifier hs-var">s2</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679212963"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-35"></span><span>      </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679212963"><span class="annot"><span class="annottext">f :: Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679212963"><span class="hs-identifier hs-var hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679212965"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679212965"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679212958"><span class="hs-identifier hs-var">f1</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679212965"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO () -&gt; IO ()
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679212961"><span class="hs-identifier hs-var">f2</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679212965"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212957"><span class="hs-identifier hs-var">s1</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span>
+</span><span id="line-37"></span><span class="annot"><a href="Crypto.Internal.Builder.html#builderLength"><span class="hs-identifier hs-type">builderLength</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-38"></span><span id="builderLength"><span class="annot"><span class="annottext">builderLength :: Builder -&gt; Int
+</span><a href="Crypto.Internal.Builder.html#builderLength"><span class="hs-identifier hs-var hs-var">builderLength</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span> </span><span id="local-6989586621679212966"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212966"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ()
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212966"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span id="local-6989586621679212907"><span class="annot"><a href="Crypto.Internal.Builder.html#buildAndFreeze"><span class="hs-identifier hs-type">buildAndFreeze</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679212907"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679212907"><span class="hs-identifier hs-type">ba</span></a></span></span><span>
+</span><span id="line-41"></span><span id="buildAndFreeze"><span class="annot"><span class="annottext">buildAndFreeze :: forall ba. ByteArray ba =&gt; Builder -&gt; ba
+</span><a href="Crypto.Internal.Builder.html#buildAndFreeze"><span class="hs-identifier hs-var hs-var">buildAndFreeze</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span> </span><span id="local-6989586621679212969"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212969"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679212970"><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679212970"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; ba
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212969"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679212970"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span class="annot"><a href="Crypto.Internal.Builder.html#byte"><span class="hs-identifier hs-type">byte</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span>
+</span><span id="line-44"></span><span id="byte"><span class="annot"><span class="annottext">byte :: Word8 -&gt; Builder
+</span><a href="Crypto.Internal.Builder.html#byte"><span class="hs-identifier hs-var hs-var">byte</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679212972"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679212972"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Builder
+</span><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-var">Builder</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-operator hs-var">`poke`</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679212972"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span id="local-6989586621679212913"><span class="annot"><a href="Crypto.Internal.Builder.html#bytes"><span class="hs-identifier hs-type">bytes</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679212913"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679212913"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span></span><span>
+</span><span id="line-47"></span><span id="bytes"><span class="annot"><span class="annottext">bytes :: forall ba. ByteArrayAccess ba =&gt; ba -&gt; Builder
+</span><a href="Crypto.Internal.Builder.html#bytes"><span class="hs-identifier hs-var hs-var">bytes</span></a></span></span><span> </span><span id="local-6989586621679212976"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679212976"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Builder
+</span><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-var">Builder</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679212976"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba -&gt; Ptr Word8 -&gt; IO ()
+forall p. ba -&gt; Ptr p -&gt; IO ()
+forall ba p. ByteArrayAccess ba =&gt; ba -&gt; Ptr p -&gt; IO ()
+</span><span class="hs-identifier hs-var">B.copyByteArrayToPtr</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679212976"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="annot"><a href="Crypto.Internal.Builder.html#zero"><span class="hs-identifier hs-type">zero</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span>
+</span><span id="line-50"></span><span id="zero"><span class="annot"><span class="annottext">zero :: Int -&gt; Builder
+</span><a href="Crypto.Internal.Builder.html#zero"><span class="hs-identifier hs-var hs-var">zero</span></a></span></span><span> </span><span id="local-6989586621679212979"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212979"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212979"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Builder
+</span><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-var">Builder</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212979"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679212981"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679212981"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memSet</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679212981"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679212979"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">Builder
+</span><a href="Crypto.Internal.Builder.html#empty"><span class="hs-identifier hs-var">empty</span></a></span><span>
+</span><span id="line-51"></span><span>
+</span><span id="line-52"></span><span class="annot"><a href="Crypto.Internal.Builder.html#empty"><span class="hs-identifier hs-type">empty</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span>
+</span><span id="line-53"></span><span id="empty"><span class="annot"><span class="annottext">empty :: Builder
+</span><a href="Crypto.Internal.Builder.html#empty"><span class="hs-identifier hs-var hs-var">empty</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Builder
+</span><a href="Crypto.Internal.Builder.html#Builder"><span class="hs-identifier hs-var">Builder</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IO () -&gt; Ptr Word8 -&gt; IO ()
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; Ptr Word8 -&gt; IO ()) -&gt; IO () -&gt; Ptr Word8 -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-54"></span></pre></body></html>

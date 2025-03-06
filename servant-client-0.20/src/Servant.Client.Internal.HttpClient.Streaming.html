@@ -1,0 +1,731 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP                        #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE DeriveGeneric              #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts           #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances          #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-6"></span><span class="hs-pragma">{-# LANGUAGE MultiParamTypeClasses      #-}</span><span>
+</span><span id="line-7"></span><span class="hs-pragma">{-# LANGUAGE RankNTypes                 #-}</span><span>
+</span><span id="line-8"></span><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables        #-}</span><span>
+</span><span id="line-9"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies               #-}</span><span>
+</span><span id="line-10"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Servant.Client.Internal.HttpClient.Streaming</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-11"></span><span>    </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html"><span class="hs-identifier">Servant.Client.Internal.HttpClient.Streaming</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#ClientEnv"><span class="hs-identifier">ClientEnv</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#mkClientEnv"><span class="hs-identifier">mkClientEnv</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#clientResponseToResponse"><span class="hs-identifier">clientResponseToResponse</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>    </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#defaultMakeClientRequest"><span class="hs-identifier">defaultMakeClientRequest</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>    </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#catchConnectionError"><span class="hs-identifier">catchConnectionError</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Prelude.Compat</span></span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Concurrent.STM.TVar</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.DeepSeq</span></span><span>
+</span><span id="line-24"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">NFData</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">force</span></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span>
+</span><span id="line-26"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">evaluate</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">throwIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-28"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unless</span></span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad.Base</span></span><span>
+</span><span id="line-30"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">MonadBase</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad.Codensity</span></span><span>
+</span><span id="line-32"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Codensity</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad.Error.Class</span></span><span>
+</span><span id="line-34"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">MonadError</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader</span></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad.STM</span></span><span>
+</span><span id="line-37"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">atomically</span></span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.Except</span></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span>                    </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BS</span></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Lazy</span></span><span>               </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BSL</span></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Foldable</span></span><span>
+</span><span id="line-42"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">for_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Functor.Alt</span></span><span>
+</span><span id="line-44"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Alt</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Proxy</span></span><span>
+</span><span id="line-46"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Proxy</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Time.Clock</span></span><span>
+</span><span id="line-48"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">getCurrentTime</span></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">GHC.Generics</span></span><span>
+</span><span id="line-50"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Network.HTTP.Types</span></span><span>
+</span><span id="line-51"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Status</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">statusIsSuccessful</span></span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>
+</span><span id="line-53"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Network.HTTP.Client</span></span><span>                </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Client</span></span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Servant.Client.Core</span></span><span>
+</span><span id="line-56"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html"><span class="hs-identifier">Servant.Client.Internal.HttpClient</span></a></span><span>
+</span><span id="line-57"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#ClientEnv"><span class="hs-identifier">ClientEnv</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#catchConnectionError"><span class="hs-identifier">catchConnectionError</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-58"></span><span>                 </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#clientResponseToResponse"><span class="hs-identifier">clientResponseToResponse</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#mkClientEnv"><span class="hs-identifier">mkClientEnv</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#mkFailureResponse"><span class="hs-identifier">mkFailureResponse</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-59"></span><span>                 </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#defaultMakeClientRequest"><span class="hs-identifier">defaultMakeClientRequest</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-60"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Servant.Types.SourceT</span></span><span>              </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-61"></span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- | Generates a set of client functions for an API.</span><span>
+</span><span id="line-64"></span><span class="hs-comment">--</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- Example:</span><span>
+</span><span id="line-66"></span><span class="hs-comment">--</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- &gt; type API = Capture &quot;no&quot; Int :&gt; Get '[JSON] Int</span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- &gt;        :&lt;|&gt; Get '[JSON] [Bool]</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- &gt; api :: Proxy API</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- &gt; api = Proxy</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- &gt; getInt :: Int -&gt; ClientM Int</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- &gt; getBools :: ClientM [Bool]</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- &gt; getInt :&lt;|&gt; getBools = client api</span><span>
+</span><span id="line-76"></span><span id="local-6989586621679110773"><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#client"><span class="hs-identifier hs-type">client</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">HasClient</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679110773"><span class="hs-identifier hs-type">api</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Proxy</span></span><span> </span><span class="annot"><a href="#local-6989586621679110773"><span class="hs-identifier hs-type">api</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Client</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679110773"><span class="hs-identifier hs-type">api</span></a></span></span><span>
+</span><span id="line-77"></span><span id="client"><span class="annot"><span class="annottext">client :: forall api.
+HasClient ClientM api =&gt;
+Proxy api -&gt; Client ClientM api
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#client"><span class="hs-identifier hs-var hs-var">client</span></a></span></span><span> </span><span id="local-6989586621679111053"><span class="annot"><span class="annottext">Proxy api
+</span><a href="#local-6989586621679111053"><span class="hs-identifier hs-var">api</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Proxy api
+</span><a href="#local-6989586621679111053"><span class="hs-identifier hs-var">api</span></a></span><span> </span><span class="annot"><span class="annottext">Proxy api -&gt; Proxy ClientM -&gt; Client ClientM api
+forall (m :: * -&gt; *) api.
+HasClient m api =&gt;
+Proxy api -&gt; Proxy m -&gt; Client m api
+</span><span class="hs-operator hs-var">`clientIn`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Proxy ClientM
+forall {k} (t :: k). Proxy t
+</span><span class="hs-identifier hs-var">Proxy</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Proxy</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- | Change the monad the client functions live in, by</span><span>
+</span><span id="line-80"></span><span class="hs-comment">--   supplying a conversion function</span><span>
+</span><span id="line-81"></span><span class="hs-comment">--   (a natural transformation to be precise).</span><span>
+</span><span id="line-82"></span><span class="hs-comment">--</span><span>
+</span><span id="line-83"></span><span class="hs-comment">--   For example, assuming you have some @manager :: 'Manager'@ and</span><span>
+</span><span id="line-84"></span><span class="hs-comment">--   @baseurl :: 'BaseUrl'@ around:</span><span>
+</span><span id="line-85"></span><span class="hs-comment">--</span><span>
+</span><span id="line-86"></span><span class="hs-comment">--   &gt; type API = Get '[JSON] Int :&lt;|&gt; Capture &quot;n&quot; Int :&gt; Post '[JSON] Int</span><span>
+</span><span id="line-87"></span><span class="hs-comment">--   &gt; api :: Proxy API</span><span>
+</span><span id="line-88"></span><span class="hs-comment">--   &gt; api = Proxy</span><span>
+</span><span id="line-89"></span><span class="hs-comment">--   &gt; getInt :: IO Int</span><span>
+</span><span id="line-90"></span><span class="hs-comment">--   &gt; postInt :: Int -&gt; IO Int</span><span>
+</span><span id="line-91"></span><span class="hs-comment">--   &gt; getInt :&lt;|&gt; postInt = hoistClient api (flip runClientM cenv) (client api)</span><span>
+</span><span id="line-92"></span><span class="hs-comment">--   &gt;   where cenv = mkClientEnv manager baseurl</span><span>
+</span><span id="line-93"></span><span id="local-6989586621679110782"><span id="local-6989586621679110783"><span id="local-6989586621679110785"><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#hoistClient"><span class="hs-identifier hs-type">hoistClient</span></a></span><span>
+</span><span id="line-94"></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">HasClient</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679110782"><span class="hs-identifier hs-type">api</span></a></span><span>
+</span><span id="line-95"></span><span>  </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Proxy</span></span><span> </span><span class="annot"><a href="#local-6989586621679110782"><span class="hs-identifier hs-type">api</span></a></span><span>
+</span><span id="line-96"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679110784"><span class="annot"><a href="#local-6989586621679110784"><span class="hs-identifier hs-type">a</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679110783"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679110784"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679110785"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679110784"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Client</span></span><span> </span><span class="annot"><a href="#local-6989586621679110783"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679110782"><span class="hs-identifier hs-type">api</span></a></span><span>
+</span><span id="line-98"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Client</span></span><span> </span><span class="annot"><a href="#local-6989586621679110785"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679110782"><span class="hs-identifier hs-type">api</span></a></span></span></span></span><span>
+</span><span id="line-99"></span><span id="hoistClient"><span class="annot"><span class="annottext">hoistClient :: forall api (m :: * -&gt; *) (n :: * -&gt; *).
+HasClient ClientM api =&gt;
+Proxy api -&gt; (forall a. m a -&gt; n a) -&gt; Client m api -&gt; Client n api
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#hoistClient"><span class="hs-identifier hs-var hs-var">hoistClient</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Proxy ClientM
+-&gt; Proxy api
+-&gt; (forall a. m a -&gt; n a)
+-&gt; Client m api
+-&gt; Client n api
+forall (m :: * -&gt; *) api (mon :: * -&gt; *) (mon' :: * -&gt; *).
+HasClient m api =&gt;
+Proxy m
+-&gt; Proxy api
+-&gt; (forall x. mon x -&gt; mon' x)
+-&gt; Client mon api
+-&gt; Client mon' api
+forall (mon :: * -&gt; *) (mon' :: * -&gt; *).
+Proxy ClientM
+-&gt; Proxy api
+-&gt; (forall x. mon x -&gt; mon' x)
+-&gt; Client mon api
+-&gt; Client mon' api
+</span><span class="hs-identifier hs-var">hoistClientMonad</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Proxy ClientM
+forall {k} (t :: k). Proxy t
+</span><span class="hs-identifier hs-var">Proxy</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Proxy</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- | @ClientM@ is the monad in which client functions run. Contains the</span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- 'Client.Manager' and 'BaseUrl' used for requests in the reader environment.</span><span>
+</span><span id="line-103"></span><span class="hs-keyword">newtype</span><span> </span><span id="ClientM"><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-var">ClientM</span></a></span></span><span> </span><span id="local-6989586621679110794"><span class="annot"><a href="#local-6989586621679110794"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="ClientM"><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-var">ClientM</span></a></span></span><span>
+</span><span id="line-104"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="unClientM"><span class="annot"><span class="annottext">forall a.
+ClientM a
+-&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#unClientM"><span class="hs-identifier hs-var hs-var">unClientM</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ReaderT</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#ClientEnv"><span class="hs-identifier hs-type">ClientEnv</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ExceptT</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ClientError</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Codensity</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679110794"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-105"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span> </span><span id="local-6989586621679111064"><span id="local-6989586621679111070"><span class="annot"><span class="annottext">(forall a b. (a -&gt; b) -&gt; ClientM a -&gt; ClientM b)
+-&gt; (forall a b. a -&gt; ClientM b -&gt; ClientM a) -&gt; Functor ClientM
+forall a b. a -&gt; ClientM b -&gt; ClientM a
+forall a b. (a -&gt; b) -&gt; ClientM a -&gt; ClientM b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+$cfmap :: forall a b. (a -&gt; b) -&gt; ClientM a -&gt; ClientM b
+fmap :: forall a b. (a -&gt; b) -&gt; ClientM a -&gt; ClientM b
+$c&lt;$ :: forall a b. a -&gt; ClientM b -&gt; ClientM a
+&lt;$ :: forall a b. a -&gt; ClientM b -&gt; ClientM a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679111083"><span id="local-6989586621679111089"><span id="local-6989586621679111094"><span id="local-6989586621679111099"><span id="local-6989586621679111104"><span class="annot"><span class="annottext">Functor ClientM
+Functor ClientM =&gt;
+(forall a. a -&gt; ClientM a)
+-&gt; (forall a b. ClientM (a -&gt; b) -&gt; ClientM a -&gt; ClientM b)
+-&gt; (forall a b c.
+    (a -&gt; b -&gt; c) -&gt; ClientM a -&gt; ClientM b -&gt; ClientM c)
+-&gt; (forall a b. ClientM a -&gt; ClientM b -&gt; ClientM b)
+-&gt; (forall a b. ClientM a -&gt; ClientM b -&gt; ClientM a)
+-&gt; Applicative ClientM
+forall a. a -&gt; ClientM a
+forall a b. ClientM a -&gt; ClientM b -&gt; ClientM a
+forall a b. ClientM a -&gt; ClientM b -&gt; ClientM b
+forall a b. ClientM (a -&gt; b) -&gt; ClientM a -&gt; ClientM b
+forall a b c. (a -&gt; b -&gt; c) -&gt; ClientM a -&gt; ClientM b -&gt; ClientM c
+forall (f :: * -&gt; *).
+Functor f =&gt;
+(forall a. a -&gt; f a)
+-&gt; (forall a b. f (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; f a -&gt; f b -&gt; f c)
+-&gt; (forall a b. f a -&gt; f b -&gt; f b)
+-&gt; (forall a b. f a -&gt; f b -&gt; f a)
+-&gt; Applicative f
+$cpure :: forall a. a -&gt; ClientM a
+pure :: forall a. a -&gt; ClientM a
+$c&lt;*&gt; :: forall a b. ClientM (a -&gt; b) -&gt; ClientM a -&gt; ClientM b
+&lt;*&gt; :: forall a b. ClientM (a -&gt; b) -&gt; ClientM a -&gt; ClientM b
+$cliftA2 :: forall a b c. (a -&gt; b -&gt; c) -&gt; ClientM a -&gt; ClientM b -&gt; ClientM c
+liftA2 :: forall a b c. (a -&gt; b -&gt; c) -&gt; ClientM a -&gt; ClientM b -&gt; ClientM c
+$c*&gt; :: forall a b. ClientM a -&gt; ClientM b -&gt; ClientM b
+*&gt; :: forall a b. ClientM a -&gt; ClientM b -&gt; ClientM b
+$c&lt;* :: forall a b. ClientM a -&gt; ClientM b -&gt; ClientM a
+&lt;* :: forall a b. ClientM a -&gt; ClientM b -&gt; ClientM a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Applicative</span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679111124"><span id="local-6989586621679111130"><span id="local-6989586621679111135"><span class="annot"><span class="annottext">Applicative ClientM
+Applicative ClientM =&gt;
+(forall a b. ClientM a -&gt; (a -&gt; ClientM b) -&gt; ClientM b)
+-&gt; (forall a b. ClientM a -&gt; ClientM b -&gt; ClientM b)
+-&gt; (forall a. a -&gt; ClientM a)
+-&gt; Monad ClientM
+forall a. a -&gt; ClientM a
+forall a b. ClientM a -&gt; ClientM b -&gt; ClientM b
+forall a b. ClientM a -&gt; (a -&gt; ClientM b) -&gt; ClientM b
+forall (m :: * -&gt; *).
+Applicative m =&gt;
+(forall a b. m a -&gt; (a -&gt; m b) -&gt; m b)
+-&gt; (forall a b. m a -&gt; m b -&gt; m b)
+-&gt; (forall a. a -&gt; m a)
+-&gt; Monad m
+$c&gt;&gt;= :: forall a b. ClientM a -&gt; (a -&gt; ClientM b) -&gt; ClientM b
+&gt;&gt;= :: forall a b. ClientM a -&gt; (a -&gt; ClientM b) -&gt; ClientM b
+$c&gt;&gt; :: forall a b. ClientM a -&gt; ClientM b -&gt; ClientM b
+&gt;&gt; :: forall a b. ClientM a -&gt; ClientM b -&gt; ClientM b
+$creturn :: forall a. a -&gt; ClientM a
+return :: forall a. a -&gt; ClientM a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Monad</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679111147"><span class="annot"><span class="annottext">Monad ClientM
+Monad ClientM =&gt; (forall a. IO a -&gt; ClientM a) -&gt; MonadIO ClientM
+forall a. IO a -&gt; ClientM a
+forall (m :: * -&gt; *).
+Monad m =&gt;
+(forall a. IO a -&gt; m a) -&gt; MonadIO m
+$cliftIO :: forall a. IO a -&gt; ClientM a
+liftIO :: forall a. IO a -&gt; ClientM a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var">MonadIO</span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679111160"><span id="local-6989586621679111162"><span class="annot"><span class="annottext">(forall x. ClientM a -&gt; Rep (ClientM a) x)
+-&gt; (forall x. Rep (ClientM a) x -&gt; ClientM a)
+-&gt; Generic (ClientM a)
+forall x. Rep (ClientM a) x -&gt; ClientM a
+forall x. ClientM a -&gt; Rep (ClientM a) x
+forall a.
+(forall x. a -&gt; Rep a x) -&gt; (forall x. Rep a x -&gt; a) -&gt; Generic a
+forall a x. Rep (ClientM a) x -&gt; ClientM a
+forall a x. ClientM a -&gt; Rep (ClientM a) x
+$cfrom :: forall a x. ClientM a -&gt; Rep (ClientM a) x
+from :: forall x. ClientM a -&gt; Rep (ClientM a) x
+$cto :: forall a x. Rep (ClientM a) x -&gt; ClientM a
+to :: forall x. Rep (ClientM a) x -&gt; ClientM a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Generic</span></span></span></span><span>
+</span><span id="line-106"></span><span>           </span><span class="hs-special">,</span><span> </span><span id="local-6989586621679111168"><span id="local-6989586621679111174"><span id="local-6989586621679111179"><span class="annot"><span class="hs-identifier hs-type">MonadReader</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#ClientEnv"><span class="hs-identifier hs-type">ClientEnv</span></a></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679111190"><span id="local-6989586621679111196"><span class="annot"><span class="hs-identifier hs-type">MonadError</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ClientError</span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadBase</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-109"></span><span>  </span><span id="local-6989586621679111221"><span class="annot"><span class="annottext">liftBase :: forall a. IO a -&gt; ClientM a
+</span><a href="#local-6989586621679111221"><span class="hs-identifier hs-var hs-var hs-var hs-var">liftBase</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) &#945;
+-&gt; ClientM &#945;
+forall a.
+ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+-&gt; ClientM a
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-var">ClientM</span></a></span><span> </span><span class="annot"><span class="annottext">(ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) &#945;
+ -&gt; ClientM &#945;)
+-&gt; (IO &#945;
+    -&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) &#945;)
+-&gt; IO &#945;
+-&gt; ClientM &#945;
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">IO &#945; -&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) &#945;
+forall a.
+IO a -&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span class="annot"><span class="hs-comment">-- | Try clients in order, last error is preserved.</span></span><span>
+</span><span id="line-112"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679111229"><span id="local-6989586621679111235"><span class="annot"><span class="hs-identifier hs-type">Alt</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-113"></span><span>  </span><span id="local-6989586621679111241"><span class="annot"><span class="annottext">ClientM a
+</span><a href="#local-6989586621679111241"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621679111242"><span class="annot"><span class="annottext">&lt;!&gt; :: forall a. ClientM a -&gt; ClientM a -&gt; ClientM a
+</span><a href="#local-6989586621679111242"><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;!&gt;</span></a></span></span><span> </span><span id="local-6989586621679111244"><span class="annot"><span class="annottext">ClientM a
+</span><a href="#local-6989586621679111244"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ClientM a
+</span><a href="#local-6989586621679111241"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">ClientM a -&gt; (ClientError -&gt; ClientM a) -&gt; ClientM a
+forall a. ClientM a -&gt; (ClientError -&gt; ClientM a) -&gt; ClientM a
+forall e (m :: * -&gt; *) a.
+MonadError e m =&gt;
+m a -&gt; (e -&gt; m a) -&gt; m a
+</span><span class="hs-operator hs-var">`catchError`</span></span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">ClientError
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ClientM a
+</span><a href="#local-6989586621679111244"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-114"></span><span>
+</span><span id="line-115"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><span class="hs-identifier hs-type">RunClient</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-116"></span><span>  </span><span id="local-6989586621679111252"><span class="annot"><span class="annottext">runRequestAcceptStatus :: Maybe [Status] -&gt; Request -&gt; ClientM Response
+</span><a href="#local-6989586621679111252"><span class="hs-identifier hs-var hs-var hs-var hs-var">runRequestAcceptStatus</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe [Status] -&gt; Request -&gt; ClientM Response
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#performRequest"><span class="hs-identifier hs-var">performRequest</span></a></span><span>
+</span><span id="line-117"></span><span>  </span><span id="local-6989586621679111256"><span class="annot"><span class="annottext">throwClientError :: forall a. ClientError -&gt; ClientM a
+</span><a href="#local-6989586621679111256"><span class="hs-identifier hs-var hs-var hs-var hs-var">throwClientError</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ClientError -&gt; ClientM a
+forall a. ClientError -&gt; ClientM a
+forall e (m :: * -&gt; *) a. MonadError e m =&gt; e -&gt; m a
+</span><span class="hs-identifier hs-var">throwError</span></span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><span class="hs-identifier hs-type">RunStreamingClient</span></span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-120"></span><span>  </span><span id="local-6989586621679111264"><span class="annot"><span class="annottext">withStreamingRequest :: forall a. Request -&gt; (StreamingResponse -&gt; IO a) -&gt; ClientM a
+</span><a href="#local-6989586621679111264"><span class="hs-identifier hs-var hs-var hs-var hs-var">withStreamingRequest</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Request -&gt; (StreamingResponse -&gt; IO a) -&gt; ClientM a
+forall a. Request -&gt; (StreamingResponse -&gt; IO a) -&gt; ClientM a
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#performWithStreamingRequest"><span class="hs-identifier hs-var">performWithStreamingRequest</span></a></span><span>
+</span><span id="line-121"></span><span>
+</span><span id="line-122"></span><span id="local-6989586621679110921"><span id="local-6989586621679110922"><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#withClientM"><span class="hs-identifier hs-type">withClientM</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679110921"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#ClientEnv"><span class="hs-identifier hs-type">ClientEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ClientError</span></span><span> </span><span class="annot"><a href="#local-6989586621679110921"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679110922"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679110922"><span class="hs-identifier hs-type">b</span></a></span></span></span><span>
+</span><span id="line-123"></span><span id="withClientM"><span class="annot"><span class="annottext">withClientM :: forall a b.
+ClientM a -&gt; ClientEnv -&gt; (Either ClientError a -&gt; IO b) -&gt; IO b
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#withClientM"><span class="hs-identifier hs-var hs-var">withClientM</span></a></span></span><span> </span><span id="local-6989586621679111268"><span class="annot"><span class="annottext">ClientM a
+</span><a href="#local-6989586621679111268"><span class="hs-identifier hs-var">cm</span></a></span></span><span> </span><span id="local-6989586621679111269"><span class="annot"><span class="annottext">ClientEnv
+</span><a href="#local-6989586621679111269"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span id="local-6989586621679111270"><span class="annot"><span class="annottext">Either ClientError a -&gt; IO b
+</span><a href="#local-6989586621679111270"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-124"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Codensity</span></span><span> </span><span id="local-6989586621679111272"><span class="annot"><span class="annottext">forall b. (Either ClientError a -&gt; IO b) -&gt; IO b
+</span><a href="#local-6989586621679111272"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ExceptT ClientError (Codensity IO) a
+-&gt; Codensity IO (Either ClientError a)
+forall e (m :: * -&gt; *) a. ExceptT e m a -&gt; m (Either e a)
+</span><span class="hs-identifier hs-var">runExceptT</span></span><span> </span><span class="annot"><span class="annottext">(ExceptT ClientError (Codensity IO) a
+ -&gt; Codensity IO (Either ClientError a))
+-&gt; ExceptT ClientError (Codensity IO) a
+-&gt; Codensity IO (Either ClientError a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+ -&gt; ClientEnv -&gt; ExceptT ClientError (Codensity IO) a)
+-&gt; ClientEnv
+-&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+-&gt; ExceptT ClientError (Codensity IO) a
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+-&gt; ClientEnv -&gt; ExceptT ClientError (Codensity IO) a
+forall r (m :: * -&gt; *) a. ReaderT r m a -&gt; r -&gt; m a
+</span><span class="hs-identifier hs-var">runReaderT</span></span><span> </span><span class="annot"><span class="annottext">ClientEnv
+</span><a href="#local-6989586621679111269"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">(ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+ -&gt; ExceptT ClientError (Codensity IO) a)
+-&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+-&gt; ExceptT ClientError (Codensity IO) a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ClientM a
+-&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+forall a.
+ClientM a
+-&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#unClientM"><span class="hs-identifier hs-var">unClientM</span></a></span><span> </span><span class="annot"><span class="annottext">ClientM a
+</span><a href="#local-6989586621679111268"><span class="hs-identifier hs-var">cm</span></a></span><span>
+</span><span id="line-125"></span><span>    </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">(Either ClientError a -&gt; IO b) -&gt; IO b
+forall b. (Either ClientError a -&gt; IO b) -&gt; IO b
+</span><a href="#local-6989586621679111272"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Either ClientError a -&gt; IO b
+</span><a href="#local-6989586621679111270"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-126"></span><span>
+</span><span id="line-127"></span><span class="hs-comment">-- | A 'runClientM' variant for streaming client.</span><span>
+</span><span id="line-128"></span><span class="hs-comment">--</span><span>
+</span><span id="line-129"></span><span class="hs-comment">-- It allows using this module's 'ClientM' in a direct style.</span><span>
+</span><span id="line-130"></span><span class="hs-comment">-- The 'NFData' constraint however prevents using this function with genuine</span><span>
+</span><span id="line-131"></span><span class="hs-comment">-- streaming response types ('SourceT', 'Conduit', pipes 'Proxy' or 'Machine').</span><span>
+</span><span id="line-132"></span><span class="hs-comment">-- For those you have to use 'withClientM'.</span><span>
+</span><span id="line-133"></span><span class="hs-comment">--</span><span>
+</span><span id="line-134"></span><span class="hs-comment">-- /Note:/ we 'force' the result, so the likelihood of accidentally leaking a</span><span>
+</span><span id="line-135"></span><span class="hs-comment">-- connection is smaller. Use with care.</span><span>
+</span><span id="line-136"></span><span class="hs-comment">--</span><span>
+</span><span id="line-137"></span><span id="local-6989586621679110938"><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#runClientM"><span class="hs-identifier hs-type">runClientM</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">NFData</span></span><span> </span><span class="annot"><a href="#local-6989586621679110938"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679110938"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#ClientEnv"><span class="hs-identifier hs-type">ClientEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ClientError</span></span><span> </span><span class="annot"><a href="#local-6989586621679110938"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-138"></span><span id="runClientM"><span class="annot"><span class="annottext">runClientM :: forall a.
+NFData a =&gt;
+ClientM a -&gt; ClientEnv -&gt; IO (Either ClientError a)
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#runClientM"><span class="hs-identifier hs-var hs-var">runClientM</span></a></span></span><span> </span><span id="local-6989586621679111282"><span class="annot"><span class="annottext">ClientM a
+</span><a href="#local-6989586621679111282"><span class="hs-identifier hs-var">cm</span></a></span></span><span> </span><span id="local-6989586621679111283"><span class="annot"><span class="annottext">ClientEnv
+</span><a href="#local-6989586621679111283"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ClientM a
+-&gt; ClientEnv
+-&gt; (Either ClientError a -&gt; IO (Either ClientError a))
+-&gt; IO (Either ClientError a)
+forall a b.
+ClientM a -&gt; ClientEnv -&gt; (Either ClientError a -&gt; IO b) -&gt; IO b
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#withClientM"><span class="hs-identifier hs-var">withClientM</span></a></span><span> </span><span class="annot"><span class="annottext">ClientM a
+</span><a href="#local-6989586621679111282"><span class="hs-identifier hs-var">cm</span></a></span><span> </span><span class="annot"><span class="annottext">ClientEnv
+</span><a href="#local-6989586621679111283"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Either ClientError a -&gt; IO (Either ClientError a)
+forall a. a -&gt; IO a
+</span><span class="hs-identifier hs-var">evaluate</span></span><span> </span><span class="annot"><span class="annottext">(Either ClientError a -&gt; IO (Either ClientError a))
+-&gt; (Either ClientError a -&gt; Either ClientError a)
+-&gt; Either ClientError a
+-&gt; IO (Either ClientError a)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Either ClientError a -&gt; Either ClientError a
+forall a. NFData a =&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">force</span></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>
+</span><span id="line-140"></span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#performRequest"><span class="hs-identifier hs-type">performRequest</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Status</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Response</span></span><span>
+</span><span id="line-141"></span><span id="performRequest"><span class="annot"><span class="annottext">performRequest :: Maybe [Status] -&gt; Request -&gt; ClientM Response
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#performRequest"><span class="hs-identifier hs-var hs-var">performRequest</span></a></span></span><span> </span><span id="local-6989586621679111284"><span class="annot"><span class="annottext">Maybe [Status]
+</span><a href="#local-6989586621679111284"><span class="hs-identifier hs-var">acceptStatus</span></a></span></span><span> </span><span id="local-6989586621679111285"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111285"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-142"></span><span>    </span><span class="hs-comment">-- TODO: should use Client.withResponse here too</span><span>
+</span><span id="line-143"></span><span>  </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#ClientEnv"><span class="hs-identifier hs-type">ClientEnv</span></a></span><span> </span><span id="local-6989586621679111287"><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679111287"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span id="local-6989586621679111288"><span class="annot"><span class="annottext">BaseUrl
+</span><a href="#local-6989586621679111288"><span class="hs-identifier hs-var">burl</span></a></span></span><span> </span><span id="local-6989586621679111289"><span class="annot"><span class="annottext">Maybe (TVar CookieJar)
+</span><a href="#local-6989586621679111289"><span class="hs-identifier hs-var">cookieJar'</span></a></span></span><span> </span><span id="local-6989586621679111290"><span class="annot"><span class="annottext">BaseUrl -&gt; Request -&gt; IO Request
+</span><a href="#local-6989586621679111290"><span class="hs-identifier hs-var">createClientRequest</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ClientM ClientEnv
+forall r (m :: * -&gt; *). MonadReader r m =&gt; m r
+</span><span class="hs-identifier hs-var">ask</span></span><span>
+</span><span id="line-144"></span><span>  </span><span id="local-6989586621679111292"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111292"><span class="hs-identifier hs-var">clientRequest</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO Request -&gt; ClientM Request
+forall a. IO a -&gt; ClientM a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO Request -&gt; ClientM Request) -&gt; IO Request -&gt; ClientM Request
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BaseUrl -&gt; Request -&gt; IO Request
+</span><a href="#local-6989586621679111290"><span class="hs-identifier hs-var">createClientRequest</span></a></span><span> </span><span class="annot"><span class="annottext">BaseUrl
+</span><a href="#local-6989586621679111288"><span class="hs-identifier hs-var">burl</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111285"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-145"></span><span>  </span><span id="local-6989586621679111293"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111293"><span class="hs-identifier hs-var">request</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe (TVar CookieJar)
+</span><a href="#local-6989586621679111289"><span class="hs-identifier hs-var">cookieJar'</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-146"></span><span>    </span><span class="annot"><span class="annottext">Maybe (TVar CookieJar)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Request -&gt; ClientM Request
+forall a. a -&gt; ClientM a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111292"><span class="hs-identifier hs-var">clientRequest</span></a></span><span>
+</span><span id="line-147"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679111294"><span class="annot"><span class="annottext">TVar CookieJar
+</span><a href="#local-6989586621679111294"><span class="hs-identifier hs-var">cj</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO Request -&gt; ClientM Request
+forall a. IO a -&gt; ClientM a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO Request -&gt; ClientM Request) -&gt; IO Request -&gt; ClientM Request
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-148"></span><span>      </span><span id="local-6989586621679111295"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679111295"><span class="hs-identifier hs-var">now</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO UTCTime
+</span><span class="hs-identifier hs-var">getCurrentTime</span></span><span>
+</span><span id="line-149"></span><span>      </span><span class="annot"><span class="annottext">STM Request -&gt; IO Request
+forall a. STM a -&gt; IO a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM Request -&gt; IO Request) -&gt; STM Request -&gt; IO Request
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-150"></span><span>        </span><span id="local-6989586621679111296"><span class="annot"><span class="annottext">CookieJar
+</span><a href="#local-6989586621679111296"><span class="hs-identifier hs-var">oldCookieJar</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TVar CookieJar -&gt; STM CookieJar
+forall a. TVar a -&gt; STM a
+</span><span class="hs-identifier hs-var">readTVar</span></span><span> </span><span class="annot"><span class="annottext">TVar CookieJar
+</span><a href="#local-6989586621679111294"><span class="hs-identifier hs-var">cj</span></a></span><span>
+</span><span id="line-151"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679111298"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111298"><span class="hs-identifier hs-var">newRequest</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679111299"><span class="annot"><span class="annottext">CookieJar
+</span><a href="#local-6989586621679111299"><span class="hs-identifier hs-var">newCookieJar</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-152"></span><span>              </span><span class="annot"><span class="annottext">Request -&gt; CookieJar -&gt; UTCTime -&gt; (Request, CookieJar)
+</span><span class="hs-identifier hs-var">Client.insertCookiesIntoRequest</span></span><span>
+</span><span id="line-153"></span><span>                </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111292"><span class="hs-identifier hs-var">clientRequest</span></a></span><span>
+</span><span id="line-154"></span><span>                </span><span class="annot"><span class="annottext">CookieJar
+</span><a href="#local-6989586621679111296"><span class="hs-identifier hs-var">oldCookieJar</span></a></span><span>
+</span><span id="line-155"></span><span>                </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679111295"><span class="hs-identifier hs-var">now</span></a></span><span>
+</span><span id="line-156"></span><span>        </span><span class="annot"><span class="annottext">TVar CookieJar -&gt; CookieJar -&gt; STM ()
+forall a. TVar a -&gt; a -&gt; STM ()
+</span><span class="hs-identifier hs-var">writeTVar</span></span><span> </span><span class="annot"><span class="annottext">TVar CookieJar
+</span><a href="#local-6989586621679111294"><span class="hs-identifier hs-var">cj</span></a></span><span> </span><span class="annot"><span class="annottext">CookieJar
+</span><a href="#local-6989586621679111299"><span class="hs-identifier hs-var">newCookieJar</span></a></span><span>
+</span><span id="line-157"></span><span>        </span><span class="annot"><span class="annottext">Request -&gt; STM Request
+forall a. a -&gt; STM a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111298"><span class="hs-identifier hs-var">newRequest</span></a></span><span>
+</span><span id="line-158"></span><span>
+</span><span id="line-159"></span><span>  </span><span id="local-6989586621679111302"><span class="annot"><span class="annottext">Either ClientError (Response ByteString)
+</span><a href="#local-6989586621679111302"><span class="hs-identifier hs-var">eResponse</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO (Either ClientError (Response ByteString))
+-&gt; ClientM (Either ClientError (Response ByteString))
+forall a. IO a -&gt; ClientM a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO (Either ClientError (Response ByteString))
+ -&gt; ClientM (Either ClientError (Response ByteString)))
+-&gt; IO (Either ClientError (Response ByteString))
+-&gt; ClientM (Either ClientError (Response ByteString))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IO (Response ByteString)
+-&gt; IO (Either ClientError (Response ByteString))
+forall a. IO a -&gt; IO (Either ClientError a)
+</span><a href="Servant.Client.Internal.HttpClient.html#catchConnectionError"><span class="hs-identifier hs-var">catchConnectionError</span></a></span><span> </span><span class="annot"><span class="annottext">(IO (Response ByteString)
+ -&gt; IO (Either ClientError (Response ByteString)))
+-&gt; IO (Response ByteString)
+-&gt; IO (Either ClientError (Response ByteString))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Request -&gt; Manager -&gt; IO (Response ByteString)
+</span><span class="hs-identifier hs-var">Client.httpLbs</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111293"><span class="hs-identifier hs-var">request</span></a></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679111287"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-160"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either ClientError (Response ByteString)
+</span><a href="#local-6989586621679111302"><span class="hs-identifier hs-var">eResponse</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-161"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621679111304"><span class="annot"><span class="annottext">ClientError
+</span><a href="#local-6989586621679111304"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ClientError -&gt; ClientM Response
+forall a. ClientError -&gt; ClientM a
+forall e (m :: * -&gt; *) a. MonadError e m =&gt; e -&gt; m a
+</span><span class="hs-identifier hs-var">throwError</span></span><span> </span><span class="annot"><span class="annottext">ClientError
+</span><a href="#local-6989586621679111304"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-162"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621679111305"><span class="annot"><span class="annottext">Response ByteString
+</span><a href="#local-6989586621679111305"><span class="hs-identifier hs-var">response</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-163"></span><span>      </span><span class="annot"><span class="annottext">Maybe (TVar CookieJar)
+-&gt; (TVar CookieJar -&gt; ClientM ()) -&gt; ClientM ()
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Foldable t, Applicative f) =&gt;
+t a -&gt; (a -&gt; f b) -&gt; f ()
+</span><span class="hs-identifier hs-var">for_</span></span><span> </span><span class="annot"><span class="annottext">Maybe (TVar CookieJar)
+</span><a href="#local-6989586621679111289"><span class="hs-identifier hs-var">cookieJar'</span></a></span><span> </span><span class="annot"><span class="annottext">((TVar CookieJar -&gt; ClientM ()) -&gt; ClientM ())
+-&gt; (TVar CookieJar -&gt; ClientM ()) -&gt; ClientM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679111306"><span class="annot"><span class="annottext">TVar CookieJar
+</span><a href="#local-6989586621679111306"><span class="hs-identifier hs-var">cj</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; ClientM ()
+forall a. IO a -&gt; ClientM a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; ClientM ()) -&gt; IO () -&gt; ClientM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-164"></span><span>        </span><span id="local-6989586621679111307"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679111307"><span class="hs-identifier hs-var">now'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO UTCTime
+</span><span class="hs-identifier hs-var">getCurrentTime</span></span><span>
+</span><span id="line-165"></span><span>        </span><span class="annot"><span class="annottext">STM () -&gt; IO ()
+forall a. STM a -&gt; IO a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM () -&gt; IO ()) -&gt; STM () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TVar CookieJar -&gt; (CookieJar -&gt; CookieJar) -&gt; STM ()
+forall a. TVar a -&gt; (a -&gt; a) -&gt; STM ()
+</span><span class="hs-identifier hs-var">modifyTVar'</span></span><span> </span><span class="annot"><span class="annottext">TVar CookieJar
+</span><a href="#local-6989586621679111306"><span class="hs-identifier hs-var">cj</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(CookieJar, Response ByteString) -&gt; CookieJar
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">((CookieJar, Response ByteString) -&gt; CookieJar)
+-&gt; (CookieJar -&gt; (CookieJar, Response ByteString))
+-&gt; CookieJar
+-&gt; CookieJar
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Response ByteString
+-&gt; Request
+-&gt; UTCTime
+-&gt; CookieJar
+-&gt; (CookieJar, Response ByteString)
+forall a.
+Response a
+-&gt; Request -&gt; UTCTime -&gt; CookieJar -&gt; (CookieJar, Response a)
+</span><span class="hs-identifier hs-var">Client.updateCookieJar</span></span><span> </span><span class="annot"><span class="annottext">Response ByteString
+</span><a href="#local-6989586621679111305"><span class="hs-identifier hs-var">response</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111293"><span class="hs-identifier hs-var">request</span></a></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679111307"><span class="hs-identifier hs-var">now'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-166"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679111311"><span class="annot"><span class="annottext">status :: Status
+</span><a href="#local-6989586621679111311"><span class="hs-identifier hs-var hs-var">status</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response ByteString -&gt; Status
+forall body. Response body -&gt; Status
+</span><span class="hs-identifier hs-var">Client.responseStatus</span></span><span> </span><span class="annot"><span class="annottext">Response ByteString
+</span><a href="#local-6989586621679111305"><span class="hs-identifier hs-var">response</span></a></span><span>
+</span><span id="line-167"></span><span>          </span><span id="local-6989586621679111313"><span class="annot"><span class="annottext">ourResponse :: Response
+</span><a href="#local-6989586621679111313"><span class="hs-identifier hs-var hs-var">ourResponse</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; Response ByteString -&gt; Response
+forall a b. (a -&gt; b) -&gt; Response a -&gt; ResponseF b
+</span><a href="Servant.Client.Internal.HttpClient.html#clientResponseToResponse"><span class="hs-identifier hs-var">clientResponseToResponse</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="annot"><span class="annottext">Response ByteString
+</span><a href="#local-6989586621679111305"><span class="hs-identifier hs-var">response</span></a></span><span>
+</span><span id="line-168"></span><span>          </span><span id="local-6989586621679111315"><span class="annot"><span class="annottext">goodStatus :: Bool
+</span><a href="#local-6989586621679111315"><span class="hs-identifier hs-var hs-var">goodStatus</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe [Status]
+</span><a href="#local-6989586621679111284"><span class="hs-identifier hs-var">acceptStatus</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-169"></span><span>            </span><span class="annot"><span class="annottext">Maybe [Status]
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Status -&gt; Bool
+</span><span class="hs-identifier hs-var">statusIsSuccessful</span></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679111311"><span class="hs-identifier hs-var">status</span></a></span><span>
+</span><span id="line-170"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679111316"><span class="annot"><span class="annottext">[Status]
+</span><a href="#local-6989586621679111316"><span class="hs-identifier hs-var">good</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679111311"><span class="hs-identifier hs-var">status</span></a></span><span> </span><span class="annot"><span class="annottext">Status -&gt; [Status] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; [a] -&gt; Bool
+forall (t :: * -&gt; *) a. (Foldable t, Eq a) =&gt; a -&gt; t a -&gt; Bool
+</span><span class="hs-operator hs-var">`elem`</span></span><span> </span><span class="annot"><span class="annottext">[Status]
+</span><a href="#local-6989586621679111316"><span class="hs-identifier hs-var">good</span></a></span><span>
+</span><span id="line-171"></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; ClientM () -&gt; ClientM ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679111315"><span class="hs-identifier hs-var">goodStatus</span></a></span><span> </span><span class="annot"><span class="annottext">(ClientM () -&gt; ClientM ()) -&gt; ClientM () -&gt; ClientM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-172"></span><span>        </span><span class="annot"><span class="annottext">ClientError -&gt; ClientM ()
+forall a. ClientError -&gt; ClientM a
+forall e (m :: * -&gt; *) a. MonadError e m =&gt; e -&gt; m a
+</span><span class="hs-identifier hs-var">throwError</span></span><span> </span><span class="annot"><span class="annottext">(ClientError -&gt; ClientM ()) -&gt; ClientError -&gt; ClientM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BaseUrl -&gt; Request -&gt; Response -&gt; ClientError
+</span><a href="Servant.Client.Internal.HttpClient.html#mkFailureResponse"><span class="hs-identifier hs-var">mkFailureResponse</span></a></span><span> </span><span class="annot"><span class="annottext">BaseUrl
+</span><a href="#local-6989586621679111288"><span class="hs-identifier hs-var">burl</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111285"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111313"><span class="hs-identifier hs-var">ourResponse</span></a></span><span>
+</span><span id="line-173"></span><span>      </span><span class="annot"><span class="annottext">Response -&gt; ClientM Response
+forall a. a -&gt; ClientM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111313"><span class="hs-identifier hs-var">ourResponse</span></a></span><span>
+</span><span id="line-174"></span><span>
+</span><span id="line-175"></span><span class="annot"><span class="hs-comment">-- | TODO: support UVerb ('acceptStatus' argument, like in 'performRequest' above).</span></span><span>
+</span><span id="line-176"></span><span id="local-6989586621679111318"><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#performWithStreamingRequest"><span class="hs-identifier hs-type">performWithStreamingRequest</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">StreamingResponse</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679111318"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-type">ClientM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679111318"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-177"></span><span id="performWithStreamingRequest"><span class="annot"><span class="annottext">performWithStreamingRequest :: forall a. Request -&gt; (StreamingResponse -&gt; IO a) -&gt; ClientM a
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#performWithStreamingRequest"><span class="hs-identifier hs-var hs-var">performWithStreamingRequest</span></a></span></span><span> </span><span id="local-6989586621679111337"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111337"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span id="local-6989586621679111338"><span class="annot"><span class="annottext">StreamingResponse -&gt; IO a
+</span><a href="#local-6989586621679111338"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-178"></span><span>  </span><span class="annot"><a href="Servant.Client.Internal.HttpClient.html#ClientEnv"><span class="hs-identifier hs-type">ClientEnv</span></a></span><span> </span><span id="local-6989586621679111339"><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679111339"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span id="local-6989586621679111340"><span class="annot"><span class="annottext">BaseUrl
+</span><a href="#local-6989586621679111340"><span class="hs-identifier hs-var">burl</span></a></span></span><span> </span><span id="local-6989586621679111341"><span class="annot"><span class="annottext">Maybe (TVar CookieJar)
+</span><a href="#local-6989586621679111341"><span class="hs-identifier hs-var">cookieJar'</span></a></span></span><span> </span><span id="local-6989586621679111342"><span class="annot"><span class="annottext">BaseUrl -&gt; Request -&gt; IO Request
+</span><a href="#local-6989586621679111342"><span class="hs-identifier hs-var">createClientRequest</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ClientM ClientEnv
+forall r (m :: * -&gt; *). MonadReader r m =&gt; m r
+</span><span class="hs-identifier hs-var">ask</span></span><span>
+</span><span id="line-179"></span><span>  </span><span id="local-6989586621679111343"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111343"><span class="hs-identifier hs-var">clientRequest</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO Request -&gt; ClientM Request
+forall a. IO a -&gt; ClientM a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO Request -&gt; ClientM Request) -&gt; IO Request -&gt; ClientM Request
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BaseUrl -&gt; Request -&gt; IO Request
+</span><a href="#local-6989586621679111342"><span class="hs-identifier hs-var">createClientRequest</span></a></span><span> </span><span class="annot"><span class="annottext">BaseUrl
+</span><a href="#local-6989586621679111340"><span class="hs-identifier hs-var">burl</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111337"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-180"></span><span>  </span><span id="local-6989586621679111344"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111344"><span class="hs-identifier hs-var">request</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe (TVar CookieJar)
+</span><a href="#local-6989586621679111341"><span class="hs-identifier hs-var">cookieJar'</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-181"></span><span>    </span><span class="annot"><span class="annottext">Maybe (TVar CookieJar)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Request -&gt; ClientM Request
+forall a. a -&gt; ClientM a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111343"><span class="hs-identifier hs-var">clientRequest</span></a></span><span>
+</span><span id="line-182"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679111345"><span class="annot"><span class="annottext">TVar CookieJar
+</span><a href="#local-6989586621679111345"><span class="hs-identifier hs-var">cj</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO Request -&gt; ClientM Request
+forall a. IO a -&gt; ClientM a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO Request -&gt; ClientM Request) -&gt; IO Request -&gt; ClientM Request
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-183"></span><span>      </span><span id="local-6989586621679111346"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679111346"><span class="hs-identifier hs-var">now</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO UTCTime
+</span><span class="hs-identifier hs-var">getCurrentTime</span></span><span>
+</span><span id="line-184"></span><span>      </span><span class="annot"><span class="annottext">STM Request -&gt; IO Request
+forall a. STM a -&gt; IO a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM Request -&gt; IO Request) -&gt; STM Request -&gt; IO Request
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-185"></span><span>        </span><span id="local-6989586621679111347"><span class="annot"><span class="annottext">CookieJar
+</span><a href="#local-6989586621679111347"><span class="hs-identifier hs-var">oldCookieJar</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TVar CookieJar -&gt; STM CookieJar
+forall a. TVar a -&gt; STM a
+</span><span class="hs-identifier hs-var">readTVar</span></span><span> </span><span class="annot"><span class="annottext">TVar CookieJar
+</span><a href="#local-6989586621679111345"><span class="hs-identifier hs-var">cj</span></a></span><span>
+</span><span id="line-186"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679111348"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111348"><span class="hs-identifier hs-var">newRequest</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679111349"><span class="annot"><span class="annottext">CookieJar
+</span><a href="#local-6989586621679111349"><span class="hs-identifier hs-var">newCookieJar</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-187"></span><span>              </span><span class="annot"><span class="annottext">Request -&gt; CookieJar -&gt; UTCTime -&gt; (Request, CookieJar)
+</span><span class="hs-identifier hs-var">Client.insertCookiesIntoRequest</span></span><span>
+</span><span id="line-188"></span><span>                </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111343"><span class="hs-identifier hs-var">clientRequest</span></a></span><span>
+</span><span id="line-189"></span><span>                </span><span class="annot"><span class="annottext">CookieJar
+</span><a href="#local-6989586621679111347"><span class="hs-identifier hs-var">oldCookieJar</span></a></span><span>
+</span><span id="line-190"></span><span>                </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679111346"><span class="hs-identifier hs-var">now</span></a></span><span>
+</span><span id="line-191"></span><span>        </span><span class="annot"><span class="annottext">TVar CookieJar -&gt; CookieJar -&gt; STM ()
+forall a. TVar a -&gt; a -&gt; STM ()
+</span><span class="hs-identifier hs-var">writeTVar</span></span><span> </span><span class="annot"><span class="annottext">TVar CookieJar
+</span><a href="#local-6989586621679111345"><span class="hs-identifier hs-var">cj</span></a></span><span> </span><span class="annot"><span class="annottext">CookieJar
+</span><a href="#local-6989586621679111349"><span class="hs-identifier hs-var">newCookieJar</span></a></span><span>
+</span><span id="line-192"></span><span>        </span><span class="annot"><span class="annottext">Request -&gt; STM Request
+forall a. a -&gt; STM a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111348"><span class="hs-identifier hs-var">newRequest</span></a></span><span>
+</span><span id="line-193"></span><span>  </span><span class="annot"><span class="annottext">ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+-&gt; ClientM a
+forall a.
+ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+-&gt; ClientM a
+</span><a href="Servant.Client.Internal.HttpClient.Streaming.html#ClientM"><span class="hs-identifier hs-var">ClientM</span></a></span><span> </span><span class="annot"><span class="annottext">(ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+ -&gt; ClientM a)
+-&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+-&gt; ClientM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ExceptT ClientError (Codensity IO) a
+-&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; ReaderT ClientEnv m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(ExceptT ClientError (Codensity IO) a
+ -&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a)
+-&gt; ExceptT ClientError (Codensity IO) a
+-&gt; ReaderT ClientEnv (ExceptT ClientError (Codensity IO)) a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Codensity IO a -&gt; ExceptT ClientError (Codensity IO) a
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; ExceptT ClientError m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(Codensity IO a -&gt; ExceptT ClientError (Codensity IO) a)
+-&gt; Codensity IO a -&gt; ExceptT ClientError (Codensity IO) a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(forall b. (a -&gt; IO b) -&gt; IO b) -&gt; Codensity IO a
+forall k (m :: k -&gt; *) a.
+(forall (b :: k). (a -&gt; m b) -&gt; m b) -&gt; Codensity m a
+</span><span class="hs-identifier hs-var">Codensity</span></span><span> </span><span class="annot"><span class="annottext">((forall b. (a -&gt; IO b) -&gt; IO b) -&gt; Codensity IO a)
+-&gt; (forall b. (a -&gt; IO b) -&gt; IO b) -&gt; Codensity IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679111360"><span class="annot"><span class="annottext">a -&gt; IO b
+</span><a href="#local-6989586621679111360"><span class="hs-identifier hs-var">k1</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-194"></span><span>      </span><span class="annot"><span class="annottext">Request -&gt; Manager -&gt; (Response BodyReader -&gt; IO b) -&gt; IO b
+forall a.
+Request -&gt; Manager -&gt; (Response BodyReader -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">Client.withResponse</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111344"><span class="hs-identifier hs-var">request</span></a></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679111339"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">((Response BodyReader -&gt; IO b) -&gt; IO b)
+-&gt; (Response BodyReader -&gt; IO b) -&gt; IO b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679111362"><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679111362"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-195"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679111363"><span class="annot"><span class="annottext">status :: Status
+</span><a href="#local-6989586621679111363"><span class="hs-identifier hs-var hs-var">status</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response BodyReader -&gt; Status
+forall body. Response body -&gt; Status
+</span><span class="hs-identifier hs-var">Client.responseStatus</span></span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679111362"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-196"></span><span>
+</span><span id="line-197"></span><span>          </span><span class="hs-comment">-- we throw FailureResponse in IO :(</span><span>
+</span><span id="line-198"></span><span>          </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Status -&gt; Bool
+</span><span class="hs-identifier hs-var">statusIsSuccessful</span></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679111363"><span class="hs-identifier hs-var">status</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-199"></span><span>              </span><span id="local-6989586621679111364"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111364"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; ByteString
+</span><span class="hs-identifier hs-var">BSL.fromChunks</span></span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; ByteString) -&gt; IO [ByteString] -&gt; IO ByteString
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">BodyReader -&gt; IO [ByteString]
+</span><span class="hs-identifier hs-var">Client.brConsume</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Response BodyReader -&gt; BodyReader
+forall body. Response body -&gt; body
+</span><span class="hs-identifier hs-var">Client.responseBody</span></span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679111362"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-200"></span><span>              </span><span class="annot"><span class="annottext">ClientError -&gt; IO ()
+forall e a. Exception e =&gt; e -&gt; IO a
+</span><span class="hs-identifier hs-var">throwIO</span></span><span> </span><span class="annot"><span class="annottext">(ClientError -&gt; IO ()) -&gt; ClientError -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BaseUrl -&gt; Request -&gt; Response -&gt; ClientError
+</span><a href="Servant.Client.Internal.HttpClient.html#mkFailureResponse"><span class="hs-identifier hs-var">mkFailureResponse</span></a></span><span> </span><span class="annot"><span class="annottext">BaseUrl
+</span><a href="#local-6989586621679111340"><span class="hs-identifier hs-var">burl</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111337"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(BodyReader -&gt; ByteString) -&gt; Response BodyReader -&gt; Response
+forall a b. (a -&gt; b) -&gt; Response a -&gt; ResponseF b
+</span><a href="Servant.Client.Internal.HttpClient.html#clientResponseToResponse"><span class="hs-identifier hs-var">clientResponseToResponse</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader -&gt; ByteString
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111364"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679111362"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-201"></span><span>
+</span><span id="line-202"></span><span>          </span><span id="local-6989586621679111370"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679111370"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">StreamingResponse -&gt; IO a
+</span><a href="#local-6989586621679111338"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(BodyReader -&gt; SourceIO ByteString)
+-&gt; Response BodyReader -&gt; StreamingResponse
+forall a b. (a -&gt; b) -&gt; Response a -&gt; ResponseF b
+</span><a href="Servant.Client.Internal.HttpClient.html#clientResponseToResponse"><span class="hs-identifier hs-var">clientResponseToResponse</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(ByteString -&gt; Bool) -&gt; BodyReader -&gt; SourceIO ByteString
+forall (m :: * -&gt; *) a.
+Functor m =&gt;
+(a -&gt; Bool) -&gt; m a -&gt; SourceT m a
+</span><span class="hs-identifier hs-var">S.fromAction</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">BS.null</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679111362"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-203"></span><span>          </span><span class="annot"><span class="annottext">a -&gt; IO b
+</span><a href="#local-6989586621679111360"><span class="hs-identifier hs-var">k1</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679111370"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-204"></span></pre></body></html>

@@ -1,0 +1,905 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE RecordWildCards #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- | Best current practice library for UDP clients and servers.</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--   * Efficient receiving function without memory copy</span><span>
+</span><span id="line-8"></span><span class="hs-comment">--   * Proper buffer size</span><span>
+</span><span id="line-9"></span><span class="hs-comment">--   * Type-safe APIs</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--   * TCP-like APIs (creating a UDP connection from a listing socket) in the server side</span><span>
+</span><span id="line-11"></span><span class="hs-comment">--   * Auto migration (network interface selection) in the client side</span><span>
+</span><span id="line-12"></span><span class="hs-comment">--</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--   The 'Network.Socket.ByteString.recv' family in</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--   &quot;Network.Socket.ByteString&quot; uses 'createAndTrim'</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--   internaly.  So, one buffer is allocated before corresponding</span><span>
+</span><span id="line-16"></span><span class="hs-comment">--   system calls are called. Then another buffer is allocated</span><span>
+</span><span id="line-17"></span><span class="hs-comment">--   according to the input size and the input is copied.</span><span>
+</span><span id="line-18"></span><span class="hs-comment">--   Receiving functions provided by this library uses 'createUptoN'</span><span>
+</span><span id="line-19"></span><span class="hs-comment">--   to avoid the memory copy.</span><span>
+</span><span id="line-20"></span><span class="hs-comment">--</span><span>
+</span><span id="line-21"></span><span class="hs-comment">--   Recent application protocols are designed to avoid IP</span><span>
+</span><span id="line-22"></span><span class="hs-comment">--   fragmentation. So, the UDP payload size is never over 1,500.</span><span>
+</span><span id="line-23"></span><span class="hs-comment">--   This library uses 2,048 for the buffer size. This size ensures</span><span>
+</span><span id="line-24"></span><span class="hs-comment">--   no global locking when allocating 'ByteString' (i.e. a buffer).</span><span>
+</span><span id="line-25"></span><span class="hs-comment">--</span><span>
+</span><span id="line-26"></span><span class="hs-comment">--   To know the background of TCP-like API in the server side, see:</span><span>
+</span><span id="line-27"></span><span class="hs-comment">--</span><span>
+</span><span id="line-28"></span><span class="hs-comment">--   * https://kazu-yamamoto.hatenablog.jp/entry/2022/02/25/153122</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--</span><span>
+</span><span id="line-30"></span><span class="hs-comment">--   To know the background of auto migration in the client side, see:</span><span>
+</span><span id="line-31"></span><span class="hs-comment">--</span><span>
+</span><span id="line-32"></span><span class="hs-comment">--   * https://kazu-yamamoto.hatenablog.jp/entry/2021/06/29/134930</span><span>
+</span><span id="line-33"></span><span class="hs-comment">--   * https://www.iij.ad.jp/en/dev/iir/pdf/iir_vol52_focus2_EN.pdf (Sec 3.9)</span><span>
+</span><span id="line-34"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.UDP</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-35"></span><span>  </span><span class="annot"><span class="hs-comment">-- * Sockets used by clients and servers after accept</span></span><span>
+</span><span id="line-36"></span><span>    </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier">UDPSocket</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#clientSocket"><span class="hs-identifier">clientSocket</span></a></span><span>
+</span><span id="line-38"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#recv"><span class="hs-identifier">recv</span></a></span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#recvBuf"><span class="hs-identifier">recvBuf</span></a></span><span>
+</span><span id="line-40"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#send"><span class="hs-identifier">send</span></a></span><span>
+</span><span id="line-41"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#sendBuf"><span class="hs-identifier">sendBuf</span></a></span><span>
+</span><span id="line-42"></span><span>  </span><span class="annot"><span class="hs-comment">-- * Server's wildcard socket</span></span><span>
+</span><span id="line-43"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier">ListenSocket</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#serverSocket"><span class="hs-identifier">serverSocket</span></a></span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#ClientSockAddr"><span class="hs-identifier">ClientSockAddr</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#recvFrom"><span class="hs-identifier">recvFrom</span></a></span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#sendTo"><span class="hs-identifier">sendTo</span></a></span><span>
+</span><span id="line-48"></span><span>  </span><span class="annot"><span class="hs-comment">-- * Server's connected socket</span></span><span>
+</span><span id="line-49"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#accept"><span class="hs-identifier">accept</span></a></span><span>
+</span><span id="line-50"></span><span>  </span><span class="annot"><span class="hs-comment">-- * Closing</span></span><span>
+</span><span id="line-51"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#stop"><span class="hs-identifier">stop</span></a></span><span>
+</span><span id="line-52"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#close"><span class="hs-identifier">close</span></a></span><span>
+</span><span id="line-53"></span><span>  </span><span class="annot"><span class="hs-comment">-- * Misc</span></span><span>
+</span><span id="line-54"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#natRebinding"><span class="hs-identifier">natRebinding</span></a></span><span>
+</span><span id="line-55"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-56"></span><span>
+</span><span id="line-57"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Concurrent</span></span><span>
+</span><span id="line-58"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">E</span></span><span>
+</span><span id="line-59"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-60"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IP</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">addr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">fromJust</span></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Ptr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-65"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">GHC.IO.Exception</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">E</span></span><span>
+</span><span id="line-66"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Network.Socket</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">NS</span></span><span>
+</span><span id="line-67"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Socket</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">accept</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">close</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">sendBuf</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">recvBuf</span></span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Network.Socket.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">NSB</span></span><span>
+</span><span id="line-69"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">System.IO.Error</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">E</span></span><span>
+</span><span id="line-70"></span><span>
+</span><span id="line-71"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.UDP.Types.html"><span class="hs-identifier">Network.UDP.Types</span></a></span><span>
+</span><span id="line-72"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Network.UDP.Recv.html"><span class="hs-identifier">Network.UDP.Recv</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">R</span></span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-75"></span><span>
+</span><span id="line-76"></span><span class="annot"><a href="Network.UDP.html#anySockAddr"><span class="hs-identifier hs-type">anySockAddr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span>
+</span><span id="line-77"></span><span id="anySockAddr"><span class="annot"><span class="annottext">anySockAddr :: SockAddr -&gt; SockAddr
+</span><a href="Network.UDP.html#anySockAddr"><span class="hs-identifier hs-var hs-var">anySockAddr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">SockAddrInet</span></span><span> </span><span id="local-6989586621679048704"><span class="annot"><span class="annottext">PortNumber
+</span><a href="#local-6989586621679048704"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PortNumber -&gt; HostAddress -&gt; SockAddr
+</span><span class="hs-identifier hs-var">SockAddrInet</span></span><span>  </span><span class="annot"><span class="annottext">PortNumber
+</span><a href="#local-6989586621679048704"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-78"></span><span class="annot"><a href="Network.UDP.html#anySockAddr"><span class="hs-identifier hs-var">anySockAddr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">SockAddrInet6</span></span><span> </span><span id="local-6989586621679048706"><span class="annot"><span class="annottext">PortNumber
+</span><a href="#local-6989586621679048706"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621679048707"><span class="annot"><span class="annottext">HostAddress
+</span><a href="#local-6989586621679048707"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="annot"><span class="annottext">HostAddress6
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679048708"><span class="annot"><span class="annottext">HostAddress
+</span><a href="#local-6989586621679048708"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PortNumber
+-&gt; HostAddress -&gt; HostAddress6 -&gt; HostAddress -&gt; SockAddr
+</span><span class="hs-identifier hs-var">SockAddrInet6</span></span><span> </span><span class="annot"><span class="annottext">PortNumber
+</span><a href="#local-6989586621679048706"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><a href="#local-6989586621679048707"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><a href="#local-6989586621679048708"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-79"></span><span class="annot"><a href="Network.UDP.html#anySockAddr"><span class="hs-identifier hs-var">anySockAddr</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><span class="hs-identifier">_</span></span><span>                       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; SockAddr
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;anySockAddr&quot;</span></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span class="annot"><a href="Network.UDP.html#isAnySockAddr"><span class="hs-identifier hs-type">isAnySockAddr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-82"></span><span id="isAnySockAddr"><span class="annot"><span class="annottext">isAnySockAddr :: SockAddr -&gt; Bool
+</span><a href="Network.UDP.html#isAnySockAddr"><span class="hs-identifier hs-var hs-var">isAnySockAddr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">SockAddrInet</span></span><span> </span><span class="annot"><span class="annottext">PortNumber
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>              </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-83"></span><span class="annot"><a href="Network.UDP.html#isAnySockAddr"><span class="hs-identifier hs-var">isAnySockAddr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">SockAddrInet6</span></span><span> </span><span class="annot"><span class="annottext">PortNumber
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-84"></span><span class="annot"><a href="Network.UDP.html#isAnySockAddr"><span class="hs-identifier hs-var">isAnySockAddr</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><span class="hs-identifier">_</span></span><span>                               </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- | A listening socket for UDP which can be used</span><span>
+</span><span id="line-89"></span><span class="hs-comment">--   for 'recvFrom' and 'sendTo'.</span><span>
+</span><span id="line-90"></span><span class="hs-comment">--   Optionally, a connected UDP socket can be created</span><span>
+</span><span id="line-91"></span><span class="hs-comment">--   with 'accept' as an emulation of TCP.</span><span>
+</span><span id="line-92"></span><span class="hs-keyword">data</span><span> </span><span id="ListenSocket"><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-var">ListenSocket</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="ListenSocket"><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-var">ListenSocket</span></a></span></span><span> </span><span class="hs-special">{</span><span>
+</span><span id="line-93"></span><span>    </span><span id="listenSocket"><span class="annot"><span class="annottext">ListenSocket -&gt; Socket
+</span><a href="Network.UDP.html#listenSocket"><span class="hs-identifier hs-var hs-var">listenSocket</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Socket</span></span><span>
+</span><span id="line-94"></span><span>  </span><span class="hs-special">,</span><span> </span><span id="mySockAddr"><span class="annot"><span class="annottext">ListenSocket -&gt; SockAddr
+</span><a href="Network.UDP.html#mySockAddr"><span class="hs-identifier hs-var hs-var">mySockAddr</span></a></span></span><span>   </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span>
+</span><span id="line-95"></span><span>  </span><span class="hs-special">,</span><span> </span><span id="wildcard"><span class="annot"><span class="annottext">ListenSocket -&gt; Bool
+</span><a href="Network.UDP.html#wildcard"><span class="hs-identifier hs-var hs-var">wildcard</span></a></span></span><span>     </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ 'True' for wildcard. 'False' for interface-specific.</span></span><span>
+</span><span id="line-96"></span><span>  </span><span class="hs-special">}</span><span> </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679048716"><span id="local-6989586621679048724"><span class="annot"><span class="annottext">ListenSocket -&gt; ListenSocket -&gt; Bool
+(ListenSocket -&gt; ListenSocket -&gt; Bool)
+-&gt; (ListenSocket -&gt; ListenSocket -&gt; Bool) -&gt; Eq ListenSocket
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: ListenSocket -&gt; ListenSocket -&gt; Bool
+== :: ListenSocket -&gt; ListenSocket -&gt; Bool
+$c/= :: ListenSocket -&gt; ListenSocket -&gt; Bool
+/= :: ListenSocket -&gt; ListenSocket -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679048729"><span id="local-6989586621679048739"><span id="local-6989586621679048743"><span class="annot"><span class="annottext">Int -&gt; ListenSocket -&gt; ShowS
+[ListenSocket] -&gt; ShowS
+ListenSocket -&gt; [Char]
+(Int -&gt; ListenSocket -&gt; ShowS)
+-&gt; (ListenSocket -&gt; [Char])
+-&gt; ([ListenSocket] -&gt; ShowS)
+-&gt; Show ListenSocket
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; [Char]) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; ListenSocket -&gt; ShowS
+showsPrec :: Int -&gt; ListenSocket -&gt; ShowS
+$cshow :: ListenSocket -&gt; [Char]
+show :: ListenSocket -&gt; [Char]
+$cshowList :: [ListenSocket] -&gt; ShowS
+showList :: [ListenSocket] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>
+</span><span id="line-98"></span><span class="annot"><span class="hs-comment">-- | A UDP socket which are used with 'recv' and 'send'.</span></span><span>
+</span><span id="line-99"></span><span class="hs-keyword">data</span><span> </span><span id="UDPSocket"><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-var">UDPSocket</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="UDPSocket"><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-var">UDPSocket</span></a></span></span><span> </span><span class="hs-special">{</span><span>
+</span><span id="line-100"></span><span>    </span><span id="udpSocket"><span class="annot"><span class="annottext">UDPSocket -&gt; Socket
+</span><a href="Network.UDP.html#udpSocket"><span class="hs-identifier hs-var hs-var">udpSocket</span></a></span></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Socket</span></span><span>
+</span><span id="line-101"></span><span>  </span><span class="hs-special">,</span><span> </span><span id="peerSockAddr"><span class="annot"><span class="annottext">UDPSocket -&gt; SockAddr
+</span><a href="Network.UDP.html#peerSockAddr"><span class="hs-identifier hs-var hs-var">peerSockAddr</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ Used for a unconnected socket naturally. Used for a connected sockdet for checking</span></span><span>
+</span><span id="line-102"></span><span>  </span><span class="hs-special">,</span><span> </span><span id="connected"><span class="annot"><span class="annottext">UDPSocket -&gt; Bool
+</span><a href="Network.UDP.html#connected"><span class="hs-identifier hs-var hs-var">connected</span></a></span></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-103"></span><span>  </span><span class="hs-special">}</span><span> </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679048751"><span id="local-6989586621679048756"><span class="annot"><span class="annottext">UDPSocket -&gt; UDPSocket -&gt; Bool
+(UDPSocket -&gt; UDPSocket -&gt; Bool)
+-&gt; (UDPSocket -&gt; UDPSocket -&gt; Bool) -&gt; Eq UDPSocket
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: UDPSocket -&gt; UDPSocket -&gt; Bool
+== :: UDPSocket -&gt; UDPSocket -&gt; Bool
+$c/= :: UDPSocket -&gt; UDPSocket -&gt; Bool
+/= :: UDPSocket -&gt; UDPSocket -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679048760"><span id="local-6989586621679048766"><span id="local-6989586621679048770"><span class="annot"><span class="annottext">Int -&gt; UDPSocket -&gt; ShowS
+[UDPSocket] -&gt; ShowS
+UDPSocket -&gt; [Char]
+(Int -&gt; UDPSocket -&gt; ShowS)
+-&gt; (UDPSocket -&gt; [Char])
+-&gt; ([UDPSocket] -&gt; ShowS)
+-&gt; Show UDPSocket
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; [Char]) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; UDPSocket -&gt; ShowS
+showsPrec :: Int -&gt; UDPSocket -&gt; ShowS
+$cshow :: UDPSocket -&gt; [Char]
+show :: UDPSocket -&gt; [Char]
+$cshowList :: [UDPSocket] -&gt; ShowS
+showList :: [UDPSocket] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="annot"><span class="hs-comment">-- | A client socket address from the server point of view.</span></span><span>
+</span><span id="line-106"></span><span class="hs-keyword">data</span><span> </span><span id="ClientSockAddr"><span class="annot"><a href="Network.UDP.html#ClientSockAddr"><span class="hs-identifier hs-var">ClientSockAddr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="ClientSockAddr"><span class="annot"><a href="Network.UDP.html#ClientSockAddr"><span class="hs-identifier hs-var">ClientSockAddr</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Cmsg</span></span><span class="hs-special">]</span><span> </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679048774"><span id="local-6989586621679048780"><span class="annot"><span class="annottext">ClientSockAddr -&gt; ClientSockAddr -&gt; Bool
+(ClientSockAddr -&gt; ClientSockAddr -&gt; Bool)
+-&gt; (ClientSockAddr -&gt; ClientSockAddr -&gt; Bool) -&gt; Eq ClientSockAddr
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: ClientSockAddr -&gt; ClientSockAddr -&gt; Bool
+== :: ClientSockAddr -&gt; ClientSockAddr -&gt; Bool
+$c/= :: ClientSockAddr -&gt; ClientSockAddr -&gt; Bool
+/= :: ClientSockAddr -&gt; ClientSockAddr -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679048785"><span id="local-6989586621679048792"><span id="local-6989586621679048796"><span class="annot"><span class="annottext">Int -&gt; ClientSockAddr -&gt; ShowS
+[ClientSockAddr] -&gt; ShowS
+ClientSockAddr -&gt; [Char]
+(Int -&gt; ClientSockAddr -&gt; ShowS)
+-&gt; (ClientSockAddr -&gt; [Char])
+-&gt; ([ClientSockAddr] -&gt; ShowS)
+-&gt; Show ClientSockAddr
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; [Char]) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; ClientSockAddr -&gt; ShowS
+showsPrec :: Int -&gt; ClientSockAddr -&gt; ShowS
+$cshow :: ClientSockAddr -&gt; [Char]
+show :: ClientSockAddr -&gt; [Char]
+$cshowList :: [ClientSockAddr] -&gt; ShowS
+showList :: [ClientSockAddr] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-109"></span><span>
+</span><span id="line-110"></span><span class="annot"><span class="hs-comment">-- | Creating a listening UDP socket.</span></span><span>
+</span><span id="line-111"></span><span class="annot"><a href="Network.UDP.html#serverSocket"><span class="hs-identifier hs-type">serverSocket</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IP</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">PortNumber</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-type">ListenSocket</span></a></span><span>
+</span><span id="line-112"></span><span id="serverSocket"><span class="annot"><span class="annottext">serverSocket :: (IP, PortNumber) -&gt; IO ListenSocket
+</span><a href="Network.UDP.html#serverSocket"><span class="hs-identifier hs-var hs-var">serverSocket</span></a></span></span><span> </span><span id="local-6989586621679048799"><span class="annot"><span class="annottext">(IP, PortNumber)
+</span><a href="#local-6989586621679048799"><span class="hs-identifier hs-var">ip</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Socket
+-&gt; (Socket -&gt; IO ())
+-&gt; (Socket -&gt; IO ListenSocket)
+-&gt; IO ListenSocket
+forall a b c. IO a -&gt; (a -&gt; IO b) -&gt; (a -&gt; IO c) -&gt; IO c
+</span><span class="hs-identifier hs-var">E.bracketOnError</span></span><span> </span><span class="annot"><span class="annottext">IO Socket
+</span><a href="#local-6989586621679048801"><span class="hs-identifier hs-var">open</span></a></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; IO ()
+</span><span class="hs-identifier hs-var">NS.close</span></span><span> </span><span class="annot"><span class="annottext">((Socket -&gt; IO ListenSocket) -&gt; IO ListenSocket)
+-&gt; (Socket -&gt; IO ListenSocket) -&gt; IO ListenSocket
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679048802"><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048802"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-113"></span><span>    </span><span class="annot"><span class="annottext">Socket -&gt; SocketOption -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">setSocketOption</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048802"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SocketOption
+</span><span class="hs-identifier hs-var">ReuseAddr</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-114"></span><span>    </span><span class="annot"><span class="annottext">Socket -&gt; (CInt -&gt; IO ()) -&gt; IO ()
+forall r. Socket -&gt; (CInt -&gt; IO r) -&gt; IO r
+</span><span class="hs-identifier hs-var">withFdSocket</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048802"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">CInt -&gt; IO ()
+</span><span class="hs-identifier hs-var">setCloseOnExecIfNeeded</span></span><span class="hs-cpp">
+#if !defined(openbsd_HOST_OS)
+</span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Family
+</span><a href="#local-6989586621679048808"><span class="hs-keyword hs-var">family</span></a></span><span> </span><span class="annot"><span class="annottext">Family -&gt; Family -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Family
+</span><span class="hs-identifier hs-var">AF_INET6</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; SocketOption -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">setSocketOption</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048802"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SocketOption
+</span><span class="hs-identifier hs-var">IPv6Only</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-cpp">
+#endif
+</span><span>    </span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; IO ()
+</span><span class="hs-identifier hs-var">bind</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048802"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048812"><span class="hs-identifier hs-var">sa</span></a></span><span>
+</span><span id="line-119"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679048813"><span class="annot"><span class="annottext">wild :: Bool
+</span><a href="#local-6989586621679048813"><span class="hs-identifier hs-var hs-var">wild</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; Bool
+</span><a href="Network.UDP.html#isAnySockAddr"><span class="hs-identifier hs-var">isAnySockAddr</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048812"><span class="hs-identifier hs-var">sa</span></a></span><span>
+</span><span id="line-120"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048813"><span class="hs-identifier hs-var">wild</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-121"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679048814"><span class="annot"><span class="annottext">opt :: SocketOption
+</span><a href="#local-6989586621679048814"><span class="hs-identifier hs-var hs-var">opt</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; SocketOption
+</span><a href="Network.UDP.html#decideOption"><span class="hs-identifier hs-var">decideOption</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048812"><span class="hs-identifier hs-var">sa</span></a></span><span>
+</span><span id="line-122"></span><span>        </span><span class="annot"><span class="annottext">Socket -&gt; SocketOption -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">setSocketOption</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048802"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SocketOption
+</span><a href="#local-6989586621679048814"><span class="hs-identifier hs-var">opt</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-123"></span><span>    </span><span class="annot"><span class="annottext">ListenSocket -&gt; IO ListenSocket
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ListenSocket -&gt; IO ListenSocket)
+-&gt; ListenSocket -&gt; IO ListenSocket
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; Bool -&gt; ListenSocket
+</span><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-var">ListenSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048802"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048812"><span class="hs-identifier hs-var">sa</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048813"><span class="hs-identifier hs-var">wild</span></a></span><span>
+</span><span id="line-124"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-125"></span><span>    </span><span id="local-6989586621679048812"><span class="annot"><span class="annottext">sa :: SockAddr
+</span><a href="#local-6989586621679048812"><span class="hs-identifier hs-var hs-var">sa</span></a></span></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(IP, PortNumber) -&gt; SockAddr
+</span><span class="hs-identifier hs-var">toSockAddr</span></span><span> </span><span class="annot"><span class="annottext">(IP, PortNumber)
+</span><a href="#local-6989586621679048799"><span class="hs-identifier hs-var">ip</span></a></span><span>
+</span><span id="line-126"></span><span>    </span><span id="local-6989586621679048808"><span class="annot"><span class="annottext">family :: Family
+</span><a href="#local-6989586621679048808"><span class="hs-keyword hs-var hs-var">family</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; Family
+</span><a href="Network.UDP.Types.html#sockAddrFamily"><span class="hs-identifier hs-var">sockAddrFamily</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048812"><span class="hs-identifier hs-var">sa</span></a></span><span>
+</span><span id="line-127"></span><span>    </span><span id="local-6989586621679048801"><span class="annot"><span class="annottext">open :: IO Socket
+</span><a href="#local-6989586621679048801"><span class="hs-identifier hs-var hs-var">open</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Family -&gt; SocketType -&gt; CInt -&gt; IO Socket
+</span><span class="hs-identifier hs-var">socket</span></span><span> </span><span class="annot"><span class="annottext">Family
+</span><a href="#local-6989586621679048808"><span class="hs-keyword hs-var">family</span></a></span><span> </span><span class="annot"><span class="annottext">SocketType
+</span><span class="hs-identifier hs-var">Datagram</span></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-identifier hs-var">defaultProtocol</span></span><span>
+</span><span id="line-128"></span><span>
+</span><span id="line-129"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span class="hs-comment">-- | Receiving data with a listening UDP socket.</span><span>
+</span><span id="line-132"></span><span class="hs-comment">--   For a wildcard socket, recvmsg() is called.</span><span>
+</span><span id="line-133"></span><span class="hs-comment">--   For an interface specific socket, recvfrom() is called.</span><span>
+</span><span id="line-134"></span><span class="annot"><a href="Network.UDP.html#recvFrom"><span class="hs-identifier hs-type">recvFrom</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-type">ListenSocket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.UDP.html#ClientSockAddr"><span class="hs-identifier hs-type">ClientSockAddr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span id="recvFrom"><span class="annot"><span class="annottext">recvFrom :: ListenSocket -&gt; IO (ByteString, ClientSockAddr)
+</span><a href="Network.UDP.html#recvFrom"><span class="hs-identifier hs-var hs-var">recvFrom</span></a></span></span><span> </span><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-type">ListenSocket</span></a></span><span class="hs-special">{</span><span id="local-6989586621679048821"><span id="local-6989586621679048822"><span id="local-6989586621679048823"><span class="annot"><span class="annottext">Bool
+SockAddr
+Socket
+listenSocket :: ListenSocket -&gt; Socket
+mySockAddr :: ListenSocket -&gt; SockAddr
+wildcard :: ListenSocket -&gt; Bool
+listenSocket :: Socket
+mySockAddr :: SockAddr
+wildcard :: Bool
+</span><a href="Network.UDP.html#listenSocket"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span><span class="hs-special">}</span><span>
+</span><span id="line-136"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048823"><span class="hs-identifier hs-var">wildcard</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-137"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679048824"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048824"><span class="hs-identifier hs-var">bs</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679048825"><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048825"><span class="hs-identifier hs-var">sa</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679048826"><span class="annot"><span class="annottext">[Cmsg]
+</span><a href="#local-6989586621679048826"><span class="hs-identifier hs-var">cmsg</span></a></span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">MsgFlag
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Socket
+-&gt; Int
+-&gt; Int
+-&gt; MsgFlag
+-&gt; IO (ByteString, SockAddr, [Cmsg], MsgFlag)
+</span><a href="Network.UDP.Recv.html#recvMsg"><span class="hs-identifier hs-var">R.recvMsg</span></a></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048821"><span class="hs-identifier hs-var">listenSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Network.UDP.Types.html#properUDPSize"><span class="hs-identifier hs-var">properUDPSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Network.UDP.Types.html#properCMSGSize"><span class="hs-identifier hs-var">properCMSGSize</span></a></span><span> </span><span class="annot"><span class="annottext">MsgFlag
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-138"></span><span>        </span><span class="annot"><span class="annottext">(ByteString, ClientSockAddr) -&gt; IO (ByteString, ClientSockAddr)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048824"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; [Cmsg] -&gt; ClientSockAddr
+</span><a href="Network.UDP.html#ClientSockAddr"><span class="hs-identifier hs-var">ClientSockAddr</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048825"><span class="hs-identifier hs-var">sa</span></a></span><span> </span><span class="annot"><span class="annottext">[Cmsg]
+</span><a href="#local-6989586621679048826"><span class="hs-identifier hs-var">cmsg</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-140"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679048830"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048830"><span class="hs-identifier hs-var">bs</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679048831"><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048831"><span class="hs-identifier hs-var">sa</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Socket -&gt; Int -&gt; IO (ByteString, SockAddr)
+</span><a href="Network.UDP.Recv.html#recvFrom"><span class="hs-identifier hs-var">R.recvFrom</span></a></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048821"><span class="hs-identifier hs-var">listenSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Network.UDP.Types.html#properUDPSize"><span class="hs-identifier hs-var">properUDPSize</span></a></span><span>
+</span><span id="line-141"></span><span>        </span><span class="annot"><span class="annottext">(ByteString, ClientSockAddr) -&gt; IO (ByteString, ClientSockAddr)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048830"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; [Cmsg] -&gt; ClientSockAddr
+</span><a href="Network.UDP.html#ClientSockAddr"><span class="hs-identifier hs-var">ClientSockAddr</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048831"><span class="hs-identifier hs-var">sa</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-142"></span><span>
+</span><span id="line-143"></span><span class="hs-comment">-- | Sending data with a listening UDP socket.</span><span>
+</span><span id="line-144"></span><span class="hs-comment">--   For a wildcard socket, sendmsg() is called.</span><span>
+</span><span id="line-145"></span><span class="hs-comment">--   For an interface specific socket, sento() is called.</span><span>
+</span><span id="line-146"></span><span class="annot"><a href="Network.UDP.html#sendTo"><span class="hs-identifier hs-type">sendTo</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-type">ListenSocket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.UDP.html#ClientSockAddr"><span class="hs-identifier hs-type">ClientSockAddr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span id="sendTo"><span class="annot"><span class="annottext">sendTo :: ListenSocket -&gt; ByteString -&gt; ClientSockAddr -&gt; IO ()
+</span><a href="Network.UDP.html#sendTo"><span class="hs-identifier hs-var hs-var">sendTo</span></a></span></span><span> </span><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-type">ListenSocket</span></a></span><span class="hs-special">{</span><span id="local-6989586621679048833"><span id="local-6989586621679048834"><span id="local-6989586621679048835"><span class="annot"><span class="annottext">Bool
+SockAddr
+Socket
+listenSocket :: ListenSocket -&gt; Socket
+mySockAddr :: ListenSocket -&gt; SockAddr
+wildcard :: ListenSocket -&gt; Bool
+listenSocket :: Socket
+mySockAddr :: SockAddr
+wildcard :: Bool
+</span><a href="Network.UDP.html#listenSocket"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679048836"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048836"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.UDP.html#ClientSockAddr"><span class="hs-identifier hs-type">ClientSockAddr</span></a></span><span> </span><span id="local-6989586621679048837"><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048837"><span class="hs-identifier hs-var">sa</span></a></span></span><span> </span><span id="local-6989586621679048838"><span class="annot"><span class="annottext">[Cmsg]
+</span><a href="#local-6989586621679048838"><span class="hs-identifier hs-var">cmsgs</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-148"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048835"><span class="hs-identifier hs-var">wildcard</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO Int -&gt; IO ()) -&gt; IO Int -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; [ByteString] -&gt; [Cmsg] -&gt; MsgFlag -&gt; IO Int
+</span><span class="hs-identifier hs-var">NSB.sendMsg</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048833"><span class="hs-identifier hs-var">listenSocket</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048837"><span class="hs-identifier hs-var">sa</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048836"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[Cmsg]
+</span><a href="#local-6989586621679048838"><span class="hs-identifier hs-var">cmsgs</span></a></span><span> </span><span class="annot"><span class="annottext">MsgFlag
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-149"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO Int -&gt; IO ()) -&gt; IO Int -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; ByteString -&gt; SockAddr -&gt; IO Int
+</span><span class="hs-identifier hs-var">NSB.sendTo</span></span><span>  </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048833"><span class="hs-identifier hs-var">listenSocket</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048836"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048837"><span class="hs-identifier hs-var">sa</span></a></span><span>
+</span><span id="line-150"></span><span>
+</span><span id="line-151"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-152"></span><span>
+</span><span id="line-153"></span><span class="annot"><span class="hs-comment">-- | Creating a connected UDP socket like TCP's accept().</span></span><span>
+</span><span id="line-154"></span><span class="annot"><a href="Network.UDP.html#accept"><span class="hs-identifier hs-type">accept</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-type">ListenSocket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.UDP.html#ClientSockAddr"><span class="hs-identifier hs-type">ClientSockAddr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span>
+</span><span id="line-155"></span><span id="accept"><span class="annot"><span class="annottext">accept :: ListenSocket -&gt; ClientSockAddr -&gt; IO UDPSocket
+</span><a href="Network.UDP.html#accept"><span class="hs-identifier hs-var hs-var">accept</span></a></span></span><span> </span><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-type">ListenSocket</span></a></span><span class="hs-special">{</span><span id="local-6989586621679048842"><span id="local-6989586621679048843"><span id="local-6989586621679048844"><span class="annot"><span class="annottext">Bool
+SockAddr
+Socket
+listenSocket :: ListenSocket -&gt; Socket
+mySockAddr :: ListenSocket -&gt; SockAddr
+wildcard :: ListenSocket -&gt; Bool
+listenSocket :: Socket
+mySockAddr :: SockAddr
+wildcard :: Bool
+</span><a href="Network.UDP.html#listenSocket"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span><span class="hs-special">}</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.UDP.html#ClientSockAddr"><span class="hs-identifier hs-type">ClientSockAddr</span></a></span><span> </span><span id="local-6989586621679048845"><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048845"><span class="hs-identifier hs-var">peersa</span></a></span></span><span> </span><span id="local-6989586621679048846"><span class="annot"><span class="annottext">[Cmsg]
+</span><a href="#local-6989586621679048846"><span class="hs-identifier hs-var">cmsgs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Socket
+-&gt; (Socket -&gt; IO ()) -&gt; (Socket -&gt; IO UDPSocket) -&gt; IO UDPSocket
+forall a b c. IO a -&gt; (a -&gt; IO b) -&gt; (a -&gt; IO c) -&gt; IO c
+</span><span class="hs-identifier hs-var">E.bracketOnError</span></span><span> </span><span class="annot"><span class="annottext">IO Socket
+</span><a href="#local-6989586621679048847"><span class="hs-identifier hs-var">open</span></a></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; IO ()
+</span><span class="hs-identifier hs-var">NS.close</span></span><span> </span><span class="annot"><span class="annottext">((Socket -&gt; IO UDPSocket) -&gt; IO UDPSocket)
+-&gt; (Socket -&gt; IO UDPSocket) -&gt; IO UDPSocket
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679048848"><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048848"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-156"></span><span>    </span><span class="annot"><span class="annottext">Socket -&gt; SocketOption -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">setSocketOption</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048848"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SocketOption
+</span><span class="hs-identifier hs-var">ReuseAddr</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-157"></span><span>    </span><span class="annot"><span class="annottext">Socket -&gt; (CInt -&gt; IO ()) -&gt; IO ()
+forall r. Socket -&gt; (CInt -&gt; IO r) -&gt; IO r
+</span><span class="hs-identifier hs-var">withFdSocket</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048848"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">CInt -&gt; IO ()
+</span><span class="hs-identifier hs-var">setCloseOnExecIfNeeded</span></span><span>
+</span><span id="line-158"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679048849"><span class="annot"><span class="annottext">mysa' :: SockAddr
+</span><a href="#local-6989586621679048849"><span class="hs-identifier hs-var hs-var">mysa'</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048844"><span class="hs-identifier hs-var">wildcard</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; [Cmsg] -&gt; SockAddr
+</span><a href="Network.UDP.html#getMySockAddr"><span class="hs-identifier hs-var">getMySockAddr</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048843"><span class="hs-identifier hs-var">mySockAddr</span></a></span><span> </span><span class="annot"><span class="annottext">[Cmsg]
+</span><a href="#local-6989586621679048846"><span class="hs-identifier hs-var">cmsgs</span></a></span><span>
+</span><span id="line-159"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; SockAddr
+</span><a href="Network.UDP.html#anySockAddr"><span class="hs-identifier hs-var">anySockAddr</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048843"><span class="hs-identifier hs-var">mySockAddr</span></a></span><span>
+</span><span id="line-160"></span><span>    </span><span class="hs-comment">-- wildcard:  (UDP, *.443, *:*) -&gt; (UDP, 127.0.0.1:443, *:*)</span><span>
+</span><span id="line-161"></span><span>    </span><span class="hs-comment">-- otherwise: (UDP, 127.0.0.1:443, *:*) -&gt; (UDP, *:443, *:*)</span><span>
+</span><span id="line-162"></span><span>    </span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; IO ()
+</span><span class="hs-identifier hs-var">bind</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048848"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048849"><span class="hs-identifier hs-var">mysa'</span></a></span><span>
+</span><span id="line-163"></span><span>    </span><span class="hs-comment">-- bind and connect is not atomic</span><span>
+</span><span id="line-164"></span><span>    </span><span class="hs-comment">-- So, bind may results in EADDRINUSE</span><span>
+</span><span id="line-165"></span><span>       </span><span class="annot"><span class="annottext">IO () -&gt; (IOError -&gt; IO ()) -&gt; IO ()
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><span class="hs-operator hs-var">`E.catch`</span></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IOError -&gt; IO ()
+forall {b}. IO b -&gt; IOError -&gt; IO b
+</span><a href="#local-6989586621679048852"><span class="hs-identifier hs-var">postphone</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; IO ()
+</span><span class="hs-identifier hs-var">bind</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048848"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048849"><span class="hs-identifier hs-var">mysa'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-166"></span><span>    </span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; IO ()
+</span><span class="hs-identifier hs-var">connect</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048848"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048845"><span class="hs-identifier hs-var">peersa</span></a></span><span>  </span><span class="hs-comment">-- (UDP, 127.0.0.1:443, pa:pp)</span><span>
+</span><span id="line-167"></span><span>    </span><span class="annot"><span class="annottext">UDPSocket -&gt; IO UDPSocket
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(UDPSocket -&gt; IO UDPSocket) -&gt; UDPSocket -&gt; IO UDPSocket
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; Bool -&gt; UDPSocket
+</span><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-var">UDPSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048848"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048845"><span class="hs-identifier hs-var">peersa</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-168"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-169"></span><span>    </span><span id="local-6989586621679048852"><span class="annot"><span class="annottext">postphone :: IO b -&gt; IOError -&gt; IO b
+</span><a href="#local-6989586621679048852"><span class="hs-identifier hs-var hs-var">postphone</span></a></span></span><span> </span><span id="local-6989586621679048858"><span class="annot"><span class="annottext">IO b
+</span><a href="#local-6989586621679048858"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span id="local-6989586621679048859"><span class="annot"><span class="annottext">IOError
+</span><a href="#local-6989586621679048859"><span class="hs-identifier hs-var">e</span></a></span></span><span>
+</span><span id="line-170"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">IOError -&gt; IOErrorType
+</span><span class="hs-identifier hs-var">E.ioeGetErrorType</span></span><span> </span><span class="annot"><span class="annottext">IOError
+</span><a href="#local-6989586621679048859"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">IOErrorType -&gt; IOErrorType -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">IOErrorType
+</span><span class="hs-identifier hs-var">E.ResourceBusy</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">threadDelay</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10000</span></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO b -&gt; IO b
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO b
+</span><a href="#local-6989586621679048858"><span class="hs-identifier hs-var">action</span></a></span><span>
+</span><span id="line-171"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>                             </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IOError -&gt; IO b
+forall e a. Exception e =&gt; e -&gt; IO a
+</span><span class="hs-identifier hs-var">E.throwIO</span></span><span> </span><span class="annot"><span class="annottext">IOError
+</span><a href="#local-6989586621679048859"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-172"></span><span>    </span><span id="local-6989586621679048864"><span class="annot"><span class="annottext">family :: Family
+</span><a href="#local-6989586621679048864"><span class="hs-keyword hs-var hs-var">family</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; Family
+</span><a href="Network.UDP.Types.html#sockAddrFamily"><span class="hs-identifier hs-var">sockAddrFamily</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048843"><span class="hs-identifier hs-var">mySockAddr</span></a></span><span>
+</span><span id="line-173"></span><span>    </span><span id="local-6989586621679048847"><span class="annot"><span class="annottext">open :: IO Socket
+</span><a href="#local-6989586621679048847"><span class="hs-identifier hs-var hs-var">open</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Family -&gt; SocketType -&gt; CInt -&gt; IO Socket
+</span><span class="hs-identifier hs-var">socket</span></span><span> </span><span class="annot"><span class="annottext">Family
+</span><a href="#local-6989586621679048864"><span class="hs-keyword hs-var">family</span></a></span><span> </span><span class="annot"><span class="annottext">SocketType
+</span><span class="hs-identifier hs-var">Datagram</span></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-identifier hs-var">defaultProtocol</span></span><span>
+</span><span id="line-174"></span><span>
+</span><span id="line-175"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-176"></span><span>
+</span><span id="line-177"></span><span class="annot"><span class="hs-comment">-- | Creating a unconnected UDP socket.</span></span><span>
+</span><span id="line-178"></span><span class="annot"><a href="Network.UDP.html#clientSocket"><span class="hs-identifier hs-type">clientSocket</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">HostName</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ServiceName</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span>
+</span><span id="line-179"></span><span id="clientSocket"><span class="annot"><span class="annottext">clientSocket :: [Char] -&gt; [Char] -&gt; Bool -&gt; IO UDPSocket
+</span><a href="Network.UDP.html#clientSocket"><span class="hs-identifier hs-var hs-var">clientSocket</span></a></span></span><span> </span><span id="local-6989586621679048867"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679048867"><span class="hs-identifier hs-var">host</span></a></span></span><span> </span><span id="local-6989586621679048868"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679048868"><span class="hs-identifier hs-var">port</span></a></span></span><span> </span><span id="local-6989586621679048869"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048869"><span class="hs-identifier hs-var">conn</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-180"></span><span>    </span><span id="local-6989586621679048870"><span class="annot"><span class="annottext">AddrInfo
+</span><a href="#local-6989586621679048870"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[AddrInfo] -&gt; AddrInfo
+forall a. HasCallStack =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">head</span></span><span> </span><span class="annot"><span class="annottext">([AddrInfo] -&gt; AddrInfo) -&gt; IO [AddrInfo] -&gt; IO AddrInfo
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Maybe AddrInfo -&gt; Maybe [Char] -&gt; Maybe [Char] -&gt; IO [AddrInfo]
+</span><span class="hs-identifier hs-var">NS.getAddrInfo</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AddrInfo -&gt; Maybe AddrInfo
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">AddrInfo
+</span><a href="#local-6989586621679048874"><span class="hs-identifier hs-var">hints</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char] -&gt; Maybe [Char]
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679048867"><span class="hs-identifier hs-var">host</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char] -&gt; Maybe [Char]
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621679048868"><span class="hs-identifier hs-var">port</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-181"></span><span>    </span><span class="annot"><span class="annottext">IO Socket
+-&gt; (Socket -&gt; IO ()) -&gt; (Socket -&gt; IO UDPSocket) -&gt; IO UDPSocket
+forall a b c. IO a -&gt; (a -&gt; IO b) -&gt; (a -&gt; IO c) -&gt; IO c
+</span><span class="hs-identifier hs-var">E.bracketOnError</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AddrInfo -&gt; IO Socket
+</span><span class="hs-identifier hs-var">NS.openSocket</span></span><span> </span><span class="annot"><span class="annottext">AddrInfo
+</span><a href="#local-6989586621679048870"><span class="hs-identifier hs-var">addr</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Socket -&gt; IO ()
+</span><span class="hs-identifier hs-var">NS.close</span></span><span> </span><span class="annot"><span class="annottext">((Socket -&gt; IO UDPSocket) -&gt; IO UDPSocket)
+-&gt; (Socket -&gt; IO UDPSocket) -&gt; IO UDPSocket
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679048876"><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048876"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-182"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679048877"><span class="annot"><span class="annottext">sa :: SockAddr
+</span><a href="#local-6989586621679048877"><span class="hs-identifier hs-var hs-var">sa</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AddrInfo -&gt; SockAddr
+</span><span class="hs-identifier hs-var">addrAddress</span></span><span> </span><span class="annot"><span class="annottext">AddrInfo
+</span><a href="#local-6989586621679048870"><span class="hs-identifier hs-var">addr</span></a></span><span>
+</span><span id="line-183"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048869"><span class="hs-identifier hs-var">conn</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; IO ()
+</span><span class="hs-identifier hs-var">NS.connect</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048876"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048877"><span class="hs-identifier hs-var">sa</span></a></span><span>
+</span><span id="line-184"></span><span>        </span><span class="annot"><span class="annottext">UDPSocket -&gt; IO UDPSocket
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(UDPSocket -&gt; IO UDPSocket) -&gt; UDPSocket -&gt; IO UDPSocket
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; Bool -&gt; UDPSocket
+</span><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-var">UDPSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048876"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048877"><span class="hs-identifier hs-var">sa</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048869"><span class="hs-identifier hs-var">conn</span></a></span><span>
+</span><span id="line-185"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-186"></span><span>    </span><span id="local-6989586621679048874"><span class="annot"><span class="annottext">hints :: AddrInfo
+</span><a href="#local-6989586621679048874"><span class="hs-identifier hs-var hs-var">hints</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AddrInfo
+</span><span class="hs-identifier hs-var">NS.defaultHints</span></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="hs-identifier hs-var">addrSocketType</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Datagram</span></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span class="hs-comment">-- | Sending data with a UDP socket.</span><span>
+</span><span id="line-189"></span><span class="hs-comment">--   If the socket is connected, send() is called.</span><span>
+</span><span id="line-190"></span><span class="hs-comment">--   Otherwise, sento() is called.</span><span>
+</span><span id="line-191"></span><span class="annot"><a href="Network.UDP.html#send"><span class="hs-identifier hs-type">send</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-192"></span><span id="send"><span class="annot"><span class="annottext">send :: UDPSocket -&gt; ByteString -&gt; IO ()
+</span><a href="Network.UDP.html#send"><span class="hs-identifier hs-var hs-var">send</span></a></span></span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span class="hs-special">{</span><span id="local-6989586621679048881"><span id="local-6989586621679048882"><span id="local-6989586621679048883"><span class="annot"><span class="annottext">Bool
+SockAddr
+Socket
+udpSocket :: UDPSocket -&gt; Socket
+peerSockAddr :: UDPSocket -&gt; SockAddr
+connected :: UDPSocket -&gt; Bool
+udpSocket :: Socket
+peerSockAddr :: SockAddr
+connected :: Bool
+</span><a href="Network.UDP.html#udpSocket"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span><span class="hs-special">}</span><span>
+</span><span id="line-193"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048883"><span class="hs-identifier hs-var">connected</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679048884"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048884"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO Int -&gt; IO ()) -&gt; IO Int -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; ByteString -&gt; IO Int
+</span><span class="hs-identifier hs-var">NSB.send</span></span><span>   </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048881"><span class="hs-identifier hs-var">udpSocket</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048884"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-194"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679048886"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048886"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO Int -&gt; IO ()) -&gt; IO Int -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; ByteString -&gt; SockAddr -&gt; IO Int
+</span><span class="hs-identifier hs-var">NSB.sendTo</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048881"><span class="hs-identifier hs-var">udpSocket</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048886"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048882"><span class="hs-identifier hs-var">peerSockAddr</span></a></span><span>
+</span><span id="line-195"></span><span>
+</span><span id="line-196"></span><span class="hs-comment">-- | Receiving data with a UDP socket.</span><span>
+</span><span id="line-197"></span><span class="hs-comment">--   If the socket is connected, recv() is called.</span><span>
+</span><span id="line-198"></span><span class="hs-comment">--   Otherwise, recvfrom() is called.</span><span>
+</span><span id="line-199"></span><span class="annot"><a href="Network.UDP.html#recv"><span class="hs-identifier hs-type">recv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-200"></span><span id="recv"><span class="annot"><span class="annottext">recv :: UDPSocket -&gt; IO ByteString
+</span><a href="Network.UDP.html#recv"><span class="hs-identifier hs-var hs-var">recv</span></a></span></span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span class="hs-special">{</span><span id="local-6989586621679048887"><span id="local-6989586621679048888"><span id="local-6989586621679048889"><span class="annot"><span class="annottext">Bool
+SockAddr
+Socket
+udpSocket :: UDPSocket -&gt; Socket
+peerSockAddr :: UDPSocket -&gt; SockAddr
+connected :: UDPSocket -&gt; Bool
+udpSocket :: Socket
+peerSockAddr :: SockAddr
+connected :: Bool
+</span><a href="Network.UDP.html#udpSocket"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span><span class="hs-special">}</span><span>
+</span><span id="line-201"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048889"><span class="hs-identifier hs-var">connected</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Socket -&gt; Int -&gt; IO ByteString
+</span><a href="Network.UDP.Recv.html#recv"><span class="hs-identifier hs-var">R.recv</span></a></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048887"><span class="hs-identifier hs-var">udpSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Network.UDP.Types.html#properUDPSize"><span class="hs-identifier hs-var">properUDPSize</span></a></span><span>
+</span><span id="line-202"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO ByteString
+</span><a href="#local-6989586621679048891"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-203"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-204"></span><span>    </span><span id="local-6989586621679048891"><span class="annot"><span class="annottext">go :: IO ByteString
+</span><a href="#local-6989586621679048891"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-205"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679048895"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048895"><span class="hs-identifier hs-var">bs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679048896"><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048896"><span class="hs-identifier hs-var">sa</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Socket -&gt; Int -&gt; IO (ByteString, SockAddr)
+</span><a href="Network.UDP.Recv.html#recvFrom"><span class="hs-identifier hs-var">R.recvFrom</span></a></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048887"><span class="hs-identifier hs-var">udpSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Network.UDP.Types.html#properUDPSize"><span class="hs-identifier hs-var">properUDPSize</span></a></span><span>
+</span><span id="line-206"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048896"><span class="hs-identifier hs-var">sa</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; SockAddr -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048888"><span class="hs-identifier hs-var">peerSockAddr</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679048895"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">IO ByteString
+</span><a href="#local-6989586621679048891"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-207"></span><span>
+</span><span id="line-208"></span><span class="hs-comment">-- | Sending data in a buffer with a UDP socket.</span><span>
+</span><span id="line-209"></span><span class="hs-comment">--   If the socket is connected, send() is called.</span><span>
+</span><span id="line-210"></span><span class="hs-comment">--   Otherwise, sento() is called.</span><span>
+</span><span id="line-211"></span><span class="annot"><a href="Network.UDP.html#sendBuf"><span class="hs-identifier hs-type">sendBuf</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-212"></span><span id="sendBuf"><span class="annot"><span class="annottext">sendBuf :: UDPSocket -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><a href="Network.UDP.html#sendBuf"><span class="hs-identifier hs-var hs-var">sendBuf</span></a></span></span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span class="hs-special">{</span><span id="local-6989586621679048897"><span id="local-6989586621679048898"><span id="local-6989586621679048899"><span class="annot"><span class="annottext">Bool
+SockAddr
+Socket
+udpSocket :: UDPSocket -&gt; Socket
+peerSockAddr :: UDPSocket -&gt; SockAddr
+connected :: UDPSocket -&gt; Bool
+udpSocket :: Socket
+peerSockAddr :: SockAddr
+connected :: Bool
+</span><a href="Network.UDP.html#udpSocket"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679048900"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679048900"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span id="local-6989586621679048901"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679048901"><span class="hs-identifier hs-var">siz</span></a></span></span><span>
+</span><span id="line-213"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048899"><span class="hs-identifier hs-var">connected</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO Int -&gt; IO ()) -&gt; IO Int -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; Ptr Word8 -&gt; Int -&gt; IO Int
+</span><span class="hs-identifier hs-var">NS.sendBuf</span></span><span>   </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048897"><span class="hs-identifier hs-var">udpSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679048900"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679048901"><span class="hs-identifier hs-var">siz</span></a></span><span>
+</span><span id="line-214"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO Int -&gt; IO ()) -&gt; IO Int -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; Ptr Word8 -&gt; Int -&gt; SockAddr -&gt; IO Int
+forall a. Socket -&gt; Ptr a -&gt; Int -&gt; SockAddr -&gt; IO Int
+</span><span class="hs-identifier hs-var">NS.sendBufTo</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048897"><span class="hs-identifier hs-var">udpSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679048900"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679048901"><span class="hs-identifier hs-var">siz</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048898"><span class="hs-identifier hs-var">peerSockAddr</span></a></span><span>
+</span><span id="line-215"></span><span>
+</span><span id="line-216"></span><span class="hs-comment">-- | Receiving data in a buffer with a UDP socket.</span><span>
+</span><span id="line-217"></span><span class="hs-comment">--   If the socket is connected, recv() is called.</span><span>
+</span><span id="line-218"></span><span class="hs-comment">--   Otherwise, recvfrom() is called.</span><span>
+</span><span id="line-219"></span><span class="annot"><a href="Network.UDP.html#recvBuf"><span class="hs-identifier hs-type">recvBuf</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>
+</span><span id="line-220"></span><span id="recvBuf"><span class="annot"><span class="annottext">recvBuf :: UDPSocket -&gt; Ptr Word8 -&gt; Int -&gt; IO Int
+</span><a href="Network.UDP.html#recvBuf"><span class="hs-identifier hs-var hs-var">recvBuf</span></a></span></span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span class="hs-special">{</span><span id="local-6989586621679048903"><span id="local-6989586621679048904"><span id="local-6989586621679048905"><span class="annot"><span class="annottext">Bool
+SockAddr
+Socket
+udpSocket :: UDPSocket -&gt; Socket
+peerSockAddr :: UDPSocket -&gt; SockAddr
+connected :: UDPSocket -&gt; Bool
+udpSocket :: Socket
+peerSockAddr :: SockAddr
+connected :: Bool
+</span><a href="Network.UDP.html#udpSocket"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679048906"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679048906"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span id="local-6989586621679048907"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679048907"><span class="hs-identifier hs-var">siz</span></a></span></span><span>
+</span><span id="line-221"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048905"><span class="hs-identifier hs-var">connected</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Socket -&gt; Ptr Word8 -&gt; Int -&gt; IO Int
+</span><span class="hs-identifier hs-var">NS.recvBuf</span></span><span>   </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048903"><span class="hs-identifier hs-var">udpSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679048906"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679048907"><span class="hs-identifier hs-var">siz</span></a></span><span>
+</span><span id="line-222"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Int
+</span><a href="#local-6989586621679048908"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-223"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-224"></span><span>    </span><span id="local-6989586621679048908"><span class="annot"><span class="annottext">go :: IO Int
+</span><a href="#local-6989586621679048908"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-225"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679048912"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679048912"><span class="hs-identifier hs-var">len</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679048913"><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048913"><span class="hs-identifier hs-var">sa</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Socket -&gt; Ptr Word8 -&gt; Int -&gt; IO (Int, SockAddr)
+forall a. Socket -&gt; Ptr a -&gt; Int -&gt; IO (Int, SockAddr)
+</span><span class="hs-identifier hs-var">NS.recvBufFrom</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048903"><span class="hs-identifier hs-var">udpSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679048906"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679048907"><span class="hs-identifier hs-var">siz</span></a></span><span>
+</span><span id="line-226"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048913"><span class="hs-identifier hs-var">sa</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; SockAddr -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048904"><span class="hs-identifier hs-var">peerSockAddr</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO Int
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679048912"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">IO Int
+</span><a href="#local-6989586621679048908"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-227"></span><span>
+</span><span id="line-228"></span><span class="annot"><span class="hs-comment">-- | Closing a socket.</span></span><span>
+</span><span id="line-229"></span><span class="annot"><a href="Network.UDP.html#stop"><span class="hs-identifier hs-type">stop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-type">ListenSocket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-230"></span><span id="stop"><span class="annot"><span class="annottext">stop :: ListenSocket -&gt; IO ()
+</span><a href="Network.UDP.html#stop"><span class="hs-identifier hs-var hs-var">stop</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.UDP.html#ListenSocket"><span class="hs-identifier hs-type">ListenSocket</span></a></span><span> </span><span id="local-6989586621679048915"><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048915"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Socket -&gt; IO ()
+</span><span class="hs-identifier hs-var">NS.close</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048915"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-231"></span><span>
+</span><span id="line-232"></span><span class="annot"><span class="hs-comment">-- | Closing a socket.</span></span><span>
+</span><span id="line-233"></span><span class="annot"><a href="Network.UDP.html#close"><span class="hs-identifier hs-type">close</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-234"></span><span id="close"><span class="annot"><span class="annottext">close :: UDPSocket -&gt; IO ()
+</span><a href="Network.UDP.html#close"><span class="hs-identifier hs-var hs-var">close</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span> </span><span id="local-6989586621679048916"><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048916"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Socket -&gt; IO ()
+</span><span class="hs-identifier hs-var">NS.close</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048916"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-235"></span><span>
+</span><span id="line-236"></span><span class="hs-comment">-- | Emulation of NAT rebiding in the client side.</span><span>
+</span><span id="line-237"></span><span class="hs-comment">--   This is mainly used for test purposes.</span><span>
+</span><span id="line-238"></span><span class="annot"><a href="Network.UDP.html#natRebinding"><span class="hs-identifier hs-type">natRebinding</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span>
+</span><span id="line-239"></span><span id="natRebinding"><span class="annot"><span class="annottext">natRebinding :: UDPSocket -&gt; IO UDPSocket
+</span><a href="Network.UDP.html#natRebinding"><span class="hs-identifier hs-var hs-var">natRebinding</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-type">UDPSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679048917"><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048917"><span class="hs-identifier hs-var">sa</span></a></span></span><span> </span><span id="local-6989586621679048918"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048918"><span class="hs-identifier hs-var">conn</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Socket
+-&gt; (Socket -&gt; IO ()) -&gt; (Socket -&gt; IO UDPSocket) -&gt; IO UDPSocket
+forall a b c. IO a -&gt; (a -&gt; IO b) -&gt; (a -&gt; IO c) -&gt; IO c
+</span><span class="hs-identifier hs-var">E.bracketOnError</span></span><span> </span><span class="annot"><span class="annottext">IO Socket
+</span><a href="#local-6989586621679048919"><span class="hs-identifier hs-var">open</span></a></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; IO ()
+</span><span class="hs-identifier hs-var">NS.close</span></span><span> </span><span class="annot"><span class="annottext">((Socket -&gt; IO UDPSocket) -&gt; IO UDPSocket)
+-&gt; (Socket -&gt; IO UDPSocket) -&gt; IO UDPSocket
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679048920"><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048920"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-240"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048918"><span class="hs-identifier hs-var">conn</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; IO ()
+</span><span class="hs-identifier hs-var">NS.connect</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048920"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048917"><span class="hs-identifier hs-var">sa</span></a></span><span>
+</span><span id="line-241"></span><span>    </span><span class="annot"><span class="annottext">UDPSocket -&gt; IO UDPSocket
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(UDPSocket -&gt; IO UDPSocket) -&gt; UDPSocket -&gt; IO UDPSocket
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Socket -&gt; SockAddr -&gt; Bool -&gt; UDPSocket
+</span><a href="Network.UDP.html#UDPSocket"><span class="hs-identifier hs-var">UDPSocket</span></a></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679048920"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048917"><span class="hs-identifier hs-var">sa</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679048918"><span class="hs-identifier hs-var">conn</span></a></span><span>
+</span><span id="line-242"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-243"></span><span>    </span><span id="local-6989586621679048921"><span class="annot"><span class="annottext">family :: Family
+</span><a href="#local-6989586621679048921"><span class="hs-keyword hs-var hs-var">family</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SockAddr -&gt; Family
+</span><a href="Network.UDP.Types.html#sockAddrFamily"><span class="hs-identifier hs-var">sockAddrFamily</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679048917"><span class="hs-identifier hs-var">sa</span></a></span><span>
+</span><span id="line-244"></span><span>    </span><span id="local-6989586621679048919"><span class="annot"><span class="annottext">open :: IO Socket
+</span><a href="#local-6989586621679048919"><span class="hs-identifier hs-var hs-var">open</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Family -&gt; SocketType -&gt; CInt -&gt; IO Socket
+</span><span class="hs-identifier hs-var">NS.socket</span></span><span> </span><span class="annot"><span class="annottext">Family
+</span><a href="#local-6989586621679048921"><span class="hs-keyword hs-var">family</span></a></span><span> </span><span class="annot"><span class="annottext">SocketType
+</span><span class="hs-identifier hs-var">Datagram</span></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-identifier hs-var">NS.defaultProtocol</span></span><span>
+</span><span id="line-245"></span><span>
+</span><span id="line-246"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-247"></span><span>
+</span><span id="line-248"></span><span class="annot"><a href="Network.UDP.html#decideOption"><span class="hs-identifier hs-type">decideOption</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SocketOption</span></span><span>
+</span><span id="line-249"></span><span id="decideOption"><span class="annot"><span class="annottext">decideOption :: SockAddr -&gt; SocketOption
+</span><a href="Network.UDP.html#decideOption"><span class="hs-identifier hs-var hs-var">decideOption</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddrInet</span></span><span class="hs-special">{</span><span class="hs-special">}</span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SocketOption
+</span><span class="hs-identifier hs-var">RecvIPv4PktInfo</span></span><span>
+</span><span id="line-250"></span><span class="annot"><a href="Network.UDP.html#decideOption"><span class="hs-identifier hs-var">decideOption</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddrInet6</span></span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SocketOption
+</span><span class="hs-identifier hs-var">RecvIPv6PktInfo</span></span><span>
+</span><span id="line-251"></span><span class="annot"><a href="Network.UDP.html#decideOption"><span class="hs-identifier hs-var">decideOption</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><span class="hs-identifier">_</span></span><span>               </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; SocketOption
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;decideOption&quot;</span></span><span>
+</span><span id="line-252"></span><span>
+</span><span id="line-253"></span><span class="annot"><span class="hs-comment">-- | Obtaining my sockaddr for a wildcard socket from cmsgs.</span></span><span>
+</span><span id="line-254"></span><span class="annot"><a href="Network.UDP.html#getMySockAddr"><span class="hs-identifier hs-type">getMySockAddr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Cmsg</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span>
+</span><span id="line-255"></span><span id="getMySockAddr"><span class="annot"><span class="annottext">getMySockAddr :: SockAddr -&gt; [Cmsg] -&gt; SockAddr
+</span><a href="Network.UDP.html#getMySockAddr"><span class="hs-identifier hs-var hs-var">getMySockAddr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">SockAddrInet</span></span><span> </span><span id="local-6989586621679048924"><span class="annot"><span class="annottext">PortNumber
+</span><a href="#local-6989586621679048924"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679048925"><span class="annot"><span class="annottext">[Cmsg]
+</span><a href="#local-6989586621679048925"><span class="hs-identifier hs-var">cmsgs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PortNumber -&gt; HostAddress -&gt; SockAddr
+</span><span class="hs-identifier hs-var">SockAddrInet</span></span><span> </span><span class="annot"><span class="annottext">PortNumber
+</span><a href="#local-6989586621679048924"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><a href="#local-6989586621679048926"><span class="hs-identifier hs-var">addr</span></a></span><span>
+</span><span id="line-256"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-257"></span><span>    </span><span id="local-6989586621679048929"><span class="annot"><span class="annottext">pktinfo :: Cmsg
+</span><a href="#local-6989586621679048929"><span class="hs-identifier hs-var hs-var">pktinfo</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Cmsg -&gt; Cmsg
+forall a. HasCallStack =&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromJust</span></span><span> </span><span class="annot"><span class="annottext">(Maybe Cmsg -&gt; Cmsg) -&gt; Maybe Cmsg -&gt; Cmsg
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">CmsgId -&gt; [Cmsg] -&gt; Maybe Cmsg
+</span><span class="hs-identifier hs-var">lookupCmsg</span></span><span> </span><span class="annot"><span class="annottext">CmsgId
+</span><span class="hs-identifier hs-var">CmsgIdIPv4PktInfo</span></span><span> </span><span class="annot"><span class="annottext">[Cmsg]
+</span><a href="#local-6989586621679048925"><span class="hs-identifier hs-var">cmsgs</span></a></span><span>
+</span><span id="line-258"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">IPv4PktInfo</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679048926"><span class="annot"><span class="annottext">HostAddress
+</span><a href="#local-6989586621679048926"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe IPv4PktInfo -&gt; IPv4PktInfo
+forall a. HasCallStack =&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromJust</span></span><span> </span><span class="annot"><span class="annottext">(Maybe IPv4PktInfo -&gt; IPv4PktInfo)
+-&gt; Maybe IPv4PktInfo -&gt; IPv4PktInfo
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Cmsg -&gt; Maybe IPv4PktInfo
+forall a. (ControlMessage a, Storable a) =&gt; Cmsg -&gt; Maybe a
+</span><span class="hs-identifier hs-var">decodeCmsg</span></span><span> </span><span class="annot"><span class="annottext">Cmsg
+</span><a href="#local-6989586621679048929"><span class="hs-identifier hs-var">pktinfo</span></a></span><span>
+</span><span id="line-259"></span><span class="annot"><a href="Network.UDP.html#getMySockAddr"><span class="hs-identifier hs-var">getMySockAddr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">SockAddrInet6</span></span><span> </span><span id="local-6989586621679048940"><span class="annot"><span class="annottext">PortNumber
+</span><a href="#local-6989586621679048940"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621679048941"><span class="annot"><span class="annottext">HostAddress
+</span><a href="#local-6989586621679048941"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="annot"><span class="annottext">HostAddress6
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679048942"><span class="annot"><span class="annottext">HostAddress
+</span><a href="#local-6989586621679048942"><span class="hs-identifier hs-var">sc</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679048943"><span class="annot"><span class="annottext">[Cmsg]
+</span><a href="#local-6989586621679048943"><span class="hs-identifier hs-var">cmsgs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PortNumber
+-&gt; HostAddress -&gt; HostAddress6 -&gt; HostAddress -&gt; SockAddr
+</span><span class="hs-identifier hs-var">SockAddrInet6</span></span><span> </span><span class="annot"><span class="annottext">PortNumber
+</span><a href="#local-6989586621679048940"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><a href="#local-6989586621679048941"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">HostAddress6
+</span><a href="#local-6989586621679048944"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><a href="#local-6989586621679048942"><span class="hs-identifier hs-var">sc</span></a></span><span>
+</span><span id="line-260"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-261"></span><span>    </span><span id="local-6989586621679048947"><span class="annot"><span class="annottext">pktinfo :: Cmsg
+</span><a href="#local-6989586621679048947"><span class="hs-identifier hs-var hs-var">pktinfo</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Cmsg -&gt; Cmsg
+forall a. HasCallStack =&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromJust</span></span><span> </span><span class="annot"><span class="annottext">(Maybe Cmsg -&gt; Cmsg) -&gt; Maybe Cmsg -&gt; Cmsg
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">CmsgId -&gt; [Cmsg] -&gt; Maybe Cmsg
+</span><span class="hs-identifier hs-var">lookupCmsg</span></span><span> </span><span class="annot"><span class="annottext">CmsgId
+</span><span class="hs-identifier hs-var">CmsgIdIPv6PktInfo</span></span><span> </span><span class="annot"><span class="annottext">[Cmsg]
+</span><a href="#local-6989586621679048943"><span class="hs-identifier hs-var">cmsgs</span></a></span><span>
+</span><span id="line-262"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">IPv6PktInfo</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679048944"><span class="annot"><span class="annottext">HostAddress6
+</span><a href="#local-6989586621679048944"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe IPv6PktInfo -&gt; IPv6PktInfo
+forall a. HasCallStack =&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromJust</span></span><span> </span><span class="annot"><span class="annottext">(Maybe IPv6PktInfo -&gt; IPv6PktInfo)
+-&gt; Maybe IPv6PktInfo -&gt; IPv6PktInfo
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Cmsg -&gt; Maybe IPv6PktInfo
+forall a. (ControlMessage a, Storable a) =&gt; Cmsg -&gt; Maybe a
+</span><span class="hs-identifier hs-var">decodeCmsg</span></span><span> </span><span class="annot"><span class="annottext">Cmsg
+</span><a href="#local-6989586621679048947"><span class="hs-identifier hs-var">pktinfo</span></a></span><span>
+</span><span id="line-263"></span><span class="annot"><a href="Network.UDP.html#getMySockAddr"><span class="hs-identifier hs-var">getMySockAddr</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Cmsg]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; SockAddr
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;getMySockAddr&quot;</span></span><span>
+</span><span id="line-264"></span></pre></body></html>

@@ -1,0 +1,876 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="annot"><span class="hs-comment">{- |
+Non-global free variable analysis on STG terms. This pass annotates
+non-top-level closure bindings with captured variables. Global variables are not
+captured. For example, in a top-level binding like (pseudo-STG)
+
+    f = \[x,y] .
+      let g = \[p] . reverse (x ++ p)
+      in g y
+
+In g, `reverse` and `(++)` are global variables so they're not considered free.
+`p` is an argument, so `x` is the only actual free variable here. The annotated
+version is thus:
+
+    f = \[x,y] .
+      let g = [x] \[p] . reverse (x ++ p)
+      in g y
+
+Note that non-top-level recursive bindings are also considered free within the
+group:
+
+    map = {} \r [f xs0]
+      let {
+        Rec {
+          go = {f, go} \r [xs1]
+            case xs1 of {
+              [] -&gt; [] [];
+              : x xs2 -&gt;
+                  let { xs' = {go, xs2} \u [] go xs2; } in
+                  let { x' = {f, x} \u [] f x; } in
+                  : [x' xs'];
+            };
+        end Rec }
+      } in go xs0;
+
+Here go is free in its RHS.
+
+Top-level closure bindings never capture variables as all of their free
+variables are global.
+-}</span></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Stg.FVs</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-43"></span><span>    </span><span class="annot"><a href="GHC.Stg.FVs.html#depSortWithAnnotStgPgm"><span class="hs-identifier">depSortWithAnnotStgPgm</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-44"></span><span>    </span><span class="annot"><a href="GHC.Stg.FVs.html#annBindingFreeVars"><span class="hs-identifier">annBindingFreeVars</span></a></span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Real.html#mod/GHC.Real.html#mod"><span class="hs-identifier">mod</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html"><span class="hs-identifier">GHC.Stg.Syntax</span></a></span><span>
+</span><span id="line-50"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Stg.Utils.html"><span class="hs-identifier">GHC.Stg.Utils</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Utils.html#bindersOf"><span class="hs-identifier">bindersOf</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-51"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Id.html"><span class="hs-identifier">GHC.Types.Id</span></a></span><span>
+</span><span id="line-52"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Name.html"><span class="hs-identifier">GHC.Types.Name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Name.html#Name"><span class="hs-identifier">Name</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Types.Name.html#nameIsLocalOrFrom"><span class="hs-identifier">nameIsLocalOrFrom</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-53"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Tickish.html"><span class="hs-identifier">GHC.Types.Tickish</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Types.Tickish.html#GenTickish"><span class="hs-identifier">GenTickish</span></a></span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Tickish.html#Breakpoint"><span class="hs-identifier">Breakpoint</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-54"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Set.html"><span class="hs-identifier">GHC.Types.Unique.Set</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Unique.Set.html#nonDetEltsUniqSet"><span class="hs-identifier">nonDetEltsUniqSet</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-55"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Var.Set.html"><span class="hs-identifier">GHC.Types.Var.Set</span></a></span><span>
+</span><span id="line-56"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Unit.Module.html"><span class="hs-identifier">GHC.Unit.Module</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Unit.Types.html#Module"><span class="hs-identifier">Module</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html"><span class="hs-identifier">GHC.Utils.Misc</span></a></span><span>
+</span><span id="line-58"></span><span>
+</span><span id="line-59"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../containers-0.6.7/src/Data.Graph.html#/Data.Graph.html"><span class="hs-identifier">Data.Graph</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../containers-0.6.7/src/Data.Graph.html#SCC/Data.Graph.html#SCC"><span class="hs-identifier">SCC</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-60"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Data.Graph.Directed.html"><span class="hs-identifier">GHC.Data.Graph.Directed</span></a></span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Data.Graph.Directed.html#Node"><span class="hs-identifier">Node</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Data.Graph.Directed.html#stronglyConnCompFromEdgedVerticesUniq"><span class="hs-identifier">stronglyConnCompFromEdgedVerticesUniq</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span>
+</span><span id="line-62"></span><span class="hs-comment">{- Note [Why do we need dependency analysis?]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The program needs to be in dependency order for the SRT algorithm to
+work (see CmmBuildInfoTables, which also includes a detailed
+description of the algorithm).
+
+But isn't it in correct dependency order already?  No:
+
+* The simplifier does not guarantee to produce programs in dependency
+  order (see #16192 and Note [Glomming] in GHC.Core.Opt.OccurAnal).
+  This could be solved by a final run of the occurrence analyser, but
+  that's more work
+
+* We also don't guarantee that StgLiftLams will preserve the order or
+  only create minimal recursive groups.
+-}</span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span class="hs-comment">--------------------------------------------------------------------------------</span><span>
+</span><span id="line-80"></span><span class="hs-comment">-- | Dependency sort a STG program, and annotate it with free variables</span><span>
+</span><span id="line-81"></span><span class="hs-comment">-- The returned bindings:</span><span>
+</span><span id="line-82"></span><span class="hs-comment">--   * Are in dependency order</span><span>
+</span><span id="line-83"></span><span class="hs-comment">--   * Each StgRhsClosure is correctly annotated (in its extension field)</span><span>
+</span><span id="line-84"></span><span class="hs-comment">--     with the free variables needed in the closure</span><span>
+</span><span id="line-85"></span><span class="hs-comment">--   * Each StgCase is correctly annotated (in its extension field) with</span><span>
+</span><span id="line-86"></span><span class="hs-comment">--     the variables that must be saved across the case</span><span>
+</span><span id="line-87"></span><span class="annot"><a href="GHC.Stg.FVs.html#depSortWithAnnotStgPgm"><span class="hs-identifier hs-type">depSortWithAnnotStgPgm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Unit.Types.html#Module"><span class="hs-identifier hs-type">Module</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgTopBinding"><span class="hs-identifier hs-type">StgTopBinding</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgTopBinding"><span class="hs-identifier hs-type">CgStgTopBinding</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-88"></span><span id="depSortWithAnnotStgPgm"><span class="annot"><span class="annottext">depSortWithAnnotStgPgm :: Module -&gt; [StgTopBinding] -&gt; [CgStgTopBinding]
+</span><a href="GHC.Stg.FVs.html#depSortWithAnnotStgPgm"><span class="hs-identifier hs-var hs-var">depSortWithAnnotStgPgm</span></a></span></span><span> </span><span id="local-6989586621681629626"><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681629626"><span class="hs-identifier hs-var">this_mod</span></a></span></span><span> </span><span id="local-6989586621681629627"><span class="annot"><span class="annottext">[StgTopBinding]
+</span><a href="#local-6989586621681629627"><span class="hs-identifier hs-var">binds</span></a></span></span><span>
+</span><span id="line-89"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-pragma">{-# SCC</span><span> </span><span class="hs-pragma">&quot;STG.depSortWithAnnotStgPgm&quot;</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-90"></span><span>    </span><span class="annot"><span class="annottext">[CgStgTopBinding]
+</span><a href="#local-6989586621681629628"><span class="hs-identifier hs-var">lit_binds</span></a></span><span> </span><span class="annot"><span class="annottext">[CgStgTopBinding] -&gt; [CgStgTopBinding] -&gt; [CgStgTopBinding]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">(SCC (Id, CgStgRhs) -&gt; CgStgTopBinding)
+-&gt; [SCC (Id, CgStgRhs)] -&gt; [CgStgTopBinding]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">SCC (Id, CgStgRhs) -&gt; CgStgTopBinding
+SCC (BinderP 'CodeGen, CgStgRhs) -&gt; CgStgTopBinding
+forall {pass :: StgPass}.
+SCC (BinderP pass, GenStgRhs pass) -&gt; GenStgTopBinding pass
+</span><a href="#local-6989586621681629629"><span class="hs-identifier hs-var">from_scc</span></a></span><span> </span><span class="annot"><span class="annottext">[SCC (Id, CgStgRhs)]
+</span><a href="#local-6989586621681629630"><span class="hs-identifier hs-var">sccs</span></a></span><span>
+</span><span id="line-91"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-92"></span><span>    </span><span class="annot"><a href="#local-6989586621681629628"><span class="hs-identifier hs-type">lit_binds</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgTopBinding"><span class="hs-identifier hs-type">CgStgTopBinding</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-93"></span><span>    </span><span class="annot"><a href="#local-6989586621681629631"><span class="hs-identifier hs-type">pairs</span></a></span><span>     </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgRhs"><span class="hs-identifier hs-type">StgRhs</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-94"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621681629628"><span class="annot"><span class="annottext">[CgStgTopBinding]
+</span><a href="#local-6989586621681629628"><span class="hs-identifier hs-var">lit_binds</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629631"><span class="annot"><span class="annottext">[(Id, StgRhs)]
+</span><a href="#local-6989586621681629631"><span class="hs-identifier hs-var">pairs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[StgTopBinding] -&gt; ([CgStgTopBinding], [(Id, StgRhs)])
+</span><a href="GHC.Stg.FVs.html#flattenTopStgBindings"><span class="hs-identifier hs-var">flattenTopStgBindings</span></a></span><span> </span><span class="annot"><span class="annottext">[StgTopBinding]
+</span><a href="#local-6989586621681629627"><span class="hs-identifier hs-var">binds</span></a></span><span>
+</span><span id="line-95"></span><span>
+</span><span id="line-96"></span><span>    </span><span class="annot"><a href="#local-6989586621681629633"><span class="hs-identifier hs-type">nodes</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Data.Graph.Directed.html#Node"><span class="hs-identifier hs-type">Node</span></a></span><span> </span><span class="annot"><a href="GHC.Types.Name.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgRhs"><span class="hs-identifier hs-type">CgStgRhs</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-97"></span><span>    </span><span id="local-6989586621681629633"><span class="annot"><span class="annottext">nodes :: [Node Name (Id, CgStgRhs)]
+</span><a href="#local-6989586621681629633"><span class="hs-identifier hs-var hs-var">nodes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((Id, StgRhs) -&gt; Node Name (Id, CgStgRhs))
+-&gt; [(Id, StgRhs)] -&gt; [Node Name (Id, CgStgRhs)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Env -&gt; (Id, StgRhs) -&gt; Node Name (Id, CgStgRhs)
+</span><a href="GHC.Stg.FVs.html#annotateTopPair"><span class="hs-identifier hs-var">annotateTopPair</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629635"><span class="hs-identifier hs-var">env0</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(Id, StgRhs)]
+</span><a href="#local-6989586621681629631"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-98"></span><span>    </span><span id="local-6989586621681629635"><span class="annot"><span class="annottext">env0 :: Env
+</span><a href="#local-6989586621681629635"><span class="hs-identifier hs-var hs-var">env0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">locals :: IdSet
+</span><a href="GHC.Stg.FVs.html#locals"><span class="hs-identifier hs-var">locals</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="GHC.Types.Var.Set.html#emptyVarSet"><span class="hs-identifier hs-var">emptyVarSet</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">mod :: Module
+</span><a href="GHC.Stg.FVs.html#mod"><span class="hs-identifier hs-var">mod</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681629626"><span class="hs-identifier hs-var">this_mod</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-99"></span><span>
+</span><span id="line-100"></span><span>    </span><span class="hs-comment">-- Do strongly connected component analysis.  Why?</span><span>
+</span><span id="line-101"></span><span>    </span><span class="hs-comment">-- See Note [Why do we need dependency analysis?]</span><span>
+</span><span id="line-102"></span><span>    </span><span class="annot"><a href="#local-6989586621681629630"><span class="hs-identifier hs-type">sccs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="../../containers-0.6.7/src/Data.Graph.html#SCC/Data.Graph.html#SCC"><span class="hs-identifier hs-type">SCC</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgRhs"><span class="hs-identifier hs-type">CgStgRhs</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-103"></span><span>    </span><span id="local-6989586621681629630"><span class="annot"><span class="annottext">sccs :: [SCC (Id, CgStgRhs)]
+</span><a href="#local-6989586621681629630"><span class="hs-identifier hs-var hs-var">sccs</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Node Name (Id, CgStgRhs)] -&gt; [SCC (Id, CgStgRhs)]
+forall key payload.
+Uniquable key =&gt;
+[Node key payload] -&gt; [SCC payload]
+</span><a href="GHC.Data.Graph.Directed.html#stronglyConnCompFromEdgedVerticesUniq"><span class="hs-identifier hs-var">stronglyConnCompFromEdgedVerticesUniq</span></a></span><span> </span><span class="annot"><span class="annottext">[Node Name (Id, CgStgRhs)]
+</span><a href="#local-6989586621681629633"><span class="hs-identifier hs-var">nodes</span></a></span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span>    </span><span id="local-6989586621681629629"><span class="annot"><span class="annottext">from_scc :: SCC (BinderP pass, GenStgRhs pass) -&gt; GenStgTopBinding pass
+</span><a href="#local-6989586621681629629"><span class="hs-identifier hs-var hs-var">from_scc</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../containers-0.6.7/src/Data.Graph.html#CyclicSCC/Data.Graph.html#CyclicSCC"><span class="hs-identifier hs-type">CyclicSCC</span></a></span><span> </span><span id="local-6989586621681629641"><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629641"><span class="hs-identifier hs-var">pairs</span></a></span></span><span class="hs-special">)</span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">GenStgBinding pass -&gt; GenStgTopBinding pass
+forall (pass :: StgPass).
+GenStgBinding pass -&gt; GenStgTopBinding pass
+</span><a href="GHC.Stg.Syntax.html#StgTopLifted"><span class="hs-identifier hs-var">StgTopLifted</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)] -&gt; GenStgBinding pass
+forall (pass :: StgPass).
+[(BinderP pass, GenStgRhs pass)] -&gt; GenStgBinding pass
+</span><a href="GHC.Stg.Syntax.html#StgRec"><span class="hs-identifier hs-var">StgRec</span></a></span><span> </span><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629641"><span class="hs-identifier hs-var">pairs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-106"></span><span>    </span><span class="annot"><a href="#local-6989586621681629629"><span class="hs-identifier hs-var">from_scc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../containers-0.6.7/src/Data.Graph.html#AcyclicSCC/Data.Graph.html#AcyclicSCC"><span class="hs-identifier hs-type">AcyclicSCC</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629645"><span class="annot"><span class="annottext">BinderP pass
+</span><a href="#local-6989586621681629645"><span class="hs-identifier hs-var">bndr</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681629646"><span class="annot"><span class="annottext">GenStgRhs pass
+</span><a href="#local-6989586621681629646"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">GenStgBinding pass -&gt; GenStgTopBinding pass
+forall (pass :: StgPass).
+GenStgBinding pass -&gt; GenStgTopBinding pass
+</span><a href="GHC.Stg.Syntax.html#StgTopLifted"><span class="hs-identifier hs-var">StgTopLifted</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BinderP pass -&gt; GenStgRhs pass -&gt; GenStgBinding pass
+forall (pass :: StgPass).
+BinderP pass -&gt; GenStgRhs pass -&gt; GenStgBinding pass
+</span><a href="GHC.Stg.Syntax.html#StgNonRec"><span class="hs-identifier hs-var">StgNonRec</span></a></span><span> </span><span class="annot"><span class="annottext">BinderP pass
+</span><a href="#local-6989586621681629645"><span class="hs-identifier hs-var">bndr</span></a></span><span> </span><span class="annot"><span class="annottext">GenStgRhs pass
+</span><a href="#local-6989586621681629646"><span class="hs-identifier hs-var">rhs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span>
+</span><span id="line-109"></span><span class="annot"><a href="GHC.Stg.FVs.html#flattenTopStgBindings"><span class="hs-identifier hs-type">flattenTopStgBindings</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgTopBinding"><span class="hs-identifier hs-type">StgTopBinding</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgTopBinding"><span class="hs-identifier hs-type">CgStgTopBinding</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgRhs"><span class="hs-identifier hs-type">StgRhs</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-110"></span><span id="flattenTopStgBindings"><span class="annot"><span class="annottext">flattenTopStgBindings :: [StgTopBinding] -&gt; ([CgStgTopBinding], [(Id, StgRhs)])
+</span><a href="GHC.Stg.FVs.html#flattenTopStgBindings"><span class="hs-identifier hs-var hs-var">flattenTopStgBindings</span></a></span></span><span> </span><span id="local-6989586621681629648"><span class="annot"><span class="annottext">[StgTopBinding]
+</span><a href="#local-6989586621681629648"><span class="hs-identifier hs-var">binds</span></a></span></span><span>
+</span><span id="line-111"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[CgStgTopBinding]
+-&gt; [(BinderP 'Vanilla, StgRhs)]
+-&gt; [StgTopBinding]
+-&gt; ([CgStgTopBinding], [(BinderP 'Vanilla, StgRhs)])
+forall {pass :: StgPass} {pass :: StgPass}.
+[GenStgTopBinding pass]
+-&gt; [(BinderP pass, GenStgRhs pass)]
+-&gt; [GenStgTopBinding pass]
+-&gt; ([GenStgTopBinding pass], [(BinderP pass, GenStgRhs pass)])
+</span><a href="#local-6989586621681629649"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[StgTopBinding]
+</span><a href="#local-6989586621681629648"><span class="hs-identifier hs-var">binds</span></a></span><span>
+</span><span id="line-112"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-113"></span><span>    </span><span id="local-6989586621681629649"><span class="annot"><span class="annottext">go :: [GenStgTopBinding pass]
+-&gt; [(BinderP pass, GenStgRhs pass)]
+-&gt; [GenStgTopBinding pass]
+-&gt; ([GenStgTopBinding pass], [(BinderP pass, GenStgRhs pass)])
+</span><a href="#local-6989586621681629649"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621681629650"><span class="annot"><span class="annottext">[GenStgTopBinding pass]
+</span><a href="#local-6989586621681629650"><span class="hs-identifier hs-var">lits</span></a></span></span><span> </span><span id="local-6989586621681629651"><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629651"><span class="hs-identifier hs-var">pairs</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[GenStgTopBinding pass]
+</span><a href="#local-6989586621681629650"><span class="hs-identifier hs-var">lits</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629651"><span class="hs-identifier hs-var">pairs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>    </span><span class="annot"><a href="#local-6989586621681629649"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681629652"><span class="annot"><span class="annottext">[GenStgTopBinding pass]
+</span><a href="#local-6989586621681629652"><span class="hs-identifier hs-var">lits</span></a></span></span><span> </span><span id="local-6989586621681629653"><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629653"><span class="hs-identifier hs-var">pairs</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629654"><span class="annot"><span class="annottext">GenStgTopBinding pass
+</span><a href="#local-6989586621681629654"><span class="hs-identifier hs-var">bind</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621681629655"><span class="annot"><span class="annottext">[GenStgTopBinding pass]
+</span><a href="#local-6989586621681629655"><span class="hs-identifier hs-var">binds</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-115"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">GenStgTopBinding pass
+</span><a href="#local-6989586621681629654"><span class="hs-identifier hs-var">bind</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-116"></span><span>          </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgTopStringLit"><span class="hs-identifier hs-type">StgTopStringLit</span></a></span><span> </span><span id="local-6989586621681629657"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629657"><span class="hs-identifier hs-var">bndr</span></a></span></span><span> </span><span id="local-6989586621681629658"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681629658"><span class="hs-identifier hs-var">rhs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[GenStgTopBinding pass]
+-&gt; [(BinderP pass, GenStgRhs pass)]
+-&gt; [GenStgTopBinding pass]
+-&gt; ([GenStgTopBinding pass], [(BinderP pass, GenStgRhs pass)])
+</span><a href="#local-6989586621681629649"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; ByteString -&gt; GenStgTopBinding pass
+forall (pass :: StgPass). Id -&gt; ByteString -&gt; GenStgTopBinding pass
+</span><a href="GHC.Stg.Syntax.html#StgTopStringLit"><span class="hs-identifier hs-var">StgTopStringLit</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629657"><span class="hs-identifier hs-var">bndr</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621681629658"><span class="hs-identifier hs-var">rhs</span></a></span><span class="annot"><span class="annottext">GenStgTopBinding pass
+-&gt; [GenStgTopBinding pass] -&gt; [GenStgTopBinding pass]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="annot"><span class="annottext">[GenStgTopBinding pass]
+</span><a href="#local-6989586621681629652"><span class="hs-identifier hs-var">lits</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629653"><span class="hs-identifier hs-var">pairs</span></a></span><span> </span><span class="annot"><span class="annottext">[GenStgTopBinding pass]
+</span><a href="#local-6989586621681629655"><span class="hs-identifier hs-var">binds</span></a></span><span>
+</span><span id="line-117"></span><span>          </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgTopLifted"><span class="hs-identifier hs-type">StgTopLifted</span></a></span><span> </span><span id="local-6989586621681629659"><span class="annot"><span class="annottext">GenStgBinding pass
+</span><a href="#local-6989586621681629659"><span class="hs-identifier hs-var">stg_bind</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[GenStgTopBinding pass]
+-&gt; [(BinderP pass, GenStgRhs pass)]
+-&gt; [GenStgTopBinding pass]
+-&gt; ([GenStgTopBinding pass], [(BinderP pass, GenStgRhs pass)])
+</span><a href="#local-6989586621681629649"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[GenStgTopBinding pass]
+</span><a href="#local-6989586621681629652"><span class="hs-identifier hs-var">lits</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">GenStgBinding pass -&gt; [(BinderP pass, GenStgRhs pass)]
+forall {pass :: StgPass}.
+GenStgBinding pass -&gt; [(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629660"><span class="hs-identifier hs-var">flatten_one</span></a></span><span> </span><span class="annot"><span class="annottext">GenStgBinding pass
+</span><a href="#local-6989586621681629659"><span class="hs-identifier hs-var">stg_bind</span></a></span><span> </span><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)]
+-&gt; [(BinderP pass, GenStgRhs pass)]
+-&gt; [(BinderP pass, GenStgRhs pass)]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629653"><span class="hs-identifier hs-var">pairs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[GenStgTopBinding pass]
+</span><a href="#local-6989586621681629655"><span class="hs-identifier hs-var">binds</span></a></span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span>    </span><span id="local-6989586621681629660"><span class="annot"><span class="annottext">flatten_one :: GenStgBinding pass -&gt; [(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629660"><span class="hs-identifier hs-var hs-var">flatten_one</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgNonRec"><span class="hs-identifier hs-type">StgNonRec</span></a></span><span> </span><span id="local-6989586621681629661"><span class="annot"><span class="annottext">BinderP pass
+</span><a href="#local-6989586621681629661"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621681629662"><span class="annot"><span class="annottext">GenStgRhs pass
+</span><a href="#local-6989586621681629662"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">BinderP pass
+</span><a href="#local-6989586621681629661"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">GenStgRhs pass
+</span><a href="#local-6989586621681629662"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-120"></span><span>    </span><span class="annot"><a href="#local-6989586621681629660"><span class="hs-identifier hs-var">flatten_one</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgRec"><span class="hs-identifier hs-type">StgRec</span></a></span><span> </span><span id="local-6989586621681629663"><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629663"><span class="hs-identifier hs-var">pairs</span></a></span></span><span class="hs-special">)</span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(BinderP pass, GenStgRhs pass)]
+</span><a href="#local-6989586621681629663"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-121"></span><span>
+</span><span id="line-122"></span><span class="annot"><a href="GHC.Stg.FVs.html#annotateTopPair"><span class="hs-identifier hs-type">annotateTopPair</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgRhs"><span class="hs-identifier hs-type">StgRhs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Data.Graph.Directed.html#Node"><span class="hs-identifier hs-type">Node</span></a></span><span> </span><span class="annot"><a href="GHC.Types.Name.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgRhs"><span class="hs-identifier hs-type">CgStgRhs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span id="annotateTopPair"><span class="annot"><span class="annottext">annotateTopPair :: Env -&gt; (Id, StgRhs) -&gt; Node Name (Id, CgStgRhs)
+</span><a href="GHC.Stg.FVs.html#annotateTopPair"><span class="hs-identifier hs-var hs-var">annotateTopPair</span></a></span></span><span> </span><span id="local-6989586621681629664"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629664"><span class="hs-identifier hs-var">env0</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629665"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629665"><span class="hs-identifier hs-var">bndr</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629666"><span class="annot"><span class="annottext">StgRhs
+</span><a href="#local-6989586621681629666"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-124"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Data.Graph.Directed.html#DigraphNode"><span class="hs-identifier hs-type">DigraphNode</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">node_key :: Name
+</span><a href="GHC.Data.Graph.Directed.html#node_key"><span class="hs-identifier hs-var">node_key</span></a></span><span>          </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Id -&gt; Name
+</span><a href="GHC.Types.Id.html#idName"><span class="hs-identifier hs-var">idName</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629665"><span class="hs-identifier hs-var">bndr</span></a></span><span>
+</span><span id="line-125"></span><span>                </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">node_payload :: (Id, CgStgRhs)
+</span><a href="GHC.Data.Graph.Directed.html#node_payload"><span class="hs-identifier hs-var">node_payload</span></a></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629665"><span class="hs-identifier hs-var">bndr</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">CgStgRhs
+</span><a href="#local-6989586621681629671"><span class="hs-identifier hs-var">rhs'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span>                </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">node_dependencies :: [Name]
+</span><a href="GHC.Data.Graph.Directed.html#node_dependencies"><span class="hs-identifier hs-var">node_dependencies</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Id -&gt; Name) -&gt; [Id] -&gt; [Name]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">Id -&gt; Name
+</span><a href="GHC.Types.Id.html#idName"><span class="hs-identifier hs-var">idName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdSet -&gt; [Id]
+forall elt. UniqSet elt -&gt; [elt]
+</span><a href="GHC.Types.Unique.Set.html#nonDetEltsUniqSet"><span class="hs-identifier hs-var">nonDetEltsUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629673"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-127"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621681629671"><span class="annot"><span class="annottext">CgStgRhs
+</span><a href="#local-6989586621681629671"><span class="hs-identifier hs-var">rhs'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629673"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629673"><span class="hs-identifier hs-var">top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Env -&gt; StgRhs -&gt; (CgStgRhs, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#rhsFVs"><span class="hs-identifier hs-var">rhsFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629664"><span class="hs-identifier hs-var">env0</span></a></span><span> </span><span class="annot"><span class="annottext">StgRhs
+</span><a href="#local-6989586621681629666"><span class="hs-identifier hs-var">rhs</span></a></span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span class="hs-comment">--------------------------------------------------------------------------------</span><span>
+</span><span id="line-131"></span><span class="annot"><span class="hs-comment">-- * Non-global free variable analysis</span></span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span class="hs-keyword">data</span><span> </span><span id="Env"><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-var">Env</span></a></span></span><span>
+</span><span id="line-134"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="Env"><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-var">Env</span></a></span></span><span>
+</span><span id="line-135"></span><span>  </span><span class="hs-special">{</span><span> </span><span class="hs-comment">-- | Set of locally-bound, not-top-level binders in scope.</span><span>
+</span><span id="line-136"></span><span>    </span><span class="hs-comment">-- That is, variables bound by a let (but not let-no-escape), a lambda</span><span>
+</span><span id="line-137"></span><span>    </span><span class="hs-comment">-- (in a StgRhsClsoure), a case binder, or a case alternative.  These</span><span>
+</span><span id="line-138"></span><span>    </span><span class="hs-comment">-- are the variables that must be captured in a function closure, if they</span><span>
+</span><span id="line-139"></span><span>    </span><span class="hs-comment">-- are free in the RHS. Example</span><span>
+</span><span id="line-140"></span><span>    </span><span class="hs-comment">--   f = \x. let g = \y. x+1</span><span>
+</span><span id="line-141"></span><span>    </span><span class="hs-comment">--           let h = \z. g z + 1</span><span>
+</span><span id="line-142"></span><span>    </span><span class="hs-comment">--           in h x</span><span>
+</span><span id="line-143"></span><span>    </span><span class="hs-comment">-- In the body of h we have locals = {x, g, z}.  Note that f is top level</span><span>
+</span><span id="line-144"></span><span>    </span><span class="hs-comment">-- and does not appear in locals.</span><span>
+</span><span id="line-145"></span><span>    </span><span id="locals"><span class="annot"><span class="annottext">Env -&gt; IdSet
+</span><a href="GHC.Stg.FVs.html#locals"><span class="hs-identifier hs-var hs-var">locals</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Var.Set.html#IdSet"><span class="hs-identifier hs-type">IdSet</span></a></span><span>
+</span><span id="line-146"></span><span>  </span><span class="hs-special">,</span><span> </span><span id="mod"><span class="annot"><span class="annottext">Env -&gt; Module
+</span><a href="GHC.Stg.FVs.html#mod"><span class="hs-identifier hs-var hs-var">mod</span></a></span></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Unit.Types.html#Module"><span class="hs-identifier hs-type">Module</span></a></span><span>
+</span><span id="line-147"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span class="annot"><a href="GHC.Stg.FVs.html#addLocals"><span class="hs-identifier hs-type">addLocals</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span>
+</span><span id="line-150"></span><span id="addLocals"><span class="annot"><span class="annottext">addLocals :: [Id] -&gt; Env -&gt; Env
+</span><a href="GHC.Stg.FVs.html#addLocals"><span class="hs-identifier hs-var hs-var">addLocals</span></a></span></span><span> </span><span id="local-6989586621681629676"><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681629676"><span class="hs-identifier hs-var">bndrs</span></a></span></span><span> </span><span id="local-6989586621681629677"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629677"><span class="hs-identifier hs-var">env</span></a></span></span><span>
+</span><span id="line-151"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629677"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#locals"><span class="hs-identifier hs-var">locals</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Types.Var.Set.html#extendVarSetList"><span class="hs-identifier hs-type">extendVarSetList</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.FVs.html#locals"><span class="hs-identifier hs-var">locals</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681629677"><span class="hs-identifier hs-type">env</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621681629676"><span class="hs-identifier hs-type">bndrs</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-152"></span><span>
+</span><span id="line-153"></span><span class="hs-comment">--------------------------------------------------------------------------------</span><span>
+</span><span id="line-154"></span><span class="hs-comment">-- | TopFVs: set of variables that are:</span><span>
+</span><span id="line-155"></span><span class="hs-comment">--    (a) bound at the top level of this module, and</span><span>
+</span><span id="line-156"></span><span class="hs-comment">--    (b) appear free in the expression</span><span>
+</span><span id="line-157"></span><span class="hs-comment">-- It is a /non-deterministic/ set because we use it only to perform dependency</span><span>
+</span><span id="line-158"></span><span class="hs-comment">-- analysis on the top-level bindings.</span><span>
+</span><span id="line-159"></span><span class="hs-keyword">type</span><span> </span><span id="TopFVs"><span class="annot"><a href="GHC.Stg.FVs.html#TopFVs"><span class="hs-identifier hs-var">TopFVs</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Types.Var.Set.html#IdSet"><span class="hs-identifier hs-type">IdSet</span></a></span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="hs-comment">-- | LocalFVs: set of variable that are:</span><span>
+</span><span id="line-162"></span><span class="hs-comment">--     (a) bound locally (by a lambda, non-top-level let, or case); that is,</span><span>
+</span><span id="line-163"></span><span class="hs-comment">--         it appears in the 'locals' field of 'Env'</span><span>
+</span><span id="line-164"></span><span class="hs-comment">--     (b) appear free in the expression</span><span>
+</span><span id="line-165"></span><span class="hs-comment">-- It is a /deterministic/ set because it is used to annotate closures with</span><span>
+</span><span id="line-166"></span><span class="hs-comment">-- their free variables, and we want closure layout to be deterministic.</span><span>
+</span><span id="line-167"></span><span class="hs-comment">--</span><span>
+</span><span id="line-168"></span><span class="hs-comment">-- Invariant: the LocalFVs returned is a subset of the 'locals' field of Env</span><span>
+</span><span id="line-169"></span><span class="hs-keyword">type</span><span> </span><span id="LocalFVs"><span class="annot"><a href="GHC.Stg.FVs.html#LocalFVs"><span class="hs-identifier hs-var">LocalFVs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Types.Var.Set.html#DIdSet"><span class="hs-identifier hs-type">DIdSet</span></a></span><span>
+</span><span id="line-170"></span><span>
+</span><span id="line-171"></span><span class="hs-comment">-- | Dependency analysis on STG terms.</span><span>
+</span><span id="line-172"></span><span class="hs-comment">--</span><span>
+</span><span id="line-173"></span><span class="hs-comment">-- Dependencies of a binding are just free variables in the binding. This</span><span>
+</span><span id="line-174"></span><span class="hs-comment">-- includes imported ids and ids in the current module. For recursive groups we</span><span>
+</span><span id="line-175"></span><span class="hs-comment">-- just return one set of free variables which is just the union of dependencies</span><span>
+</span><span id="line-176"></span><span class="hs-comment">-- of all bindings in the group.</span><span>
+</span><span id="line-177"></span><span class="hs-comment">--</span><span>
+</span><span id="line-178"></span><span class="hs-comment">-- Implementation: pass bound variables (NestedIds) to recursive calls, get free</span><span>
+</span><span id="line-179"></span><span class="hs-comment">-- variables (TopFVs) back. We ignore imported TopFVs as they do not change the</span><span>
+</span><span id="line-180"></span><span class="hs-comment">-- ordering but it improves performance (see `nameIsExternalFrom` call in `vars_fvs`).</span><span>
+</span><span id="line-181"></span><span class="hs-comment">--</span><span>
+</span><span id="line-182"></span><span>
+</span><span id="line-183"></span><span class="annot"><a href="GHC.Stg.FVs.html#annBindingFreeVars"><span class="hs-identifier hs-type">annBindingFreeVars</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Unit.Types.html#Module"><span class="hs-identifier hs-type">Module</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgBinding"><span class="hs-identifier hs-type">StgBinding</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgBinding"><span class="hs-identifier hs-type">CgStgBinding</span></a></span><span>
+</span><span id="line-184"></span><span id="annBindingFreeVars"><span class="annot"><span class="annottext">annBindingFreeVars :: Module -&gt; StgBinding -&gt; CgStgBinding
+</span><a href="GHC.Stg.FVs.html#annBindingFreeVars"><span class="hs-identifier hs-var hs-var">annBindingFreeVars</span></a></span></span><span> </span><span id="local-6989586621681629681"><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681629681"><span class="hs-identifier hs-var">this_mod</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(CgStgBinding, IdSet, LocalFVs) -&gt; CgStgBinding
+forall a b c. (a, b, c) -&gt; a
+</span><a href="GHC.Utils.Misc.html#fstOf3"><span class="hs-identifier hs-var">fstOf3</span></a></span><span> </span><span class="annot"><span class="annottext">((CgStgBinding, IdSet, LocalFVs) -&gt; CgStgBinding)
+-&gt; (StgBinding -&gt; (CgStgBinding, IdSet, LocalFVs))
+-&gt; StgBinding
+-&gt; CgStgBinding
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Env -&gt; LocalFVs -&gt; StgBinding -&gt; (CgStgBinding, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#bindingFVs"><span class="hs-identifier hs-var">bindingFVs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdSet -&gt; Module -&gt; Env
+</span><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-var">Env</span></a></span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="GHC.Types.Var.Set.html#emptyVarSet"><span class="hs-identifier hs-var">emptyVarSet</span></a></span><span> </span><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621681629681"><span class="hs-identifier hs-var">this_mod</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="GHC.Types.Var.Set.html#emptyDVarSet"><span class="hs-identifier hs-var">emptyDVarSet</span></a></span><span>
+</span><span id="line-185"></span><span>
+</span><span id="line-186"></span><span class="annot"><a href="GHC.Stg.FVs.html#bindingFVs"><span class="hs-identifier hs-type">bindingFVs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#LocalFVs"><span class="hs-identifier hs-type">LocalFVs</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgBinding"><span class="hs-identifier hs-type">StgBinding</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgBinding"><span class="hs-identifier hs-type">CgStgBinding</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#TopFVs"><span class="hs-identifier hs-type">TopFVs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#LocalFVs"><span class="hs-identifier hs-type">LocalFVs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-187"></span><span id="bindingFVs"><span class="annot"><span class="annottext">bindingFVs :: Env -&gt; LocalFVs -&gt; StgBinding -&gt; (CgStgBinding, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#bindingFVs"><span class="hs-identifier hs-var hs-var">bindingFVs</span></a></span></span><span> </span><span id="local-6989586621681629686"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629686"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span id="local-6989586621681629687"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629687"><span class="hs-identifier hs-var">body_fv</span></a></span></span><span> </span><span id="local-6989586621681629688"><span class="annot"><span class="annottext">StgBinding
+</span><a href="#local-6989586621681629688"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-188"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">StgBinding
+</span><a href="#local-6989586621681629688"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-189"></span><span>    </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgNonRec"><span class="hs-identifier hs-type">StgNonRec</span></a></span><span> </span><span id="local-6989586621681629689"><span class="annot"><span class="annottext">BinderP 'Vanilla
+</span><a href="#local-6989586621681629689"><span class="hs-identifier hs-var">bndr</span></a></span></span><span> </span><span id="local-6989586621681629690"><span class="annot"><span class="annottext">StgRhs
+</span><a href="#local-6989586621681629690"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BinderP 'CodeGen -&gt; CgStgRhs -&gt; CgStgBinding
+forall (pass :: StgPass).
+BinderP pass -&gt; GenStgRhs pass -&gt; GenStgBinding pass
+</span><a href="GHC.Stg.Syntax.html#StgNonRec"><span class="hs-identifier hs-var">StgNonRec</span></a></span><span> </span><span class="annot"><span class="annottext">BinderP 'Vanilla
+BinderP 'CodeGen
+</span><a href="#local-6989586621681629689"><span class="hs-identifier hs-var">bndr</span></a></span><span> </span><span class="annot"><span class="annottext">CgStgRhs
+</span><a href="#local-6989586621681629691"><span class="hs-identifier hs-var">r'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629692"><span class="hs-identifier hs-var">fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629693"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-190"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-191"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621681629691"><span class="annot"><span class="annottext">CgStgRhs
+</span><a href="#local-6989586621681629691"><span class="hs-identifier hs-var">r'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629692"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629692"><span class="hs-identifier hs-var">fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629694"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629694"><span class="hs-identifier hs-var">rhs_lcl_fvs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Env -&gt; StgRhs -&gt; (CgStgRhs, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#rhsFVs"><span class="hs-identifier hs-var">rhsFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629686"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">StgRhs
+</span><a href="#local-6989586621681629690"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-192"></span><span>        </span><span id="local-6989586621681629693"><span class="annot"><span class="annottext">lcl_fvs :: LocalFVs
+</span><a href="#local-6989586621681629693"><span class="hs-identifier hs-var hs-var">lcl_fvs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LocalFVs -&gt; Id -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#delDVarSet"><span class="hs-identifier hs-var">delDVarSet</span></a></span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629687"><span class="hs-identifier hs-var">body_fv</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+BinderP 'Vanilla
+</span><a href="#local-6989586621681629689"><span class="hs-identifier hs-var">bndr</span></a></span><span> </span><span class="annot"><span class="annottext">LocalFVs -&gt; LocalFVs -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#unionDVarSet"><span class="hs-operator hs-var">`unionDVarSet`</span></a></span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629694"><span class="hs-identifier hs-var">rhs_lcl_fvs</span></a></span><span>
+</span><span id="line-193"></span><span>
+</span><span id="line-194"></span><span>    </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgRec"><span class="hs-identifier hs-type">StgRec</span></a></span><span> </span><span id="local-6989586621681629697"><span class="annot"><span class="annottext">[(BinderP 'Vanilla, StgRhs)]
+</span><a href="#local-6989586621681629697"><span class="hs-identifier hs-var">pairs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(BinderP 'CodeGen, CgStgRhs)] -&gt; CgStgBinding
+forall (pass :: StgPass).
+[(BinderP pass, GenStgRhs pass)] -&gt; GenStgBinding pass
+</span><a href="GHC.Stg.Syntax.html#StgRec"><span class="hs-identifier hs-var">StgRec</span></a></span><span> </span><span class="annot"><span class="annottext">[(Id, CgStgRhs)]
+[(BinderP 'CodeGen, CgStgRhs)]
+</span><a href="#local-6989586621681629698"><span class="hs-identifier hs-var">pairs'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629699"><span class="hs-identifier hs-var">fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629700"><span class="hs-identifier hs-var">lcl_fvss</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-195"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-196"></span><span>        </span><span id="local-6989586621681629701"><span class="annot"><span class="annottext">bndrs :: [Id]
+</span><a href="#local-6989586621681629701"><span class="hs-identifier hs-var hs-var">bndrs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((Id, StgRhs) -&gt; Id) -&gt; [(Id, StgRhs)] -&gt; [Id]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">(Id, StgRhs) -&gt; Id
+forall a b. (a, b) -&gt; a
+</span><a href="../../base-4.18.2.1/src/Data.Tuple.html#fst/Data.Tuple.html#fst"><span class="hs-identifier hs-var">fst</span></a></span><span> </span><span class="annot"><span class="annottext">[(Id, StgRhs)]
+[(BinderP 'Vanilla, StgRhs)]
+</span><a href="#local-6989586621681629697"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-197"></span><span>        </span><span id="local-6989586621681629703"><span class="annot"><span class="annottext">env' :: Env
+</span><a href="#local-6989586621681629703"><span class="hs-identifier hs-var hs-var">env'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Id] -&gt; Env -&gt; Env
+</span><a href="GHC.Stg.FVs.html#addLocals"><span class="hs-identifier hs-var">addLocals</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681629701"><span class="hs-identifier hs-var">bndrs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629686"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-198"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621681629704"><span class="annot"><span class="annottext">[CgStgRhs]
+</span><a href="#local-6989586621681629704"><span class="hs-identifier hs-var">rhss</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629705"><span class="annot"><span class="annottext">[IdSet]
+</span><a href="#local-6989586621681629705"><span class="hs-identifier hs-var">rhs_fvss</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629706"><span class="annot"><span class="annottext">[LocalFVs]
+</span><a href="#local-6989586621681629706"><span class="hs-identifier hs-var">rhs_lcl_fvss</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((Id, StgRhs) -&gt; (CgStgRhs, IdSet, LocalFVs))
+-&gt; [(Id, StgRhs)] -&gt; ([CgStgRhs], [IdSet], [LocalFVs])
+forall a b c d. (a -&gt; (b, c, d)) -&gt; [a] -&gt; ([b], [c], [d])
+</span><a href="GHC.Utils.Misc.html#mapAndUnzip3"><span class="hs-identifier hs-var">mapAndUnzip3</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Env -&gt; StgRhs -&gt; (CgStgRhs, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#rhsFVs"><span class="hs-identifier hs-var">rhsFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629703"><span class="hs-identifier hs-var">env'</span></a></span><span> </span><span class="annot"><span class="annottext">(StgRhs -&gt; (CgStgRhs, IdSet, LocalFVs))
+-&gt; ((Id, StgRhs) -&gt; StgRhs)
+-&gt; (Id, StgRhs)
+-&gt; (CgStgRhs, IdSet, LocalFVs)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">(Id, StgRhs) -&gt; StgRhs
+forall a b. (a, b) -&gt; b
+</span><a href="../../base-4.18.2.1/src/Data.Tuple.html#snd/Data.Tuple.html#snd"><span class="hs-identifier hs-var">snd</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(Id, StgRhs)]
+[(BinderP 'Vanilla, StgRhs)]
+</span><a href="#local-6989586621681629697"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-199"></span><span>        </span><span id="local-6989586621681629699"><span class="annot"><span class="annottext">fvs :: IdSet
+</span><a href="#local-6989586621681629699"><span class="hs-identifier hs-var hs-var">fvs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[IdSet] -&gt; IdSet
+</span><a href="GHC.Types.Var.Set.html#unionVarSets"><span class="hs-identifier hs-var">unionVarSets</span></a></span><span> </span><span class="annot"><span class="annottext">[IdSet]
+</span><a href="#local-6989586621681629705"><span class="hs-identifier hs-var">rhs_fvss</span></a></span><span>
+</span><span id="line-200"></span><span>        </span><span id="local-6989586621681629698"><span class="annot"><span class="annottext">pairs' :: [(Id, CgStgRhs)]
+</span><a href="#local-6989586621681629698"><span class="hs-identifier hs-var hs-var">pairs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Id] -&gt; [CgStgRhs] -&gt; [(Id, CgStgRhs)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#zip/GHC.List.html#zip"><span class="hs-identifier hs-var">zip</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681629701"><span class="hs-identifier hs-var">bndrs</span></a></span><span> </span><span class="annot"><span class="annottext">[CgStgRhs]
+</span><a href="#local-6989586621681629704"><span class="hs-identifier hs-var">rhss</span></a></span><span>
+</span><span id="line-201"></span><span>        </span><span id="local-6989586621681629700"><span class="annot"><span class="annottext">lcl_fvss :: LocalFVs
+</span><a href="#local-6989586621681629700"><span class="hs-identifier hs-var hs-var">lcl_fvss</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LocalFVs -&gt; [Id] -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#delDVarSetList"><span class="hs-identifier hs-var">delDVarSetList</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[LocalFVs] -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#unionDVarSets"><span class="hs-identifier hs-var">unionDVarSets</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629687"><span class="hs-identifier hs-var">body_fv</span></a></span><span class="annot"><span class="annottext">LocalFVs -&gt; [LocalFVs] -&gt; [LocalFVs]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="annot"><span class="annottext">[LocalFVs]
+</span><a href="#local-6989586621681629706"><span class="hs-identifier hs-var">rhs_lcl_fvss</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621681629701"><span class="hs-identifier hs-var">bndrs</span></a></span><span>
+</span><span id="line-202"></span><span>
+</span><span id="line-203"></span><span class="annot"><a href="GHC.Stg.FVs.html#varFVs"><span class="hs-identifier hs-type">varFVs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Var.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.FVs.html#TopFVs"><span class="hs-identifier hs-type">TopFVs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#LocalFVs"><span class="hs-identifier hs-type">LocalFVs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.FVs.html#TopFVs"><span class="hs-identifier hs-type">TopFVs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#LocalFVs"><span class="hs-identifier hs-type">LocalFVs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-204"></span><span id="varFVs"><span class="annot"><span class="annottext">varFVs :: Env -&gt; Id -&gt; (IdSet, LocalFVs) -&gt; (IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#varFVs"><span class="hs-identifier hs-var hs-var">varFVs</span></a></span></span><span> </span><span id="local-6989586621681629713"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629713"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span id="local-6989586621681629714"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629714"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629715"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629715"><span class="hs-identifier hs-var">top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629716"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629716"><span class="hs-identifier hs-var">lcl_fvs</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-205"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629714"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Id -&gt; IdSet -&gt; Bool
+</span><a href="GHC.Types.Var.Set.html#elemVarSet"><span class="hs-operator hs-var">`elemVarSet`</span></a></span><span> </span><span class="annot"><span class="annottext">Env -&gt; IdSet
+</span><a href="GHC.Stg.FVs.html#locals"><span class="hs-identifier hs-var">locals</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629713"><span class="hs-identifier hs-var">env</span></a></span><span>                </span><span class="hs-comment">-- v is locally bound</span><span>
+</span><span id="line-206"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629715"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629716"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span> </span><span class="annot"><span class="annottext">LocalFVs -&gt; Id -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#extendDVarSet"><span class="hs-operator hs-var">`extendDVarSet`</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629714"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-207"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Module -&gt; Name -&gt; Bool
+</span><a href="GHC.Types.Name.html#nameIsLocalOrFrom"><span class="hs-identifier hs-var">nameIsLocalOrFrom</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Env -&gt; Module
+</span><a href="GHC.Stg.FVs.html#mod"><span class="hs-identifier hs-var">mod</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629713"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; Name
+</span><a href="GHC.Types.Id.html#idName"><span class="hs-identifier hs-var">idName</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629714"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span>   </span><span class="hs-comment">-- v is bound at top level</span><span>
+</span><span id="line-208"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629715"><span class="hs-identifier hs-var">top_fvs</span></a></span><span> </span><span class="annot"><span class="annottext">IdSet -&gt; Id -&gt; IdSet
+</span><a href="GHC.Types.Var.Set.html#extendVarSet"><span class="hs-operator hs-var">`extendVarSet`</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629714"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629716"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-209"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>                                </span><span class="hs-comment">-- v is imported</span><span>
+</span><span id="line-210"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629715"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629716"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-211"></span><span>
+</span><span id="line-212"></span><span class="annot"><a href="GHC.Stg.FVs.html#exprFVs"><span class="hs-identifier hs-type">exprFVs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgExpr"><span class="hs-identifier hs-type">StgExpr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgExpr"><span class="hs-identifier hs-type">CgStgExpr</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#TopFVs"><span class="hs-identifier hs-type">TopFVs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#LocalFVs"><span class="hs-identifier hs-type">LocalFVs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-213"></span><span id="exprFVs"><span class="annot"><span class="annottext">exprFVs :: Env -&gt; StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#exprFVs"><span class="hs-identifier hs-var hs-var">exprFVs</span></a></span></span><span> </span><span id="local-6989586621681629721"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629721"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="#local-6989586621681629722"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-214"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-215"></span><span>    </span><span id="local-6989586621681629722"><span class="annot"><span class="annottext">go :: StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="#local-6989586621681629722"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgApp"><span class="hs-identifier hs-type">StgApp</span></a></span><span> </span><span id="local-6989586621681629724"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629724"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621681629725"><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629725"><span class="hs-keyword hs-var">as</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-216"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629726"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629726"><span class="hs-identifier hs-var">top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629727"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629727"><span class="hs-identifier hs-var">lcl_fvs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Env -&gt; Id -&gt; (IdSet, LocalFVs) -&gt; (IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#varFVs"><span class="hs-identifier hs-var">varFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629721"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629724"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Env -&gt; [StgArg] -&gt; (IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#argsFVs"><span class="hs-identifier hs-var">argsFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629721"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629725"><span class="hs-keyword hs-var">as</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-217"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; [StgArg] -&gt; CgStgExpr
+forall (pass :: StgPass). Id -&gt; [StgArg] -&gt; GenStgExpr pass
+</span><a href="GHC.Stg.Syntax.html#StgApp"><span class="hs-identifier hs-var">StgApp</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629724"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629725"><span class="hs-keyword hs-var">as</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629726"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629727"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-218"></span><span>
+</span><span id="line-219"></span><span>    </span><span class="annot"><a href="#local-6989586621681629722"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgLit"><span class="hs-identifier hs-type">StgLit</span></a></span><span> </span><span id="local-6989586621681629730"><span class="annot"><span class="annottext">Literal
+</span><a href="#local-6989586621681629730"><span class="hs-identifier hs-var">lit</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Literal -&gt; CgStgExpr
+forall (pass :: StgPass). Literal -&gt; GenStgExpr pass
+</span><a href="GHC.Stg.Syntax.html#StgLit"><span class="hs-identifier hs-var">StgLit</span></a></span><span> </span><span class="annot"><span class="annottext">Literal
+</span><a href="#local-6989586621681629730"><span class="hs-identifier hs-var">lit</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="GHC.Types.Var.Set.html#emptyVarSet"><span class="hs-identifier hs-var">emptyVarSet</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="GHC.Types.Var.Set.html#emptyDVarSet"><span class="hs-identifier hs-var">emptyDVarSet</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-220"></span><span>
+</span><span id="line-221"></span><span>    </span><span class="annot"><a href="#local-6989586621681629722"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgConApp"><span class="hs-identifier hs-type">StgConApp</span></a></span><span> </span><span id="local-6989586621681629732"><span class="annot"><span class="annottext">DataCon
+</span><a href="#local-6989586621681629732"><span class="hs-identifier hs-var">dc</span></a></span></span><span> </span><span id="local-6989586621681629733"><span class="annot"><span class="annottext">ConstructorNumber
+</span><a href="#local-6989586621681629733"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621681629734"><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629734"><span class="hs-keyword hs-var">as</span></a></span></span><span> </span><span id="local-6989586621681629735"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621681629735"><span class="hs-identifier hs-var">tys</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-222"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629736"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629736"><span class="hs-identifier hs-var">top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629737"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629737"><span class="hs-identifier hs-var">lcl_fvs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Env -&gt; [StgArg] -&gt; (IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#argsFVs"><span class="hs-identifier hs-var">argsFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629721"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629734"><span class="hs-keyword hs-var">as</span></a></span><span>
+</span><span id="line-223"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">DataCon -&gt; ConstructorNumber -&gt; [StgArg] -&gt; [Type] -&gt; CgStgExpr
+forall (pass :: StgPass).
+DataCon
+-&gt; ConstructorNumber -&gt; [StgArg] -&gt; [Type] -&gt; GenStgExpr pass
+</span><a href="GHC.Stg.Syntax.html#StgConApp"><span class="hs-identifier hs-var">StgConApp</span></a></span><span> </span><span class="annot"><span class="annottext">DataCon
+</span><a href="#local-6989586621681629732"><span class="hs-identifier hs-var">dc</span></a></span><span> </span><span class="annot"><span class="annottext">ConstructorNumber
+</span><a href="#local-6989586621681629733"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629734"><span class="hs-keyword hs-var">as</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621681629735"><span class="hs-identifier hs-var">tys</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629736"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629737"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-224"></span><span>
+</span><span id="line-225"></span><span>    </span><span class="annot"><a href="#local-6989586621681629722"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgOpApp"><span class="hs-identifier hs-type">StgOpApp</span></a></span><span> </span><span id="local-6989586621681629739"><span class="annot"><span class="annottext">StgOp
+</span><a href="#local-6989586621681629739"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621681629740"><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629740"><span class="hs-keyword hs-var">as</span></a></span></span><span> </span><span id="local-6989586621681629741"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681629741"><span class="hs-identifier hs-var">ty</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-226"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629742"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629742"><span class="hs-identifier hs-var">top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629743"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629743"><span class="hs-identifier hs-var">lcl_fvs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Env -&gt; [StgArg] -&gt; (IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#argsFVs"><span class="hs-identifier hs-var">argsFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629721"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629740"><span class="hs-keyword hs-var">as</span></a></span><span>
+</span><span id="line-227"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StgOp -&gt; [StgArg] -&gt; Type -&gt; CgStgExpr
+forall (pass :: StgPass).
+StgOp -&gt; [StgArg] -&gt; Type -&gt; GenStgExpr pass
+</span><a href="GHC.Stg.Syntax.html#StgOpApp"><span class="hs-identifier hs-var">StgOpApp</span></a></span><span> </span><span class="annot"><span class="annottext">StgOp
+</span><a href="#local-6989586621681629739"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629740"><span class="hs-keyword hs-var">as</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681629741"><span class="hs-identifier hs-var">ty</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629742"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629743"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-228"></span><span>
+</span><span id="line-229"></span><span>    </span><span class="annot"><a href="#local-6989586621681629722"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgCase"><span class="hs-identifier hs-type">StgCase</span></a></span><span> </span><span id="local-6989586621681629745"><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629745"><span class="hs-identifier hs-var">scrut</span></a></span></span><span> </span><span id="local-6989586621681629746"><span class="annot"><span class="annottext">BinderP 'Vanilla
+</span><a href="#local-6989586621681629746"><span class="hs-identifier hs-var">bndr</span></a></span></span><span> </span><span id="local-6989586621681629747"><span class="annot"><span class="annottext">AltType
+</span><a href="#local-6989586621681629747"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span id="local-6989586621681629748"><span class="annot"><span class="annottext">[GenStgAlt 'Vanilla]
+</span><a href="#local-6989586621681629748"><span class="hs-identifier hs-var">alts</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-230"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629749"><span class="annot"><span class="annottext">CgStgExpr
+</span><a href="#local-6989586621681629749"><span class="hs-identifier hs-var">scrut'</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681629750"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629750"><span class="hs-identifier hs-var">scrut_top_fvs</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681629751"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629751"><span class="hs-identifier hs-var">scrut_lcl_fvs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Env -&gt; StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#exprFVs"><span class="hs-identifier hs-var">exprFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629721"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629745"><span class="hs-identifier hs-var">scrut</span></a></span><span>
+</span><span id="line-231"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629752"><span class="annot"><span class="annottext">[CgStgAlt]
+</span><a href="#local-6989586621681629752"><span class="hs-identifier hs-var">alts'</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681629753"><span class="annot"><span class="annottext">[IdSet]
+</span><a href="#local-6989586621681629753"><span class="hs-identifier hs-var">alts_top_fvss</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681629754"><span class="annot"><span class="annottext">[LocalFVs]
+</span><a href="#local-6989586621681629754"><span class="hs-identifier hs-var">alts_lcl_fvss</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-232"></span><span>          </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(GenStgAlt 'Vanilla -&gt; (CgStgAlt, IdSet, LocalFVs))
+-&gt; [GenStgAlt 'Vanilla] -&gt; ([CgStgAlt], [IdSet], [LocalFVs])
+forall a b c d. (a -&gt; (b, c, d)) -&gt; [a] -&gt; ([b], [c], [d])
+</span><a href="GHC.Utils.Misc.html#mapAndUnzip3"><span class="hs-identifier hs-var">mapAndUnzip3</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Env -&gt; GenStgAlt 'Vanilla -&gt; (CgStgAlt, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#altFVs"><span class="hs-identifier hs-var">altFVs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Id] -&gt; Env -&gt; Env
+</span><a href="GHC.Stg.FVs.html#addLocals"><span class="hs-identifier hs-var">addLocals</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Id
+BinderP 'Vanilla
+</span><a href="#local-6989586621681629746"><span class="hs-identifier hs-var">bndr</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629721"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[GenStgAlt 'Vanilla]
+</span><a href="#local-6989586621681629748"><span class="hs-identifier hs-var">alts</span></a></span><span>
+</span><span id="line-233"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681629756"><span class="annot"><span class="annottext">top_fvs :: IdSet
+</span><a href="#local-6989586621681629756"><span class="hs-identifier hs-var hs-var">top_fvs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629750"><span class="hs-identifier hs-var">scrut_top_fvs</span></a></span><span> </span><span class="annot"><span class="annottext">IdSet -&gt; IdSet -&gt; IdSet
+</span><a href="GHC.Types.Var.Set.html#unionVarSet"><span class="hs-operator hs-var">`unionVarSet`</span></a></span><span> </span><span class="annot"><span class="annottext">[IdSet] -&gt; IdSet
+</span><a href="GHC.Types.Var.Set.html#unionVarSets"><span class="hs-identifier hs-var">unionVarSets</span></a></span><span> </span><span class="annot"><span class="annottext">[IdSet]
+</span><a href="#local-6989586621681629753"><span class="hs-identifier hs-var">alts_top_fvss</span></a></span><span>
+</span><span id="line-234"></span><span>            </span><span id="local-6989586621681629758"><span class="annot"><span class="annottext">alts_lcl_fvs :: LocalFVs
+</span><a href="#local-6989586621681629758"><span class="hs-identifier hs-var hs-var">alts_lcl_fvs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[LocalFVs] -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#unionDVarSets"><span class="hs-identifier hs-var">unionDVarSets</span></a></span><span> </span><span class="annot"><span class="annottext">[LocalFVs]
+</span><a href="#local-6989586621681629754"><span class="hs-identifier hs-var">alts_lcl_fvss</span></a></span><span>
+</span><span id="line-235"></span><span>            </span><span id="local-6989586621681629759"><span class="annot"><span class="annottext">lcl_fvs :: LocalFVs
+</span><a href="#local-6989586621681629759"><span class="hs-identifier hs-var hs-var">lcl_fvs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LocalFVs -&gt; Id -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#delDVarSet"><span class="hs-identifier hs-var">delDVarSet</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LocalFVs -&gt; LocalFVs -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#unionDVarSet"><span class="hs-identifier hs-var">unionDVarSet</span></a></span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629751"><span class="hs-identifier hs-var">scrut_lcl_fvs</span></a></span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629758"><span class="hs-identifier hs-var">alts_lcl_fvs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Id
+BinderP 'Vanilla
+</span><a href="#local-6989586621681629746"><span class="hs-identifier hs-var">bndr</span></a></span><span>
+</span><span id="line-236"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CgStgExpr -&gt; BinderP 'CodeGen -&gt; AltType -&gt; [CgStgAlt] -&gt; CgStgExpr
+forall (pass :: StgPass).
+GenStgExpr pass
+-&gt; BinderP pass -&gt; AltType -&gt; [GenStgAlt pass] -&gt; GenStgExpr pass
+</span><a href="GHC.Stg.Syntax.html#StgCase"><span class="hs-identifier hs-var">StgCase</span></a></span><span> </span><span class="annot"><span class="annottext">CgStgExpr
+</span><a href="#local-6989586621681629749"><span class="hs-identifier hs-var">scrut'</span></a></span><span> </span><span class="annot"><span class="annottext">BinderP 'Vanilla
+BinderP 'CodeGen
+</span><a href="#local-6989586621681629746"><span class="hs-identifier hs-var">bndr</span></a></span><span> </span><span class="annot"><span class="annottext">AltType
+</span><a href="#local-6989586621681629747"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="annot"><span class="annottext">[CgStgAlt]
+</span><a href="#local-6989586621681629752"><span class="hs-identifier hs-var">alts'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629756"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629759"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-237"></span><span>
+</span><span id="line-238"></span><span>    </span><span class="annot"><a href="#local-6989586621681629722"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgLet"><span class="hs-identifier hs-type">StgLet</span></a></span><span> </span><span id="local-6989586621681629761"><span class="annot"><span class="annottext">XLet 'Vanilla
+</span><a href="#local-6989586621681629761"><span class="hs-identifier hs-var">ext</span></a></span></span><span>         </span><span id="local-6989586621681629762"><span class="annot"><span class="annottext">StgBinding
+</span><a href="#local-6989586621681629762"><span class="hs-identifier hs-var">bind</span></a></span></span><span> </span><span id="local-6989586621681629763"><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629763"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(CgStgBinding -&gt; CgStgExpr -&gt; CgStgExpr)
+-&gt; StgBinding -&gt; StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="#local-6989586621681629764"><span class="hs-identifier hs-var">go_bind</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">XLet 'CodeGen -&gt; CgStgBinding -&gt; CgStgExpr -&gt; CgStgExpr
+forall (pass :: StgPass).
+XLet pass
+-&gt; GenStgBinding pass -&gt; GenStgExpr pass -&gt; GenStgExpr pass
+</span><a href="GHC.Stg.Syntax.html#StgLet"><span class="hs-identifier hs-var">StgLet</span></a></span><span> </span><span class="annot"><span class="annottext">XLet 'Vanilla
+XLet 'CodeGen
+</span><a href="#local-6989586621681629761"><span class="hs-identifier hs-var">ext</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StgBinding
+</span><a href="#local-6989586621681629762"><span class="hs-identifier hs-var">bind</span></a></span><span> </span><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629763"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-239"></span><span>    </span><span class="annot"><a href="#local-6989586621681629722"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgLetNoEscape"><span class="hs-identifier hs-type">StgLetNoEscape</span></a></span><span> </span><span id="local-6989586621681629766"><span class="annot"><span class="annottext">XLetNoEscape 'Vanilla
+</span><a href="#local-6989586621681629766"><span class="hs-identifier hs-var">ext</span></a></span></span><span> </span><span id="local-6989586621681629767"><span class="annot"><span class="annottext">StgBinding
+</span><a href="#local-6989586621681629767"><span class="hs-identifier hs-var">bind</span></a></span></span><span> </span><span id="local-6989586621681629768"><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629768"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(CgStgBinding -&gt; CgStgExpr -&gt; CgStgExpr)
+-&gt; StgBinding -&gt; StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="#local-6989586621681629764"><span class="hs-identifier hs-var">go_bind</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">XLetNoEscape 'CodeGen -&gt; CgStgBinding -&gt; CgStgExpr -&gt; CgStgExpr
+forall (pass :: StgPass).
+XLetNoEscape pass
+-&gt; GenStgBinding pass -&gt; GenStgExpr pass -&gt; GenStgExpr pass
+</span><a href="GHC.Stg.Syntax.html#StgLetNoEscape"><span class="hs-identifier hs-var">StgLetNoEscape</span></a></span><span> </span><span class="annot"><span class="annottext">XLetNoEscape 'Vanilla
+XLetNoEscape 'CodeGen
+</span><a href="#local-6989586621681629766"><span class="hs-identifier hs-var">ext</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StgBinding
+</span><a href="#local-6989586621681629767"><span class="hs-identifier hs-var">bind</span></a></span><span> </span><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629768"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-240"></span><span>
+</span><span id="line-241"></span><span>    </span><span class="annot"><a href="#local-6989586621681629722"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgTick"><span class="hs-identifier hs-type">StgTick</span></a></span><span> </span><span id="local-6989586621681629770"><span class="annot"><span class="annottext">StgTickish
+</span><a href="#local-6989586621681629770"><span class="hs-identifier hs-var">tick</span></a></span></span><span> </span><span id="local-6989586621681629771"><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629771"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-242"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629772"><span class="annot"><span class="annottext">CgStgExpr
+</span><a href="#local-6989586621681629772"><span class="hs-identifier hs-var">e'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629773"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629773"><span class="hs-identifier hs-var">top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629774"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629774"><span class="hs-identifier hs-var">lcl_fvs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Env -&gt; StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#exprFVs"><span class="hs-identifier hs-var">exprFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629721"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629771"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-243"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681629775"><span class="annot"><span class="annottext">lcl_fvs' :: LocalFVs
+</span><a href="#local-6989586621681629775"><span class="hs-identifier hs-var hs-var">lcl_fvs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LocalFVs -&gt; LocalFVs -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#unionDVarSet"><span class="hs-identifier hs-var">unionDVarSet</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StgTickish -&gt; LocalFVs
+forall {pass :: TickishPass}.
+(XTickishId pass ~ Id) =&gt;
+GenTickish pass -&gt; LocalFVs
+</span><a href="#local-6989586621681629776"><span class="hs-identifier hs-var">tickish</span></a></span><span> </span><span class="annot"><span class="annottext">StgTickish
+</span><a href="#local-6989586621681629770"><span class="hs-identifier hs-var">tick</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629774"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span>
+</span><span id="line-244"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StgTickish -&gt; CgStgExpr -&gt; CgStgExpr
+forall (pass :: StgPass).
+StgTickish -&gt; GenStgExpr pass -&gt; GenStgExpr pass
+</span><a href="GHC.Stg.Syntax.html#StgTick"><span class="hs-identifier hs-var">StgTick</span></a></span><span> </span><span class="annot"><span class="annottext">StgTickish
+</span><a href="#local-6989586621681629770"><span class="hs-identifier hs-var">tick</span></a></span><span> </span><span class="annot"><span class="annottext">CgStgExpr
+</span><a href="#local-6989586621681629772"><span class="hs-identifier hs-var">e'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629773"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629775"><span class="hs-identifier hs-var">lcl_fvs'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-245"></span><span>        </span><span class="hs-keyword">where</span><span>
+</span><span id="line-246"></span><span>          </span><span id="local-6989586621681629776"><span class="annot"><span class="annottext">tickish :: GenTickish pass -&gt; LocalFVs
+</span><a href="#local-6989586621681629776"><span class="hs-identifier hs-var hs-var">tickish</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Tickish.html#Breakpoint"><span class="hs-identifier hs-type">Breakpoint</span></a></span><span> </span><span class="annot"><span class="annottext">XBreakpoint pass
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681629779"><span class="annot"><span class="annottext">[XTickishId pass]
+</span><a href="#local-6989586621681629779"><span class="hs-identifier hs-var">ids</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Id] -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#mkDVarSet"><span class="hs-identifier hs-var">mkDVarSet</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+[XTickishId pass]
+</span><a href="#local-6989586621681629779"><span class="hs-identifier hs-var">ids</span></a></span><span>
+</span><span id="line-247"></span><span>          </span><span class="annot"><a href="#local-6989586621681629776"><span class="hs-identifier hs-var">tickish</span></a></span><span> </span><span class="annot"><span class="annottext">GenTickish pass
+</span><span class="hs-identifier">_</span></span><span>                    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="GHC.Types.Var.Set.html#emptyDVarSet"><span class="hs-identifier hs-var">emptyDVarSet</span></a></span><span>
+</span><span id="line-248"></span><span>
+</span><span id="line-249"></span><span>    </span><span id="local-6989586621681629764"><span class="annot"><span class="annottext">go_bind :: (CgStgBinding -&gt; CgStgExpr -&gt; CgStgExpr)
+-&gt; StgBinding -&gt; StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="#local-6989586621681629764"><span class="hs-identifier hs-var hs-var">go_bind</span></a></span></span><span> </span><span id="local-6989586621681629781"><span class="annot"><span class="annottext">CgStgBinding -&gt; CgStgExpr -&gt; CgStgExpr
+</span><a href="#local-6989586621681629781"><span class="hs-identifier hs-var">dc</span></a></span></span><span> </span><span id="local-6989586621681629782"><span class="annot"><span class="annottext">StgBinding
+</span><a href="#local-6989586621681629782"><span class="hs-identifier hs-var">bind</span></a></span></span><span> </span><span id="local-6989586621681629783"><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629783"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CgStgBinding -&gt; CgStgExpr -&gt; CgStgExpr
+</span><a href="#local-6989586621681629781"><span class="hs-identifier hs-var">dc</span></a></span><span> </span><span class="annot"><span class="annottext">CgStgBinding
+</span><a href="#local-6989586621681629784"><span class="hs-identifier hs-var">bind'</span></a></span><span> </span><span class="annot"><span class="annottext">CgStgExpr
+</span><a href="#local-6989586621681629785"><span class="hs-identifier hs-var">body'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629786"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629787"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-250"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-251"></span><span>        </span><span id="local-6989586621681629788"><span class="annot"><span class="annottext">env' :: Env
+</span><a href="#local-6989586621681629788"><span class="hs-identifier hs-var hs-var">env'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Id] -&gt; Env -&gt; Env
+</span><a href="GHC.Stg.FVs.html#addLocals"><span class="hs-identifier hs-var">addLocals</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StgBinding -&gt; [Id]
+forall (a :: StgPass). (BinderP a ~ Id) =&gt; GenStgBinding a -&gt; [Id]
+</span><a href="GHC.Stg.Utils.html#bindersOf"><span class="hs-identifier hs-var">bindersOf</span></a></span><span> </span><span class="annot"><span class="annottext">StgBinding
+</span><a href="#local-6989586621681629782"><span class="hs-identifier hs-var">bind</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629721"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-252"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621681629785"><span class="annot"><span class="annottext">CgStgExpr
+</span><a href="#local-6989586621681629785"><span class="hs-identifier hs-var">body'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629789"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629789"><span class="hs-identifier hs-var">body_top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629790"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629790"><span class="hs-identifier hs-var">body_lcl_fvs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Env -&gt; StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#exprFVs"><span class="hs-identifier hs-var">exprFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629788"><span class="hs-identifier hs-var">env'</span></a></span><span> </span><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629783"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-253"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621681629784"><span class="annot"><span class="annottext">CgStgBinding
+</span><a href="#local-6989586621681629784"><span class="hs-identifier hs-var">bind'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629791"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629791"><span class="hs-identifier hs-var">bind_top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629787"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629787"><span class="hs-identifier hs-var">lcl_fvs</span></a></span></span><span class="hs-special">)</span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Env -&gt; LocalFVs -&gt; StgBinding -&gt; (CgStgBinding, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#bindingFVs"><span class="hs-identifier hs-var">bindingFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629788"><span class="hs-identifier hs-var">env'</span></a></span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629790"><span class="hs-identifier hs-var">body_lcl_fvs</span></a></span><span> </span><span class="annot"><span class="annottext">StgBinding
+</span><a href="#local-6989586621681629782"><span class="hs-identifier hs-var">bind</span></a></span><span>
+</span><span id="line-254"></span><span>        </span><span id="local-6989586621681629786"><span class="annot"><span class="annottext">top_fvs :: IdSet
+</span><a href="#local-6989586621681629786"><span class="hs-identifier hs-var hs-var">top_fvs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629791"><span class="hs-identifier hs-var">bind_top_fvs</span></a></span><span> </span><span class="annot"><span class="annottext">IdSet -&gt; IdSet -&gt; IdSet
+</span><a href="GHC.Types.Var.Set.html#unionVarSet"><span class="hs-operator hs-var">`unionVarSet`</span></a></span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629789"><span class="hs-identifier hs-var">body_top_fvs</span></a></span><span>
+</span><span id="line-255"></span><span>
+</span><span id="line-256"></span><span>
+</span><span id="line-257"></span><span class="annot"><a href="GHC.Stg.FVs.html#rhsFVs"><span class="hs-identifier hs-type">rhsFVs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgRhs"><span class="hs-identifier hs-type">StgRhs</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgRhs"><span class="hs-identifier hs-type">CgStgRhs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#TopFVs"><span class="hs-identifier hs-type">TopFVs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#LocalFVs"><span class="hs-identifier hs-type">LocalFVs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-258"></span><span id="rhsFVs"><span class="annot"><span class="annottext">rhsFVs :: Env -&gt; StgRhs -&gt; (CgStgRhs, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#rhsFVs"><span class="hs-identifier hs-var hs-var">rhsFVs</span></a></span></span><span> </span><span id="local-6989586621681629792"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629792"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgRhsClosure"><span class="hs-identifier hs-type">StgRhsClosure</span></a></span><span> </span><span class="annot"><span class="annottext">XRhsClosure 'Vanilla
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681629794"><span class="annot"><span class="annottext">CostCentreStack
+</span><a href="#local-6989586621681629794"><span class="hs-identifier hs-var">ccs</span></a></span></span><span> </span><span id="local-6989586621681629795"><span class="annot"><span class="annottext">UpdateFlag
+</span><a href="#local-6989586621681629795"><span class="hs-identifier hs-var">uf</span></a></span></span><span> </span><span id="local-6989586621681629796"><span class="annot"><span class="annottext">[BinderP 'Vanilla]
+</span><a href="#local-6989586621681629796"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span id="local-6989586621681629797"><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629797"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-259"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629798"><span class="annot"><span class="annottext">CgStgExpr
+</span><a href="#local-6989586621681629798"><span class="hs-identifier hs-var">body'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629799"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629799"><span class="hs-identifier hs-var">top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629800"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629800"><span class="hs-identifier hs-var">lcl_fvs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Env -&gt; StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#exprFVs"><span class="hs-identifier hs-var">exprFVs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Id] -&gt; Env -&gt; Env
+</span><a href="GHC.Stg.FVs.html#addLocals"><span class="hs-identifier hs-var">addLocals</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+[BinderP 'Vanilla]
+</span><a href="#local-6989586621681629796"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629792"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629797"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-260"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681629801"><span class="annot"><span class="annottext">lcl_fvs' :: LocalFVs
+</span><a href="#local-6989586621681629801"><span class="hs-identifier hs-var hs-var">lcl_fvs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LocalFVs -&gt; [Id] -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#delDVarSetList"><span class="hs-identifier hs-var">delDVarSetList</span></a></span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629800"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+[BinderP 'Vanilla]
+</span><a href="#local-6989586621681629796"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-261"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">XRhsClosure 'CodeGen
+-&gt; CostCentreStack
+-&gt; UpdateFlag
+-&gt; [BinderP 'CodeGen]
+-&gt; CgStgExpr
+-&gt; CgStgRhs
+forall (pass :: StgPass).
+XRhsClosure pass
+-&gt; CostCentreStack
+-&gt; UpdateFlag
+-&gt; [BinderP pass]
+-&gt; GenStgExpr pass
+-&gt; GenStgRhs pass
+</span><a href="GHC.Stg.Syntax.html#StgRhsClosure"><span class="hs-identifier hs-var">StgRhsClosure</span></a></span><span> </span><span class="annot"><span class="annottext">LocalFVs
+XRhsClosure 'CodeGen
+</span><a href="#local-6989586621681629801"><span class="hs-identifier hs-var">lcl_fvs'</span></a></span><span> </span><span class="annot"><span class="annottext">CostCentreStack
+</span><a href="#local-6989586621681629794"><span class="hs-identifier hs-var">ccs</span></a></span><span> </span><span class="annot"><span class="annottext">UpdateFlag
+</span><a href="#local-6989586621681629795"><span class="hs-identifier hs-var">uf</span></a></span><span> </span><span class="annot"><span class="annottext">[BinderP 'Vanilla]
+[BinderP 'CodeGen]
+</span><a href="#local-6989586621681629796"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">CgStgExpr
+</span><a href="#local-6989586621681629798"><span class="hs-identifier hs-var">body'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629799"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629801"><span class="hs-identifier hs-var">lcl_fvs'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-262"></span><span class="annot"><a href="GHC.Stg.FVs.html#rhsFVs"><span class="hs-identifier hs-var">rhsFVs</span></a></span><span> </span><span id="local-6989586621681629802"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629802"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgRhsCon"><span class="hs-identifier hs-type">StgRhsCon</span></a></span><span> </span><span id="local-6989586621681629804"><span class="annot"><span class="annottext">CostCentreStack
+</span><a href="#local-6989586621681629804"><span class="hs-identifier hs-var">ccs</span></a></span></span><span> </span><span id="local-6989586621681629805"><span class="annot"><span class="annottext">DataCon
+</span><a href="#local-6989586621681629805"><span class="hs-identifier hs-var">dc</span></a></span></span><span> </span><span id="local-6989586621681629806"><span class="annot"><span class="annottext">ConstructorNumber
+</span><a href="#local-6989586621681629806"><span class="hs-identifier hs-var">mu</span></a></span></span><span> </span><span id="local-6989586621681629807"><span class="annot"><span class="annottext">[StgTickish]
+</span><a href="#local-6989586621681629807"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621681629808"><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629808"><span class="hs-identifier hs-var">bs</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-263"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629809"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629809"><span class="hs-identifier hs-var">top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629810"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629810"><span class="hs-identifier hs-var">lcl_fvs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Env -&gt; [StgArg] -&gt; (IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#argsFVs"><span class="hs-identifier hs-var">argsFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629802"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629808"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-264"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CostCentreStack
+-&gt; DataCon
+-&gt; ConstructorNumber
+-&gt; [StgTickish]
+-&gt; [StgArg]
+-&gt; CgStgRhs
+forall (pass :: StgPass).
+CostCentreStack
+-&gt; DataCon
+-&gt; ConstructorNumber
+-&gt; [StgTickish]
+-&gt; [StgArg]
+-&gt; GenStgRhs pass
+</span><a href="GHC.Stg.Syntax.html#StgRhsCon"><span class="hs-identifier hs-var">StgRhsCon</span></a></span><span> </span><span class="annot"><span class="annottext">CostCentreStack
+</span><a href="#local-6989586621681629804"><span class="hs-identifier hs-var">ccs</span></a></span><span> </span><span class="annot"><span class="annottext">DataCon
+</span><a href="#local-6989586621681629805"><span class="hs-identifier hs-var">dc</span></a></span><span> </span><span class="annot"><span class="annottext">ConstructorNumber
+</span><a href="#local-6989586621681629806"><span class="hs-identifier hs-var">mu</span></a></span><span> </span><span class="annot"><span class="annottext">[StgTickish]
+</span><a href="#local-6989586621681629807"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">[StgArg]
+</span><a href="#local-6989586621681629808"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629809"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629810"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-265"></span><span>
+</span><span id="line-266"></span><span class="annot"><a href="GHC.Stg.FVs.html#argsFVs"><span class="hs-identifier hs-type">argsFVs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgArg"><span class="hs-identifier hs-type">StgArg</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.FVs.html#TopFVs"><span class="hs-identifier hs-type">TopFVs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#LocalFVs"><span class="hs-identifier hs-type">LocalFVs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-267"></span><span id="argsFVs"><span class="annot"><span class="annottext">argsFVs :: Env -&gt; [StgArg] -&gt; (IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#argsFVs"><span class="hs-identifier hs-var hs-var">argsFVs</span></a></span></span><span> </span><span id="local-6989586621681629811"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629811"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((IdSet, LocalFVs) -&gt; StgArg -&gt; (IdSet, LocalFVs))
+-&gt; (IdSet, LocalFVs) -&gt; [StgArg] -&gt; (IdSet, LocalFVs)
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; [a] -&gt; b
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#foldl%27/Data.Foldable.html#foldl%27"><span class="hs-identifier hs-var">foldl'</span></a></span><span> </span><span class="annot"><span class="annottext">(IdSet, LocalFVs) -&gt; StgArg -&gt; (IdSet, LocalFVs)
+</span><a href="#local-6989586621681629813"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdSet
+</span><a href="GHC.Types.Var.Set.html#emptyVarSet"><span class="hs-identifier hs-var">emptyVarSet</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="GHC.Types.Var.Set.html#emptyDVarSet"><span class="hs-identifier hs-var">emptyDVarSet</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-268"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-269"></span><span>    </span><span id="local-6989586621681629813"><span class="annot"><span class="annottext">f :: (IdSet, LocalFVs) -&gt; StgArg -&gt; (IdSet, LocalFVs)
+</span><a href="#local-6989586621681629813"><span class="hs-identifier hs-var hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629814"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629814"><span class="hs-identifier hs-var">fvs</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681629815"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629815"><span class="hs-identifier hs-var">ids</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgLitArg"><span class="hs-identifier hs-type">StgLitArg</span></a></span><span class="hs-special">{</span><span class="hs-special">}</span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629814"><span class="hs-identifier hs-var">fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629815"><span class="hs-identifier hs-var">ids</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-270"></span><span>    </span><span class="annot"><a href="#local-6989586621681629813"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629817"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629817"><span class="hs-identifier hs-var">fvs</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681629818"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629818"><span class="hs-identifier hs-var">ids</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#StgVarArg"><span class="hs-identifier hs-type">StgVarArg</span></a></span><span> </span><span id="local-6989586621681629820"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629820"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Env -&gt; Id -&gt; (IdSet, LocalFVs) -&gt; (IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#varFVs"><span class="hs-identifier hs-var">varFVs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629811"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621681629820"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629817"><span class="hs-identifier hs-var">fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629818"><span class="hs-identifier hs-var">ids</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-271"></span><span>
+</span><span id="line-272"></span><span class="annot"><a href="GHC.Stg.FVs.html#altFVs"><span class="hs-identifier hs-type">altFVs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#StgAlt"><span class="hs-identifier hs-type">StgAlt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stg.Syntax.html#CgStgAlt"><span class="hs-identifier hs-type">CgStgAlt</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#TopFVs"><span class="hs-identifier hs-type">TopFVs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Stg.FVs.html#LocalFVs"><span class="hs-identifier hs-type">LocalFVs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-273"></span><span id="altFVs"><span class="annot"><span class="annottext">altFVs :: Env -&gt; GenStgAlt 'Vanilla -&gt; (CgStgAlt, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#altFVs"><span class="hs-identifier hs-var hs-var">altFVs</span></a></span></span><span> </span><span id="local-6989586621681629822"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629822"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#GenStgAlt"><span class="hs-identifier hs-type">GenStgAlt</span></a></span><span class="hs-special">{</span><span class="annot"><span class="annottext">alt_con :: forall (pass :: StgPass). GenStgAlt pass -&gt; AltCon
+</span><a href="GHC.Stg.Syntax.html#alt_con"><span class="hs-identifier hs-var">alt_con</span></a></span><span class="hs-glyph">=</span><span id="local-6989586621681629825"><span class="annot"><span class="annottext">AltCon
+</span><a href="#local-6989586621681629825"><span class="hs-identifier hs-var">con</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">alt_bndrs :: forall (pass :: StgPass). GenStgAlt pass -&gt; [BinderP pass]
+</span><a href="GHC.Stg.Syntax.html#alt_bndrs"><span class="hs-identifier hs-var">alt_bndrs</span></a></span><span class="hs-glyph">=</span><span id="local-6989586621681629827"><span class="annot"><span class="annottext">[BinderP 'Vanilla]
+</span><a href="#local-6989586621681629827"><span class="hs-identifier hs-var">bndrs</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">alt_rhs :: forall (pass :: StgPass). GenStgAlt pass -&gt; GenStgExpr pass
+</span><a href="GHC.Stg.Syntax.html#alt_rhs"><span class="hs-identifier hs-var">alt_rhs</span></a></span><span class="hs-glyph">=</span><span id="local-6989586621681629829"><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629829"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">}</span><span>
+</span><span id="line-274"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681629830"><span class="annot"><span class="annottext">CgStgExpr
+</span><a href="#local-6989586621681629830"><span class="hs-identifier hs-var">e'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629831"><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629831"><span class="hs-identifier hs-var">top_fvs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681629832"><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629832"><span class="hs-identifier hs-var">lcl_fvs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Env -&gt; StgExpr -&gt; (CgStgExpr, IdSet, LocalFVs)
+</span><a href="GHC.Stg.FVs.html#exprFVs"><span class="hs-identifier hs-var">exprFVs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Id] -&gt; Env -&gt; Env
+</span><a href="GHC.Stg.FVs.html#addLocals"><span class="hs-identifier hs-var">addLocals</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+[BinderP 'Vanilla]
+</span><a href="#local-6989586621681629827"><span class="hs-identifier hs-var">bndrs</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681629822"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StgExpr
+</span><a href="#local-6989586621681629829"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-275"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681629833"><span class="annot"><span class="annottext">lcl_fvs' :: LocalFVs
+</span><a href="#local-6989586621681629833"><span class="hs-identifier hs-var hs-var">lcl_fvs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LocalFVs -&gt; [Id] -&gt; LocalFVs
+</span><a href="GHC.Types.Var.Set.html#delDVarSetList"><span class="hs-identifier hs-var">delDVarSetList</span></a></span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629832"><span class="hs-identifier hs-var">lcl_fvs</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+[BinderP 'Vanilla]
+</span><a href="#local-6989586621681629827"><span class="hs-identifier hs-var">bndrs</span></a></span><span>
+</span><span id="line-276"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681629834"><span class="annot"><span class="annottext">newAlt :: CgStgAlt
+</span><a href="#local-6989586621681629834"><span class="hs-identifier hs-var hs-var">newAlt</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Stg.Syntax.html#GenStgAlt"><span class="hs-identifier hs-type">GenStgAlt</span></a></span><span class="hs-special">{</span><span class="annot"><span class="annottext">alt_con :: AltCon
+</span><a href="GHC.Stg.Syntax.html#alt_con"><span class="hs-identifier hs-var">alt_con</span></a></span><span class="hs-glyph">=</span><span class="annot"><span class="annottext">AltCon
+</span><a href="#local-6989586621681629825"><span class="hs-identifier hs-var">con</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">alt_bndrs :: [BinderP 'CodeGen]
+</span><a href="GHC.Stg.Syntax.html#alt_bndrs"><span class="hs-identifier hs-var">alt_bndrs</span></a></span><span class="hs-glyph">=</span><span class="annot"><span class="annottext">[BinderP 'Vanilla]
+[BinderP 'CodeGen]
+</span><a href="#local-6989586621681629827"><span class="hs-identifier hs-var">bndrs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">alt_rhs :: CgStgExpr
+</span><a href="GHC.Stg.Syntax.html#alt_rhs"><span class="hs-identifier hs-var">alt_rhs</span></a></span><span class="hs-glyph">=</span><span class="annot"><span class="annottext">CgStgExpr
+</span><a href="#local-6989586621681629830"><span class="hs-identifier hs-var">e'</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-277"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CgStgAlt
+</span><a href="#local-6989586621681629834"><span class="hs-identifier hs-var">newAlt</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdSet
+</span><a href="#local-6989586621681629831"><span class="hs-identifier hs-var">top_fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LocalFVs
+</span><a href="#local-6989586621681629833"><span class="hs-identifier hs-var">lcl_fvs'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-278"></span></pre></body></html>

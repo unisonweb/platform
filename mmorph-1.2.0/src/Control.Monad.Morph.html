@@ -1,0 +1,870 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP        #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE RankNTypes #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE Safe       #-}</span><span class="hs-cpp">
+#if __GLASGOW_HASKELL__ &gt;= 706
+</span><span class="hs-pragma">{-# LANGUAGE PolyKinds  #-}</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-8"></span><span class="annot"><span class="hs-comment">{-| A monad morphism is a natural transformation:
+
+&gt; morph :: forall a . m a -&gt; n a
+
+    ... that obeys the following two laws:
+
+&gt; morph $ do x &lt;- m  =  do x &lt;- morph m
+&gt;            f x           morph (f x)
+&gt;
+&gt; morph (return x) = return x
+
+    ... which are equivalent to the following two functor laws:
+
+&gt; morph . (f &gt;=&gt; g) = morph . f &gt;=&gt; morph . g
+&gt;
+&gt; morph . return = return
+
+    Examples of monad morphisms include:
+
+    * 'lift' (from 'MonadTrans')
+
+    * 'squash' (See below)
+
+    * @'hoist' f@ (See below), if @f@ is a monad morphism
+
+    * @(f . g)@, if @f@ and @g@ are both monad morphisms
+
+    * 'id'
+
+    Monad morphisms commonly arise when manipulating existing monad transformer
+    code for compatibility purposes.  The 'MFunctor', 'MonadTrans', and
+    'MMonad' classes define standard ways to change monad transformer stacks:
+
+    * 'lift' introduces a new monad transformer layer of any type.
+
+    * 'squash' flattens two identical monad transformer layers into a single
+      layer of the same type.
+
+    * 'hoist' maps monad morphisms to modify deeper layers of the monad
+       transformer stack.
+
+-}</span></span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Control.Monad.Morph</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-52"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Functors over Monads</span></span><span>
+</span><span id="line-53"></span><span>    </span><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier">MFunctor</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-54"></span><span>    </span><span class="annot"><a href="Control.Monad.Morph.html#generalize"><span class="hs-identifier">generalize</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-55"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Monads over Monads</span></span><span>
+</span><span id="line-56"></span><span>    </span><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier">MMonad</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-57"></span><span>    </span><span class="annot"><span class="hs-identifier">MonadTrans</span></span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">lift</span></span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-58"></span><span>    </span><span class="annot"><a href="Control.Monad.Morph.html#squash"><span class="hs-identifier">squash</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-59"></span><span>    </span><span class="annot"><a href="Control.Monad.Morph.html#%3E%7C%3E"><span class="hs-operator">(&gt;|&gt;)</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-60"></span><span>    </span><span class="annot"><a href="Control.Monad.Morph.html#%3C%7C%3C"><span class="hs-operator">(&lt;|&lt;)</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-61"></span><span>    </span><span class="annot"><a href="Control.Monad.Morph.html#%3D%3C%7C"><span class="hs-operator">(=&lt;|)</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><a href="Control.Monad.Morph.html#%7C%3E%3D"><span class="hs-operator">(|&gt;=)</span></a></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Tutorial</span></span><span>
+</span><span id="line-65"></span><span>    </span><span class="annot"><span class="hs-comment">-- $tutorial</span></span><span>
+</span><span id="line-66"></span><span>
+</span><span id="line-67"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Generalizing base monads</span></span><span>
+</span><span id="line-68"></span><span>    </span><span class="annot"><span class="hs-comment">-- $generalize</span></span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Monad morphisms</span></span><span>
+</span><span id="line-71"></span><span>    </span><span class="annot"><span class="hs-comment">-- $mmorph</span></span><span>
+</span><span id="line-72"></span><span>
+</span><span id="line-73"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Mixing diverse transformers</span></span><span>
+</span><span id="line-74"></span><span>    </span><span class="annot"><span class="hs-comment">-- $interleave</span></span><span>
+</span><span id="line-75"></span><span>
+</span><span id="line-76"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Embedding transformers</span></span><span>
+</span><span id="line-77"></span><span>    </span><span class="annot"><span class="hs-comment">-- $embed</span></span><span>
+</span><span id="line-78"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.Class</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">MonadTrans</span></span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">lift</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-81"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.Except</span></span><span>        </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Ex</span></span><span>
+</span><span id="line-82"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.Identity</span></span><span>      </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">I</span></span><span>
+</span><span id="line-83"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.Maybe</span></span><span>         </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-84"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.Reader</span></span><span>        </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">R</span></span><span>
+</span><span id="line-85"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.RWS.Lazy</span></span><span>      </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">RWS</span></span><span>
+</span><span id="line-86"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.RWS.Strict</span></span><span>    </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">RWS'</span></span><span>
+</span><span id="line-87"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.State.Lazy</span></span><span>    </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-88"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.State.Strict</span></span><span>  </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S'</span></span><span>
+</span><span id="line-89"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.Writer.Lazy</span></span><span>   </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">W'</span></span><span>
+</span><span id="line-90"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.Writer.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">W</span></span><span>
+</span><span id="line-91"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Monoid</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Monoid</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">mappend</span></span><span class="hs-special">)</span><span>
+</span><span id="line-92"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Functor.Compose</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Compose</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Compose</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Functor.Identity</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">runIdentity</span></span><span class="hs-special">)</span><span>
+</span><span id="line-94"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Functor.Product</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Product</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Pair</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-95"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Applicative.Backwards</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Backwards</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Backwards</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-96"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Applicative.Lift</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Lift</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Pure</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Other</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>
+</span><span id="line-98"></span><span class="hs-comment">-- For documentation</span><span>
+</span><span id="line-99"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">try</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">IOException</span></span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-operator">(=&lt;&lt;)</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-operator">(&gt;=&gt;)</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-operator">(&lt;=&lt;)</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">join</span></span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Functor.Identity</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Identity</span></span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span>
+</span><span id="line-103"></span><span class="annot"><span class="hs-comment">{-| A functor in the category of monads, using 'hoist' as the analog of 'fmap':
+
+&gt; hoist (f . g) = hoist f . hoist g
+&gt;
+&gt; hoist id = id
+-}</span></span><span>
+</span><span id="line-109"></span><span class="hs-keyword">class</span><span> </span><span id="MFunctor"><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-var">MFunctor</span></a></span></span><span> </span><span id="local-6989586621679043955"><span class="annot"><a href="#local-6989586621679043955"><span class="hs-identifier hs-type">t</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-110"></span><span>    </span><span class="hs-comment">{-| Lift a monad morphism from @m@ to @n@ into a monad morphism from
+        @(t m)@ to @(t n)@
+
+        The first argument to `hoist` must be a monad morphism, even though the
+        type system does not enforce this
+    -}</span><span>
+</span><span id="line-116"></span><span>    </span><span id="hoist"><span class="annot"><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-type">hoist</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span id="local-6989586621679043947"><span id="local-6989586621679043949"><span id="local-6989586621679043951"><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679043947"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679043948"><span class="annot"><a href="#local-6989586621679043948"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679043947"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679043948"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679043949"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679043948"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679043955"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679043947"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679043951"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679043955"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679043949"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679043951"><span class="hs-identifier hs-type">b</span></a></span></span></span></span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679043956"><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ex.ExceptT</span></span><span> </span><span class="annot"><a href="#local-6989586621679043956"><span class="hs-identifier hs-type">e</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-119"></span><span>    </span><span id="local-6989586621679044246"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; ExceptT e m b -&gt; ExceptT e n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044247"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044247"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span id="local-6989586621679044248"><span class="annot"><span class="annottext">ExceptT e m b
+</span><a href="#local-6989586621679044248"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n (Either e b) -&gt; ExceptT e n b
+forall e (m :: * -&gt; *) a. m (Either e a) -&gt; ExceptT e m a
+</span><span class="hs-identifier hs-var">Ex.ExceptT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m (Either e b) -&gt; n (Either e b)
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044247"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ExceptT e m b -&gt; m (Either e b)
+forall e (m :: * -&gt; *) a. ExceptT e m a -&gt; m (Either e a)
+</span><span class="hs-identifier hs-var">Ex.runExceptT</span></span><span> </span><span class="annot"><span class="annottext">ExceptT e m b
+</span><a href="#local-6989586621679044248"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">I.IdentityT</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-122"></span><span>    </span><span id="local-6989586621679044254"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; IdentityT m b -&gt; IdentityT n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044255"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044255"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span id="local-6989586621679044256"><span class="annot"><span class="annottext">IdentityT m b
+</span><a href="#local-6989586621679044256"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n b -&gt; IdentityT n b
+forall {k} (f :: k -&gt; *) (a :: k). f a -&gt; IdentityT f a
+</span><span class="hs-identifier hs-var">I.IdentityT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m b -&gt; n b
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044255"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdentityT m b -&gt; m b
+forall {k} (f :: k -&gt; *) (a :: k). IdentityT f a -&gt; f a
+</span><span class="hs-identifier hs-var">I.runIdentityT</span></span><span> </span><span class="annot"><span class="annottext">IdentityT m b
+</span><a href="#local-6989586621679044256"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>
+</span><span id="line-124"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.MaybeT</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-125"></span><span>    </span><span id="local-6989586621679044262"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; MaybeT m b -&gt; MaybeT n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044263"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044263"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span id="local-6989586621679044264"><span class="annot"><span class="annottext">MaybeT m b
+</span><a href="#local-6989586621679044264"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n (Maybe b) -&gt; MaybeT n b
+forall (m :: * -&gt; *) a. m (Maybe a) -&gt; MaybeT m a
+</span><span class="hs-identifier hs-var">M.MaybeT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m (Maybe b) -&gt; n (Maybe b)
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044263"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MaybeT m b -&gt; m (Maybe b)
+forall (m :: * -&gt; *) a. MaybeT m a -&gt; m (Maybe a)
+</span><span class="hs-identifier hs-var">M.runMaybeT</span></span><span> </span><span class="annot"><span class="annottext">MaybeT m b
+</span><a href="#local-6989586621679044264"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span>
+</span><span id="line-127"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679043986"><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">R.ReaderT</span></span><span> </span><span class="annot"><a href="#local-6989586621679043986"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-128"></span><span>    </span><span id="local-6989586621679044270"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; ReaderT r m b -&gt; ReaderT r n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044271"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044271"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span id="local-6989586621679044272"><span class="annot"><span class="annottext">ReaderT r m b
+</span><a href="#local-6989586621679044272"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(r -&gt; n b) -&gt; ReaderT r n b
+forall r (m :: * -&gt; *) a. (r -&gt; m a) -&gt; ReaderT r m a
+</span><span class="hs-identifier hs-var">R.ReaderT</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679044274"><span class="annot"><span class="annottext">r
+</span><a href="#local-6989586621679044274"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">m b -&gt; n b
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044271"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ReaderT r m b -&gt; r -&gt; m b
+forall r (m :: * -&gt; *) a. ReaderT r m a -&gt; r -&gt; m a
+</span><span class="hs-identifier hs-var">R.runReaderT</span></span><span> </span><span class="annot"><span class="annottext">ReaderT r m b
+</span><a href="#local-6989586621679044272"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">r
+</span><a href="#local-6989586621679044274"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044000"><span id="local-6989586621679044001"><span id="local-6989586621679044002"><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">RWS.RWST</span></span><span> </span><span class="annot"><a href="#local-6989586621679044000"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044001"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044002"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-131"></span><span>    </span><span id="local-6989586621679044279"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; RWST r w s m b -&gt; RWST r w s n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044280"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044280"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span id="local-6989586621679044281"><span class="annot"><span class="annottext">RWST r w s m b
+</span><a href="#local-6989586621679044281"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(r -&gt; s -&gt; n (b, s, w)) -&gt; RWST r w s n b
+forall r w s (m :: * -&gt; *) a.
+(r -&gt; s -&gt; m (a, s, w)) -&gt; RWST r w s m a
+</span><span class="hs-identifier hs-var">RWS.RWST</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679044283"><span class="annot"><span class="annottext">r
+</span><a href="#local-6989586621679044283"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621679044284"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679044284"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">m (b, s, w) -&gt; n (b, s, w)
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044280"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">RWST r w s m b -&gt; r -&gt; s -&gt; m (b, s, w)
+forall r w s (m :: * -&gt; *) a.
+RWST r w s m a -&gt; r -&gt; s -&gt; m (a, s, w)
+</span><span class="hs-identifier hs-var">RWS.runRWST</span></span><span> </span><span class="annot"><span class="annottext">RWST r w s m b
+</span><a href="#local-6989586621679044281"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">r
+</span><a href="#local-6989586621679044283"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679044284"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044020"><span id="local-6989586621679044021"><span id="local-6989586621679044022"><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">RWS'.RWST</span></span><span> </span><span class="annot"><a href="#local-6989586621679044020"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044021"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044022"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-134"></span><span>    </span><span id="local-6989586621679044289"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; RWST r w s m b -&gt; RWST r w s n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044290"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044290"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span id="local-6989586621679044291"><span class="annot"><span class="annottext">RWST r w s m b
+</span><a href="#local-6989586621679044291"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(r -&gt; s -&gt; n (b, s, w)) -&gt; RWST r w s n b
+forall r w s (m :: * -&gt; *) a.
+(r -&gt; s -&gt; m (a, s, w)) -&gt; RWST r w s m a
+</span><span class="hs-identifier hs-var">RWS'.RWST</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679044293"><span class="annot"><span class="annottext">r
+</span><a href="#local-6989586621679044293"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621679044294"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679044294"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">m (b, s, w) -&gt; n (b, s, w)
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044290"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">RWST r w s m b -&gt; r -&gt; s -&gt; m (b, s, w)
+forall r w s (m :: * -&gt; *) a.
+RWST r w s m a -&gt; r -&gt; s -&gt; m (a, s, w)
+</span><span class="hs-identifier hs-var">RWS'.runRWST</span></span><span> </span><span class="annot"><span class="annottext">RWST r w s m b
+</span><a href="#local-6989586621679044291"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">r
+</span><a href="#local-6989586621679044293"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679044294"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044038"><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">S.StateT</span></span><span> </span><span class="annot"><a href="#local-6989586621679044038"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-137"></span><span>    </span><span id="local-6989586621679044299"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; StateT s m b -&gt; StateT s n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044300"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044300"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span id="local-6989586621679044301"><span class="annot"><span class="annottext">StateT s m b
+</span><a href="#local-6989586621679044301"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(s -&gt; n (b, s)) -&gt; StateT s n b
+forall s (m :: * -&gt; *) a. (s -&gt; m (a, s)) -&gt; StateT s m a
+</span><span class="hs-identifier hs-var">S.StateT</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679044303"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679044303"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">m (b, s) -&gt; n (b, s)
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044300"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StateT s m b -&gt; s -&gt; m (b, s)
+forall s (m :: * -&gt; *) a. StateT s m a -&gt; s -&gt; m (a, s)
+</span><span class="hs-identifier hs-var">S.runStateT</span></span><span> </span><span class="annot"><span class="annottext">StateT s m b
+</span><a href="#local-6989586621679044301"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679044303"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-138"></span><span>
+</span><span id="line-139"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044050"><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">S'.StateT</span></span><span> </span><span class="annot"><a href="#local-6989586621679044050"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-140"></span><span>    </span><span id="local-6989586621679044308"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; StateT s m b -&gt; StateT s n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044309"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044309"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span id="local-6989586621679044310"><span class="annot"><span class="annottext">StateT s m b
+</span><a href="#local-6989586621679044310"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(s -&gt; n (b, s)) -&gt; StateT s n b
+forall s (m :: * -&gt; *) a. (s -&gt; m (a, s)) -&gt; StateT s m a
+</span><span class="hs-identifier hs-var">S'.StateT</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679044312"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679044312"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">m (b, s) -&gt; n (b, s)
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044309"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StateT s m b -&gt; s -&gt; m (b, s)
+forall s (m :: * -&gt; *) a. StateT s m a -&gt; s -&gt; m (a, s)
+</span><span class="hs-identifier hs-var">S'.runStateT</span></span><span> </span><span class="annot"><span class="annottext">StateT s m b
+</span><a href="#local-6989586621679044310"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679044312"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-141"></span><span>
+</span><span id="line-142"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044062"><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">W.WriterT</span></span><span> </span><span class="annot"><a href="#local-6989586621679044062"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-143"></span><span>    </span><span id="local-6989586621679044317"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; WriterT w m b -&gt; WriterT w n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044318"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044318"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span id="local-6989586621679044319"><span class="annot"><span class="annottext">WriterT w m b
+</span><a href="#local-6989586621679044319"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n (b, w) -&gt; WriterT w n b
+forall w (m :: * -&gt; *) a. m (a, w) -&gt; WriterT w m a
+</span><span class="hs-identifier hs-var">W.WriterT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m (b, w) -&gt; n (b, w)
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044318"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">WriterT w m b -&gt; m (b, w)
+forall w (m :: * -&gt; *) a. WriterT w m a -&gt; m (a, w)
+</span><span class="hs-identifier hs-var">W.runWriterT</span></span><span> </span><span class="annot"><span class="annottext">WriterT w m b
+</span><a href="#local-6989586621679044319"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span>
+</span><span id="line-145"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044074"><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">W'.WriterT</span></span><span> </span><span class="annot"><a href="#local-6989586621679044074"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-146"></span><span>    </span><span id="local-6989586621679044325"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; WriterT w m b -&gt; WriterT w n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044326"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044326"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span id="local-6989586621679044327"><span class="annot"><span class="annottext">WriterT w m b
+</span><a href="#local-6989586621679044327"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n (b, w) -&gt; WriterT w n b
+forall w (m :: * -&gt; *) a. m (a, w) -&gt; WriterT w m a
+</span><span class="hs-identifier hs-var">W'.WriterT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m (b, w) -&gt; n (b, w)
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044326"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">WriterT w m b -&gt; m (b, w)
+forall w (m :: * -&gt; *) a. WriterT w m a -&gt; m (a, w)
+</span><span class="hs-identifier hs-var">W'.runWriterT</span></span><span> </span><span class="annot"><span class="annottext">WriterT w m b
+</span><a href="#local-6989586621679044327"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044086"><span class="annot"><span class="hs-identifier hs-type">Functor</span></span><span> </span><span class="annot"><a href="#local-6989586621679044086"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Compose</span></span><span> </span><span class="annot"><a href="#local-6989586621679044086"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-149"></span><span>    </span><span id="local-6989586621679044335"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; Compose f m b -&gt; Compose f n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044336"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044336"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Compose</span></span><span> </span><span id="local-6989586621679044337"><span class="annot"><span class="annottext">f (m b)
+</span><a href="#local-6989586621679044337"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">f (n b) -&gt; Compose f n b
+forall {k} {k1} (f :: k -&gt; *) (g :: k1 -&gt; k) (a :: k1).
+f (g a) -&gt; Compose f g a
+</span><span class="hs-identifier hs-var">Compose</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(m b -&gt; n b) -&gt; f (m b) -&gt; f (n b)
+forall a b. (a -&gt; b) -&gt; f a -&gt; f b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">m b -&gt; n b
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044336"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="annot"><span class="annottext">f (m b)
+</span><a href="#local-6989586621679044337"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-150"></span><span>
+</span><span id="line-151"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044100"><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Product</span></span><span> </span><span class="annot"><a href="#local-6989586621679044100"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-152"></span><span>    </span><span id="local-6989586621679044341"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; Product f m b -&gt; Product f n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044342"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044342"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Pair</span></span><span> </span><span id="local-6989586621679044343"><span class="annot"><span class="annottext">f b
+</span><a href="#local-6989586621679044343"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679044344"><span class="annot"><span class="annottext">m b
+</span><a href="#local-6989586621679044344"><span class="hs-identifier hs-var">g</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">f b -&gt; n b -&gt; Product f n b
+forall {k} (f :: k -&gt; *) (g :: k -&gt; *) (a :: k).
+f a -&gt; g a -&gt; Product f g a
+</span><span class="hs-identifier hs-var">Pair</span></span><span> </span><span class="annot"><span class="annottext">f b
+</span><a href="#local-6989586621679044343"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m b -&gt; n b
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044342"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="annot"><span class="annottext">m b
+</span><a href="#local-6989586621679044344"><span class="hs-identifier hs-var">g</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-153"></span><span>
+</span><span id="line-154"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Backwards</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-155"></span><span>    </span><span id="local-6989586621679044348"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; Backwards m b -&gt; Backwards n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span id="local-6989586621679044349"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044349"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Backwards</span></span><span> </span><span id="local-6989586621679044350"><span class="annot"><span class="annottext">m b
+</span><a href="#local-6989586621679044350"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n b -&gt; Backwards n b
+forall {k} (f :: k -&gt; *) (a :: k). f a -&gt; Backwards f a
+</span><span class="hs-identifier hs-var">Backwards</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m b -&gt; n b
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044349"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="annot"><span class="annottext">m b
+</span><a href="#local-6989586621679044350"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-156"></span><span>
+</span><span id="line-157"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Lift</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-158"></span><span>    </span><span id="local-6989586621679044354"><span class="annot"><span class="annottext">hoist :: forall (m :: * -&gt; *) (n :: * -&gt; *) b.
+Monad m =&gt;
+(forall a. m a -&gt; n a) -&gt; Lift m b -&gt; Lift n b
+</span><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var hs-var hs-var hs-var">hoist</span></a></span></span><span> </span><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><span class="hs-identifier">_</span></span><span>   </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Pure</span></span><span> </span><span id="local-6989586621679044355"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679044355"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">b -&gt; Lift n b
+forall (f :: * -&gt; *) a. a -&gt; Lift f a
+</span><span class="hs-identifier hs-var">Pure</span></span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679044355"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-159"></span><span>    </span><span class="annot"><a href="Control.Monad.Morph.html#hoist"><span class="hs-identifier hs-var">hoist</span></a></span><span> </span><span id="local-6989586621679044356"><span class="annot"><span class="annottext">forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044356"><span class="hs-identifier hs-var">nat</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Other</span></span><span> </span><span id="local-6989586621679044357"><span class="annot"><span class="annottext">m b
+</span><a href="#local-6989586621679044357"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n b -&gt; Lift n b
+forall (f :: * -&gt; *) a. f a -&gt; Lift f a
+</span><span class="hs-identifier hs-var">Other</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m b -&gt; n b
+forall a. m a -&gt; n a
+</span><a href="#local-6989586621679044356"><span class="hs-identifier hs-var">nat</span></a></span><span> </span><span class="annot"><span class="annottext">m b
+</span><a href="#local-6989586621679044357"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="annot"><span class="hs-comment">-- | A function that @generalize@s the 'Identity' base monad to be any monad.</span></span><span>
+</span><span id="line-162"></span><span id="local-6989586621679044121"><span id="local-6989586621679044122"><span class="annot"><a href="Control.Monad.Morph.html#generalize"><span class="hs-identifier hs-type">generalize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679044121"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Identity</span></span><span> </span><span class="annot"><a href="#local-6989586621679044122"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044121"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044122"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-163"></span><span id="generalize"><span class="annot"><span class="annottext">generalize :: forall (m :: * -&gt; *) a. Monad m =&gt; Identity a -&gt; m a
+</span><a href="Control.Monad.Morph.html#generalize"><span class="hs-identifier hs-var hs-var">generalize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; m a
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; m a) -&gt; (Identity a -&gt; a) -&gt; Identity a -&gt; m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Identity a -&gt; a
+forall a. Identity a -&gt; a
+</span><span class="hs-identifier hs-var">runIdentity</span></span><span>
+</span><span id="line-164"></span><span class="hs-pragma">{-# INLINABLE</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#generalize"><span class="hs-pragma hs-type">generalize</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-165"></span><span>
+</span><span id="line-166"></span><span class="annot"><span class="hs-comment">{-| A monad in the category of monads, using 'lift' from 'MonadTrans' as the
+    analog of 'return' and 'embed' as the analog of ('=&lt;&lt;'):
+
+&gt; embed lift = id
+&gt;
+&gt; embed f (lift m) = f m
+&gt;
+&gt; embed g (embed f t) = embed (\m -&gt; embed g (f m)) t
+-}</span></span><span>
+</span><span id="line-175"></span><span class="hs-keyword">class</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Morph.html#MFunctor"><span class="hs-identifier hs-type">MFunctor</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044132"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadTrans</span></span><span> </span><span class="annot"><a href="#local-6989586621679044132"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span id="MMonad"><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-var">MMonad</span></a></span></span><span> </span><span id="local-6989586621679044132"><span class="annot"><a href="#local-6989586621679044132"><span class="hs-identifier hs-type">t</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-176"></span><span>    </span><span class="hs-comment">{-| Embed a newly created 'MMonad' layer within an existing layer
+
+        'embed' is analogous to ('=&lt;&lt;')
+    -}</span><span>
+</span><span id="line-180"></span><span>    </span><span id="embed"><span class="annot"><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-type">embed</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span id="local-6989586621679044142"><span id="local-6989586621679044143"><span id="local-6989586621679044144"><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679044142"><span class="hs-identifier hs-type">n</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679044140"><span class="annot"><a href="#local-6989586621679044140"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679044143"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044140"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044132"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044142"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044140"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044132"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044143"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044144"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044132"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044142"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044144"><span class="hs-identifier hs-type">b</span></a></span></span></span></span><span>
+</span><span id="line-181"></span><span>
+</span><span id="line-182"></span><span class="annot"><span class="hs-comment">{-| Squash two 'MMonad' layers into a single layer
+
+    'squash' is analogous to 'join'
+-}</span></span><span>
+</span><span id="line-186"></span><span id="local-6989586621679044135"><span id="local-6989586621679044136"><span id="local-6989586621679044137"><span class="annot"><a href="Control.Monad.Morph.html#squash"><span class="hs-identifier hs-type">squash</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679044135"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044136"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044136"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679044136"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044135"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679044137"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044136"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044135"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044137"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-187"></span><span id="squash"><span class="annot"><span class="annottext">squash :: forall (m :: * -&gt; *) (t :: (* -&gt; *) -&gt; * -&gt; *) a.
+(Monad m, MMonad t) =&gt;
+t (t m) a -&gt; t m a
+</span><a href="Control.Monad.Morph.html#squash"><span class="hs-identifier hs-var hs-var">squash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall a. t m a -&gt; t m a) -&gt; t (t m) a -&gt; t m a
+forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (n :: * -&gt; *) (m :: * -&gt; *) b.
+(MMonad t, Monad n) =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var">embed</span></a></span><span> </span><span class="annot"><span class="annottext">t m a -&gt; t m a
+forall a. a -&gt; a
+forall a. t m a -&gt; t m a
+</span><span class="hs-identifier hs-var">id</span></span><span>
+</span><span id="line-188"></span><span class="hs-pragma">{-# INLINABLE</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#squash"><span class="hs-pragma hs-type">squash</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-189"></span><span>
+</span><span id="line-190"></span><span class="hs-keyword">infixr</span><span> </span><span class="hs-number">2</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#%3E%7C%3E"><span class="hs-operator hs-type">&gt;|&gt;</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#%3D%3C%7C"><span class="hs-operator hs-type">=&lt;|</span></a></span><span>
+</span><span id="line-191"></span><span class="hs-keyword">infixl</span><span> </span><span class="hs-number">2</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#%3C%7C%3C"><span class="hs-operator hs-type">&lt;|&lt;</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#%7C%3E%3D"><span class="hs-operator hs-type">|&gt;=</span></a></span><span>
+</span><span id="line-192"></span><span>
+</span><span id="line-193"></span><span class="annot"><span class="hs-comment">{-| Compose two 'MMonad' layer-building functions
+
+    ('&gt;|&gt;') is analogous to ('&gt;=&gt;')
+-}</span></span><span>
+</span><span id="line-197"></span><span id="local-6989586621679044147"><span id="local-6989586621679044148"><span id="local-6989586621679044149"><span id="local-6989586621679044151"><span id="local-6989586621679044153"><span class="annot"><a href="Control.Monad.Morph.html#%3E%7C%3E"><span class="hs-operator hs-type">(&gt;|&gt;)</span></a></span><span>
+</span><span id="line-198"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679044147"><span class="hs-identifier hs-type">m3</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044148"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-199"></span><span>    </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679044150"><span class="annot"><a href="#local-6989586621679044150"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679044149"><span class="hs-identifier hs-type">m1</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044150"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044148"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044151"><span class="hs-identifier hs-type">m2</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044150"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-200"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679044152"><span class="annot"><a href="#local-6989586621679044152"><span class="hs-identifier hs-type">b</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679044151"><span class="hs-identifier hs-type">m2</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044152"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044148"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044147"><span class="hs-identifier hs-type">m3</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044152"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-201"></span><span>    </span><span class="hs-glyph">-&gt;</span><span>             </span><span class="annot"><a href="#local-6989586621679044149"><span class="hs-identifier hs-type">m1</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044153"><span class="hs-identifier hs-type">c</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044148"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044147"><span class="hs-identifier hs-type">m3</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044153"><span class="hs-identifier hs-type">c</span></a></span></span></span></span></span></span><span>
+</span><span id="line-202"></span><span class="hs-special">(</span><span id="local-6989586621679044372"><span class="annot"><span class="annottext">forall a. m1 a -&gt; t m2 a
+</span><a href="#local-6989586621679044372"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="%3E%7C%3E"><span class="annot"><span class="annottext">&gt;|&gt; :: forall (m3 :: * -&gt; *) (t :: (* -&gt; *) -&gt; * -&gt; *) (m1 :: * -&gt; *)
+       (m2 :: * -&gt; *) c.
+(Monad m3, MMonad t) =&gt;
+(forall a. m1 a -&gt; t m2 a)
+-&gt; (forall b. m2 b -&gt; t m3 b) -&gt; m1 c -&gt; t m3 c
+</span><a href="Control.Monad.Morph.html#%3E%7C%3E"><span class="hs-operator hs-var hs-var">&gt;|&gt;</span></a></span></span><span> </span><span id="local-6989586621679044373"><span class="annot"><span class="annottext">forall b. m2 b -&gt; t m3 b
+</span><a href="#local-6989586621679044373"><span class="hs-identifier hs-var">g</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679044374"><span class="annot"><span class="annottext">m1 c
+</span><a href="#local-6989586621679044374"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall b. m2 b -&gt; t m3 b) -&gt; t m2 c -&gt; t m3 c
+forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (n :: * -&gt; *) (m :: * -&gt; *) b.
+(MMonad t, Monad n) =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var">embed</span></a></span><span> </span><span class="annot"><span class="annottext">m2 a -&gt; t m3 a
+forall b. m2 b -&gt; t m3 b
+</span><a href="#local-6989586621679044373"><span class="hs-identifier hs-var">g</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m1 c -&gt; t m2 c
+forall a. m1 a -&gt; t m2 a
+</span><a href="#local-6989586621679044372"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">m1 c
+</span><a href="#local-6989586621679044374"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-203"></span><span class="hs-pragma">{-# INLINABLE</span><span> </span><span class="hs-pragma">(</span><span class="hs-pragma">&gt;|&gt;</span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-204"></span><span>
+</span><span id="line-205"></span><span class="annot"><span class="hs-comment">{-| Equivalent to ('&gt;|&gt;') with the arguments flipped
+
+    ('&lt;|&lt;') is analogous to ('&lt;=&lt;')
+-}</span></span><span>
+</span><span id="line-209"></span><span id="local-6989586621679044160"><span id="local-6989586621679044161"><span id="local-6989586621679044162"><span id="local-6989586621679044164"><span id="local-6989586621679044166"><span class="annot"><a href="Control.Monad.Morph.html#%3C%7C%3C"><span class="hs-operator hs-type">(&lt;|&lt;)</span></a></span><span>
+</span><span id="line-210"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679044160"><span class="hs-identifier hs-type">m3</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044161"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-211"></span><span>    </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679044163"><span class="annot"><a href="#local-6989586621679044163"><span class="hs-identifier hs-type">b</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679044162"><span class="hs-identifier hs-type">m2</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044163"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044161"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044160"><span class="hs-identifier hs-type">m3</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044163"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-212"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679044165"><span class="annot"><a href="#local-6989586621679044165"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679044164"><span class="hs-identifier hs-type">m1</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044165"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044161"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044162"><span class="hs-identifier hs-type">m2</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044165"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-213"></span><span>    </span><span class="hs-glyph">-&gt;</span><span>             </span><span class="annot"><a href="#local-6989586621679044164"><span class="hs-identifier hs-type">m1</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044166"><span class="hs-identifier hs-type">c</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044161"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044160"><span class="hs-identifier hs-type">m3</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044166"><span class="hs-identifier hs-type">c</span></a></span></span></span></span></span></span><span>
+</span><span id="line-214"></span><span class="hs-special">(</span><span id="local-6989586621679044379"><span class="annot"><span class="annottext">forall b. m2 b -&gt; t m3 b
+</span><a href="#local-6989586621679044379"><span class="hs-identifier hs-var">g</span></a></span></span><span> </span><span id="%3C%7C%3C"><span class="annot"><span class="annottext">&lt;|&lt; :: forall (m3 :: * -&gt; *) (t :: (* -&gt; *) -&gt; * -&gt; *) (m2 :: * -&gt; *)
+       (m1 :: * -&gt; *) c.
+(Monad m3, MMonad t) =&gt;
+(forall b. m2 b -&gt; t m3 b)
+-&gt; (forall a. m1 a -&gt; t m2 a) -&gt; m1 c -&gt; t m3 c
+</span><a href="Control.Monad.Morph.html#%3C%7C%3C"><span class="hs-operator hs-var hs-var">&lt;|&lt;</span></a></span></span><span> </span><span id="local-6989586621679044380"><span class="annot"><span class="annottext">forall a. m1 a -&gt; t m2 a
+</span><a href="#local-6989586621679044380"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679044381"><span class="annot"><span class="annottext">m1 c
+</span><a href="#local-6989586621679044381"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall b. m2 b -&gt; t m3 b) -&gt; t m2 c -&gt; t m3 c
+forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (n :: * -&gt; *) (m :: * -&gt; *) b.
+(MMonad t, Monad n) =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var">embed</span></a></span><span> </span><span class="annot"><span class="annottext">m2 a -&gt; t m3 a
+forall b. m2 b -&gt; t m3 b
+</span><a href="#local-6989586621679044379"><span class="hs-identifier hs-var">g</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m1 c -&gt; t m2 c
+forall a. m1 a -&gt; t m2 a
+</span><a href="#local-6989586621679044380"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">m1 c
+</span><a href="#local-6989586621679044381"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-215"></span><span class="hs-pragma">{-# INLINABLE</span><span> </span><span class="hs-pragma">(</span><span class="hs-pragma">&lt;|&lt;</span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-216"></span><span>
+</span><span id="line-217"></span><span class="annot"><span class="hs-comment">{-| An infix operator equivalent to 'embed'
+
+    ('=&lt;|') is analogous to ('=&lt;&lt;')
+-}</span></span><span>
+</span><span id="line-221"></span><span id="local-6989586621679044173"><span id="local-6989586621679044174"><span id="local-6989586621679044175"><span id="local-6989586621679044177"><span class="annot"><a href="Control.Monad.Morph.html#%3D%3C%7C"><span class="hs-operator hs-type">(=&lt;|)</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679044173"><span class="hs-identifier hs-type">n</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044174"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679044176"><span class="annot"><a href="#local-6989586621679044176"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679044175"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044176"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044174"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044173"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044176"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044174"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044175"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044177"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044174"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044173"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044177"><span class="hs-identifier hs-type">b</span></a></span></span></span></span></span><span>
+</span><span id="line-222"></span><span id="%3D%3C%7C"><span class="annot"><span class="annottext">=&lt;| :: forall (n :: * -&gt; *) (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) b.
+(Monad n, MMonad t) =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+</span><a href="Control.Monad.Morph.html#%3D%3C%7C"><span class="hs-operator hs-var hs-var">(=&lt;|)</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (n :: * -&gt; *) (m :: * -&gt; *) b.
+(MMonad t, Monad n) =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var">embed</span></a></span><span>
+</span><span id="line-223"></span><span class="hs-pragma">{-# INLINABLE</span><span> </span><span class="hs-pragma">(</span><span class="hs-pragma">=&lt;|</span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-224"></span><span>
+</span><span id="line-225"></span><span class="annot"><span class="hs-comment">{-| Equivalent to ('=&lt;|') with the arguments flipped
+
+    ('|&gt;=') is analogous to ('&gt;&gt;=')
+-}</span></span><span>
+</span><span id="line-229"></span><span id="local-6989586621679044182"><span id="local-6989586621679044183"><span id="local-6989586621679044184"><span id="local-6989586621679044185"><span class="annot"><a href="Control.Monad.Morph.html#%7C%3E%3D"><span class="hs-operator hs-type">(|&gt;=)</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621679044182"><span class="hs-identifier hs-type">n</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044183"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044183"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044184"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044185"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679044186"><span class="annot"><a href="#local-6989586621679044186"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679044184"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044186"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044183"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044182"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044186"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044183"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044182"><span class="hs-identifier hs-type">n</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044185"><span class="hs-identifier hs-type">b</span></a></span></span></span></span></span><span>
+</span><span id="line-230"></span><span id="local-6989586621679044390"><span class="annot"><span class="annottext">t m b
+</span><a href="#local-6989586621679044390"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="%7C%3E%3D"><span class="annot"><span class="annottext">|&gt;= :: forall (n :: * -&gt; *) (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) b.
+(Monad n, MMonad t) =&gt;
+t m b -&gt; (forall a. m a -&gt; t n a) -&gt; t n b
+</span><a href="Control.Monad.Morph.html#%7C%3E%3D"><span class="hs-operator hs-var hs-var">|&gt;=</span></a></span></span><span> </span><span id="local-6989586621679044391"><span class="annot"><span class="annottext">forall a. m a -&gt; t n a
+</span><a href="#local-6989586621679044391"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (n :: * -&gt; *) (m :: * -&gt; *) b.
+(MMonad t, Monad n) =&gt;
+(forall a. m a -&gt; t n a) -&gt; t m b -&gt; t n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var">embed</span></a></span><span> </span><span class="annot"><span class="annottext">m a -&gt; t n a
+forall a. m a -&gt; t n a
+</span><a href="#local-6989586621679044391"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">t m b
+</span><a href="#local-6989586621679044390"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-231"></span><span class="hs-pragma">{-# INLINABLE</span><span> </span><span class="hs-pragma">(</span><span class="hs-pragma">|&gt;=</span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-232"></span><span>
+</span><span id="line-233"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044193"><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ex.ExceptT</span></span><span> </span><span class="annot"><a href="#local-6989586621679044193"><span class="hs-identifier hs-type">e</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-234"></span><span>    </span><span id="local-6989586621679044403"><span class="annot"><span class="annottext">embed :: forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; ExceptT e n a) -&gt; ExceptT e m b -&gt; ExceptT e n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var hs-var hs-var hs-var">embed</span></a></span></span><span> </span><span id="local-6989586621679044404"><span class="annot"><span class="annottext">forall a. m a -&gt; ExceptT e n a
+</span><a href="#local-6989586621679044404"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679044405"><span class="annot"><span class="annottext">ExceptT e m b
+</span><a href="#local-6989586621679044405"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n (Either e b) -&gt; ExceptT e n b
+forall e (m :: * -&gt; *) a. m (Either e a) -&gt; ExceptT e m a
+</span><span class="hs-identifier hs-var">Ex.ExceptT</span></span><span> </span><span class="hs-special">(</span><span class="hs-keyword">do</span><span>
+</span><span id="line-235"></span><span>        </span><span id="local-6989586621679044406"><span class="annot"><span class="annottext">Either e (Either e b)
+</span><a href="#local-6989586621679044406"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ExceptT e n (Either e b) -&gt; n (Either e (Either e b))
+forall e (m :: * -&gt; *) a. ExceptT e m a -&gt; m (Either e a)
+</span><span class="hs-identifier hs-var">Ex.runExceptT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m (Either e b) -&gt; ExceptT e n (Either e b)
+forall a. m a -&gt; ExceptT e n a
+</span><a href="#local-6989586621679044404"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ExceptT e m b -&gt; m (Either e b)
+forall e (m :: * -&gt; *) a. ExceptT e m a -&gt; m (Either e a)
+</span><span class="hs-identifier hs-var">Ex.runExceptT</span></span><span> </span><span class="annot"><span class="annottext">ExceptT e m b
+</span><a href="#local-6989586621679044405"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-236"></span><span>        </span><span class="annot"><span class="annottext">Either e b -&gt; n (Either e b)
+forall a. a -&gt; n a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either e (Either e b)
+</span><a href="#local-6989586621679044406"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-237"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span>         </span><span id="local-6989586621679044407"><span class="annot"><span class="annottext">e
+</span><a href="#local-6989586621679044407"><span class="hs-identifier hs-var">e</span></a></span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">e -&gt; Either e b
+forall a b. a -&gt; Either a b
+</span><span class="hs-identifier hs-var">Left</span></span><span> </span><span class="annot"><span class="annottext">e
+</span><a href="#local-6989586621679044407"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-238"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span>  </span><span id="local-6989586621679044408"><span class="annot"><span class="annottext">e
+</span><a href="#local-6989586621679044408"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">e -&gt; Either e b
+forall a b. a -&gt; Either a b
+</span><span class="hs-identifier hs-var">Left</span></span><span> </span><span class="annot"><span class="annottext">e
+</span><a href="#local-6989586621679044408"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-239"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621679044409"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679044409"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">b -&gt; Either e b
+forall a b. b -&gt; Either a b
+</span><span class="hs-identifier hs-var">Right</span></span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679044409"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-240"></span><span>
+</span><span id="line-241"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">I.IdentityT</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-242"></span><span>    </span><span id="local-6989586621679044418"><span class="annot"><span class="annottext">embed :: forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; IdentityT n a) -&gt; IdentityT m b -&gt; IdentityT n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var hs-var hs-var hs-var">embed</span></a></span></span><span> </span><span id="local-6989586621679044419"><span class="annot"><span class="annottext">forall a. m a -&gt; IdentityT n a
+</span><a href="#local-6989586621679044419"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679044420"><span class="annot"><span class="annottext">IdentityT m b
+</span><a href="#local-6989586621679044420"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m b -&gt; IdentityT n b
+forall a. m a -&gt; IdentityT n a
+</span><a href="#local-6989586621679044419"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdentityT m b -&gt; m b
+forall {k} (f :: k -&gt; *) (a :: k). IdentityT f a -&gt; f a
+</span><span class="hs-identifier hs-var">I.runIdentityT</span></span><span> </span><span class="annot"><span class="annottext">IdentityT m b
+</span><a href="#local-6989586621679044420"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-243"></span><span>
+</span><span id="line-244"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.MaybeT</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-245"></span><span>    </span><span id="local-6989586621679044431"><span class="annot"><span class="annottext">embed :: forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; MaybeT n a) -&gt; MaybeT m b -&gt; MaybeT n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var hs-var hs-var hs-var">embed</span></a></span></span><span> </span><span id="local-6989586621679044432"><span class="annot"><span class="annottext">forall a. m a -&gt; MaybeT n a
+</span><a href="#local-6989586621679044432"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679044433"><span class="annot"><span class="annottext">MaybeT m b
+</span><a href="#local-6989586621679044433"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n (Maybe b) -&gt; MaybeT n b
+forall (m :: * -&gt; *) a. m (Maybe a) -&gt; MaybeT m a
+</span><span class="hs-identifier hs-var">M.MaybeT</span></span><span> </span><span class="hs-special">(</span><span class="hs-keyword">do</span><span>
+</span><span id="line-246"></span><span>        </span><span id="local-6989586621679044434"><span class="annot"><span class="annottext">Maybe (Maybe b)
+</span><a href="#local-6989586621679044434"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MaybeT n (Maybe b) -&gt; n (Maybe (Maybe b))
+forall (m :: * -&gt; *) a. MaybeT m a -&gt; m (Maybe a)
+</span><span class="hs-identifier hs-var">M.runMaybeT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m (Maybe b) -&gt; MaybeT n (Maybe b)
+forall a. m a -&gt; MaybeT n a
+</span><a href="#local-6989586621679044432"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MaybeT m b -&gt; m (Maybe b)
+forall (m :: * -&gt; *) a. MaybeT m a -&gt; m (Maybe a)
+</span><span class="hs-identifier hs-var">M.runMaybeT</span></span><span> </span><span class="annot"><span class="annottext">MaybeT m b
+</span><a href="#local-6989586621679044433"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-247"></span><span>        </span><span class="annot"><span class="annottext">Maybe b -&gt; n (Maybe b)
+forall a. a -&gt; n a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe (Maybe b)
+</span><a href="#local-6989586621679044434"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-248"></span><span>            </span><span class="annot"><span class="annottext">Maybe (Maybe b)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe b
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-249"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="annot"><span class="annottext">Maybe b
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe b
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-250"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679044435"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679044435"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">b -&gt; Maybe b
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679044435"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-251"></span><span>
+</span><span id="line-252"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044207"><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">R.ReaderT</span></span><span> </span><span class="annot"><a href="#local-6989586621679044207"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-253"></span><span>    </span><span id="local-6989586621679044444"><span class="annot"><span class="annottext">embed :: forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; ReaderT r n a) -&gt; ReaderT r m b -&gt; ReaderT r n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var hs-var hs-var hs-var">embed</span></a></span></span><span> </span><span id="local-6989586621679044445"><span class="annot"><span class="annottext">forall a. m a -&gt; ReaderT r n a
+</span><a href="#local-6989586621679044445"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679044446"><span class="annot"><span class="annottext">ReaderT r m b
+</span><a href="#local-6989586621679044446"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(r -&gt; n b) -&gt; ReaderT r n b
+forall r (m :: * -&gt; *) a. (r -&gt; m a) -&gt; ReaderT r m a
+</span><span class="hs-identifier hs-var">R.ReaderT</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679044447"><span class="annot"><span class="annottext">r
+</span><a href="#local-6989586621679044447"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ReaderT r n b -&gt; r -&gt; n b
+forall r (m :: * -&gt; *) a. ReaderT r m a -&gt; r -&gt; m a
+</span><span class="hs-identifier hs-var">R.runReaderT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m b -&gt; ReaderT r n b
+forall a. m a -&gt; ReaderT r n a
+</span><a href="#local-6989586621679044445"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ReaderT r m b -&gt; r -&gt; m b
+forall r (m :: * -&gt; *) a. ReaderT r m a -&gt; r -&gt; m a
+</span><span class="hs-identifier hs-var">R.runReaderT</span></span><span> </span><span class="annot"><span class="annottext">ReaderT r m b
+</span><a href="#local-6989586621679044446"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">r
+</span><a href="#local-6989586621679044447"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">r
+</span><a href="#local-6989586621679044447"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-254"></span><span>
+</span><span id="line-255"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044212"><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="#local-6989586621679044212"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">W.WriterT</span></span><span> </span><span class="annot"><a href="#local-6989586621679044212"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-256"></span><span>    </span><span id="local-6989586621679044460"><span class="annot"><span class="annottext">embed :: forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; WriterT w n a) -&gt; WriterT w m b -&gt; WriterT w n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var hs-var hs-var hs-var">embed</span></a></span></span><span> </span><span id="local-6989586621679044461"><span class="annot"><span class="annottext">forall a. m a -&gt; WriterT w n a
+</span><a href="#local-6989586621679044461"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679044462"><span class="annot"><span class="annottext">WriterT w m b
+</span><a href="#local-6989586621679044462"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n (b, w) -&gt; WriterT w n b
+forall w (m :: * -&gt; *) a. m (a, w) -&gt; WriterT w m a
+</span><span class="hs-identifier hs-var">W.WriterT</span></span><span> </span><span class="hs-special">(</span><span class="hs-keyword">do</span><span>
+</span><span id="line-257"></span><span>        </span><span class="hs-glyph">~</span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621679044463"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679044463"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679044464"><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044464"><span class="hs-identifier hs-var">w1</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621679044465"><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044465"><span class="hs-identifier hs-var">w2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">WriterT w n (b, w) -&gt; n ((b, w), w)
+forall w (m :: * -&gt; *) a. WriterT w m a -&gt; m (a, w)
+</span><span class="hs-identifier hs-var">W.runWriterT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m (b, w) -&gt; WriterT w n (b, w)
+forall a. m a -&gt; WriterT w n a
+</span><a href="#local-6989586621679044461"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">WriterT w m b -&gt; m (b, w)
+forall w (m :: * -&gt; *) a. WriterT w m a -&gt; m (a, w)
+</span><span class="hs-identifier hs-var">W.runWriterT</span></span><span> </span><span class="annot"><span class="annottext">WriterT w m b
+</span><a href="#local-6989586621679044462"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-258"></span><span>        </span><span class="annot"><span class="annottext">(b, w) -&gt; n (b, w)
+forall a. a -&gt; n a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679044463"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">w -&gt; w -&gt; w
+forall a. Monoid a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">mappend</span></span><span> </span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044464"><span class="hs-identifier hs-var">w1</span></a></span><span> </span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044465"><span class="hs-identifier hs-var">w2</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-259"></span><span>
+</span><span id="line-260"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679044218"><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="#local-6989586621679044218"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Morph.html#MMonad"><span class="hs-identifier hs-type">MMonad</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">W'.WriterT</span></span><span> </span><span class="annot"><a href="#local-6989586621679044218"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-261"></span><span>    </span><span id="local-6989586621679044478"><span class="annot"><span class="annottext">embed :: forall (n :: * -&gt; *) (m :: * -&gt; *) b.
+Monad n =&gt;
+(forall a. m a -&gt; WriterT w n a) -&gt; WriterT w m b -&gt; WriterT w n b
+</span><a href="Control.Monad.Morph.html#embed"><span class="hs-identifier hs-var hs-var hs-var hs-var">embed</span></a></span></span><span> </span><span id="local-6989586621679044479"><span class="annot"><span class="annottext">forall a. m a -&gt; WriterT w n a
+</span><a href="#local-6989586621679044479"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679044480"><span class="annot"><span class="annottext">WriterT w m b
+</span><a href="#local-6989586621679044480"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">n (b, w) -&gt; WriterT w n b
+forall w (m :: * -&gt; *) a. m (a, w) -&gt; WriterT w m a
+</span><span class="hs-identifier hs-var">W'.WriterT</span></span><span> </span><span class="hs-special">(</span><span class="hs-keyword">do</span><span>
+</span><span id="line-262"></span><span>        </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621679044481"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679044481"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679044482"><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044482"><span class="hs-identifier hs-var">w1</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621679044483"><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044483"><span class="hs-identifier hs-var">w2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">WriterT w n (b, w) -&gt; n ((b, w), w)
+forall w (m :: * -&gt; *) a. WriterT w m a -&gt; m (a, w)
+</span><span class="hs-identifier hs-var">W'.runWriterT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m (b, w) -&gt; WriterT w n (b, w)
+forall a. m a -&gt; WriterT w n a
+</span><a href="#local-6989586621679044479"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">WriterT w m b -&gt; m (b, w)
+forall w (m :: * -&gt; *) a. WriterT w m a -&gt; m (a, w)
+</span><span class="hs-identifier hs-var">W'.runWriterT</span></span><span> </span><span class="annot"><span class="annottext">WriterT w m b
+</span><a href="#local-6989586621679044480"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-263"></span><span>        </span><span class="annot"><span class="annottext">(b, w) -&gt; n (b, w)
+forall a. a -&gt; n a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679044481"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">w -&gt; w -&gt; w
+forall a. Monoid a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">mappend</span></span><span> </span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044482"><span class="hs-identifier hs-var">w1</span></a></span><span> </span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044483"><span class="hs-identifier hs-var">w2</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-264"></span><span>
+</span><span id="line-265"></span><span class="annot"><span class="hs-comment">{- $tutorial
+    Monad morphisms solve the common problem of fixing monadic code after the
+    fact without modifying the original source code or type signatures.  The
+    following sections illustrate various examples of transparently modifying
+    existing functions.
+-}</span></span><span>
+</span><span id="line-271"></span><span>
+</span><span id="line-272"></span><span class="annot"><span class="hs-comment">{- $generalize
+    Imagine that some library provided the following 'S.State' code:
+
+&gt; import Control.Monad.Trans.State
+&gt;
+&gt; tick :: State Int ()
+&gt; tick = modify (+1)
+
+    ... but we would prefer to reuse @tick@ within a larger
+    @('S.StateT' Int 'IO')@ block in order to mix in 'IO' actions.
+
+    We could patch the original library to generalize @tick@'s type signature:
+
+&gt; tick :: (Monad m) =&gt; StateT Int m ()
+
+    ... but we would prefer not to fork upstream code if possible.  How could
+    we generalize @tick@'s type without modifying the original code?
+
+    We can solve this if we realize that 'S.State' is a type synonym for
+    'S.StateT' with an 'Identity' base monad:
+
+&gt; type State s = StateT s Identity
+
+    ... which means that @tick@'s true type is actually:
+
+&gt; tick :: StateT Int Identity ()
+
+    Now all we need is a function that @generalize@s the 'Identity' base monad
+    to be any monad:
+
+&gt; import Data.Functor.Identity
+&gt;
+&gt; generalize :: (Monad m) =&gt; Identity a -&gt; m a
+&gt; generalize m = return (runIdentity m)
+
+    ... which we can 'hoist' to change @tick@'s base monad:
+
+&gt; hoist :: (Monad m, MFunctor t) =&gt; (forall a . m a -&gt; n a) -&gt; t m b -&gt; t n b
+&gt;
+&gt; hoist generalize :: (Monad m, MFunctor t) =&gt; t Identity b -&gt; t m b
+&gt;
+&gt; hoist generalize tick :: (Monad m) =&gt; StateT Int m ()
+
+    This lets us mix @tick@ alongside 'IO' using 'lift':
+
+&gt; import Control.Monad.Morph
+&gt; import Control.Monad.Trans.Class
+&gt;
+&gt; tock                        ::                   StateT Int IO ()
+&gt; tock = do
+&gt;     hoist generalize tick   :: (Monad      m) =&gt; StateT Int m  ()
+&gt;     lift $ putStrLn &quot;Tock!&quot; :: (MonadTrans t) =&gt; t          IO ()
+
+&gt;&gt;&gt; runStateT tock 0
+Tock!
+((), 1)
+
+-}</span></span><span>
+</span><span id="line-330"></span><span>
+</span><span id="line-331"></span><span class="annot"><span class="hs-comment">{- $mmorph
+    Notice that @generalize@ is a monad morphism, and the following two proofs
+    show how @generalize@ satisfies the monad morphism laws.  You can refer to
+    these proofs as an example for how to prove a function obeys the monad
+    morphism laws:
+
+&gt; generalize (return x)
+&gt;
+&gt; -- Definition of 'return' for the Identity monad
+&gt; = generalize (Identity x)
+&gt;
+&gt; -- Definition of 'generalize'
+&gt; = return (runIdentity (Identity x))
+&gt;
+&gt; -- runIdentity (Identity x) = x
+&gt; = return x
+
+&gt; generalize $ do x &lt;- m
+&gt;                 f x
+&gt;
+&gt; -- Definition of (&gt;&gt;=) for the Identity monad
+&gt; = generalize (f (runIdentity m))
+&gt;
+&gt; -- Definition of 'generalize'
+&gt; = return (runIdentity (f (runIdentity m)))
+&gt;
+&gt; -- Monad law: Left identity
+&gt; = do x &lt;- return (runIdentity m)
+&gt;      return (runIdentity (f x))
+&gt;
+&gt; -- Definition of 'generalize' in reverse
+&gt; = do x &lt;- generalize m
+&gt;      generalize (f x)
+-}</span></span><span>
+</span><span id="line-365"></span><span>
+</span><span id="line-366"></span><span class="annot"><span class="hs-comment">{- $interleave
+    You can combine 'hoist' and 'lift' to insert arbitrary layers anywhere
+    within a monad transformer stack.  This comes in handy when interleaving two
+    diverse stacks.
+
+    For example, we might want to combine the following @save@ function:
+
+&gt; import Control.Monad.Trans.Writer
+&gt;
+&gt; -- i.e. :: StateT Int (WriterT [Int] Identity) ()
+&gt; save    :: StateT Int (Writer  [Int]) ()
+&gt; save = do
+&gt;     n &lt;- get
+&gt;     lift $ tell [n]
+
+    ... with our previous @tock@ function:
+
+&gt; tock :: StateT Int IO ()
+
+    However, @save@ and @tock@ differ in two ways:
+
+    * @tock@ lacks a 'W.WriterT' layer
+
+    * @save@ has an 'Identity' base monad
+
+    We can mix the two by inserting a 'W.WriterT' layer for @tock@ and
+    generalizing @save@'s base monad:
+
+&gt; import Control.Monad
+&gt;
+&gt; program ::                   StateT Int (WriterT [Int] IO) ()
+&gt; program = replicateM_ 4 $ do
+&gt;     hoist lift tock
+&gt;         :: (MonadTrans t) =&gt; StateT Int (t             IO) ()
+&gt;     hoist (hoist generalize) save
+&gt;         :: (Monad      m) =&gt; StateT Int (WriterT [Int] m ) ()
+
+&gt;&gt;&gt; execWriterT (runStateT program 0)
+Tock!
+Tock!
+Tock!
+Tock!
+[1,2,3,4]
+
+-}</span></span><span>
+</span><span id="line-411"></span><span>
+</span><span id="line-412"></span><span class="annot"><span class="hs-comment">{- $embed
+    Suppose we decided to @check@ all 'IOException's using a combination of
+    'try' and 'ErrorT':
+
+&gt; import Control.Exception
+&gt; import Control.Monad.Trans.Class
+&gt; import Control.Monad.Trans.Error
+&gt;
+&gt; check :: IO a -&gt; ErrorT IOException IO a
+&gt; check io = ErrorT (try io)
+
+    ... but then we forget to use @check@ in one spot, mistakenly using 'lift'
+    instead:
+
+&gt; program :: ErrorT IOException IO ()
+&gt; program = do
+&gt;     str &lt;- lift $ readFile &quot;test.txt&quot;
+&gt;     check $ putStr str
+
+&gt;&gt;&gt; runErrorT program
+*** Exception: test.txt: openFile: does not exist (No such file or directory)
+
+    How could we go back and fix 'program' without modifying its source code?
+
+    Well, @check@ is a monad morphism, but we can't 'hoist' it to modify the
+    base monad because then we get two 'E.ErrorT' layers instead of one:
+
+&gt; hoist check :: (MFunctor t) =&gt; t IO a -&gt; t (ErrorT IOException IO) a
+&gt;
+&gt; hoist check program :: ErrorT IOException (ErrorT IOException IO) ()
+
+    We'd prefer to 'embed' all newly generated exceptions in the existing
+    'E.ErrorT' layer:
+
+&gt; embed check :: ErrorT IOException IO a -&gt; ErrorT IOException IO a
+&gt;
+&gt; embed check program :: ErrorT IOException IO ()
+
+    This correctly checks the exceptions that slipped through the cracks:
+
+&gt;&gt;&gt; import Control.Monad.Morph
+&gt;&gt;&gt; runErrorT (embed check program)
+Left test.txt: openFile: does not exist (No such file or directory)
+
+-}</span></span><span>
+</span><span id="line-457"></span></pre></body></html>

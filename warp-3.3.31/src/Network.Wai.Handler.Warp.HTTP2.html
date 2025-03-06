@@ -1,0 +1,560 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE RecordWildCards #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables #-}</span><span>
+</span><span id="line-6"></span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.Wai.Handler.Warp.HTTP2</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Network.Wai.Handler.Warp.HTTP2.html#http2"><span class="hs-identifier">http2</span></a></span><span>
+</span><span id="line-9"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.HTTP2.html#http2server"><span class="hs-identifier">http2server</span></a></span><span>
+</span><span id="line-10"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-11"></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BS</span></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">IORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">newIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">writeIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">readIORef</span></span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">I</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Network.HTTP2.Frame</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">H2</span></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Network.HTTP2.Server</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">H2</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Socket</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">SockAddr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Socket.BufferPool</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Wai</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Wai.Internal</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ResponseReceived</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">System.TimeManager</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">UnliftIO</span></span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.HTTP2.File.html"><span class="hs-identifier">Network.Wai.Handler.Warp.HTTP2.File</span></a></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.HTTP2.PushPromise.html"><span class="hs-identifier">Network.Wai.Handler.Warp.HTTP2.PushPromise</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.HTTP2.Request.html"><span class="hs-identifier">Network.Wai.Handler.Warp.HTTP2.Request</span></a></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.HTTP2.Response.html"><span class="hs-identifier">Network.Wai.Handler.Warp.HTTP2.Response</span></a></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Imports.html"><span class="hs-identifier">Network.Wai.Handler.Warp.Imports</span></a></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Settings.html"><span class="hs-identifier">Network.Wai.Handler.Warp.Settings</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html"><span class="hs-identifier">Network.Wai.Handler.Warp.Types</span></a></span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span class="annot"><a href="Network.Wai.Handler.Warp.HTTP2.html#http2"><span class="hs-identifier hs-type">http2</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Settings.html#Settings"><span class="hs-identifier hs-type">S.Settings</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html#InternalInfo"><span class="hs-identifier hs-type">InternalInfo</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html#Connection"><span class="hs-identifier hs-type">Connection</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html#Transport"><span class="hs-identifier hs-type">Transport</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Application</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Handle</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span id="http2"><span class="annot"><span class="annottext">http2 :: Settings
+-&gt; InternalInfo
+-&gt; Connection
+-&gt; Transport
+-&gt; Application
+-&gt; SockAddr
+-&gt; Handle
+-&gt; ByteString
+-&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.HTTP2.html#http2"><span class="hs-identifier hs-var hs-var">http2</span></a></span></span><span> </span><span id="local-6989586621679111844"><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111844"><span class="hs-identifier hs-var">settings</span></a></span></span><span> </span><span id="local-6989586621679111845"><span class="annot"><span class="annottext">InternalInfo
+</span><a href="#local-6989586621679111845"><span class="hs-identifier hs-var">ii</span></a></span></span><span> </span><span id="local-6989586621679111846"><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679111846"><span class="hs-identifier hs-var">conn</span></a></span></span><span> </span><span id="local-6989586621679111847"><span class="annot"><span class="annottext">Transport
+</span><a href="#local-6989586621679111847"><span class="hs-identifier hs-var">transport</span></a></span></span><span> </span><span id="local-6989586621679111848"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679111848"><span class="hs-identifier hs-var">app</span></a></span></span><span> </span><span id="local-6989586621679111849"><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679111849"><span class="hs-identifier hs-var">peersa</span></a></span></span><span> </span><span id="local-6989586621679111850"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679111850"><span class="hs-identifier hs-var">th</span></a></span></span><span> </span><span id="local-6989586621679111851"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111851"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-36"></span><span>    </span><span id="local-6989586621679111852"><span class="annot"><span class="annottext">IORef Bool
+</span><a href="#local-6989586621679111852"><span class="hs-identifier hs-var">istatus</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; IO (IORef Bool)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-37"></span><span>    </span><span id="local-6989586621679111853"><span class="annot"><span class="annottext">RecvN
+</span><a href="#local-6989586621679111853"><span class="hs-identifier hs-var">rawRecvN</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Recv -&gt; IO RecvN
+</span><span class="hs-identifier hs-var">makeRecvN</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111851"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">(Recv -&gt; IO RecvN) -&gt; Recv -&gt; IO RecvN
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Connection -&gt; Recv
+</span><a href="Network.Wai.Handler.Warp.Types.html#connRecv"><span class="hs-identifier hs-var">connRecv</span></a></span><span> </span><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679111846"><span class="hs-identifier hs-var">conn</span></a></span><span>
+</span><span id="line-38"></span><span>    </span><span id="local-6989586621679111856"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679111856"><span class="hs-identifier hs-var">writeBuffer</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef WriteBuffer -&gt; IO WriteBuffer
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">(IORef WriteBuffer -&gt; IO WriteBuffer)
+-&gt; IORef WriteBuffer -&gt; IO WriteBuffer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Connection -&gt; IORef WriteBuffer
+</span><a href="Network.Wai.Handler.Warp.Types.html#connWriteBuffer"><span class="hs-identifier hs-var">connWriteBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679111846"><span class="hs-identifier hs-var">conn</span></a></span><span>
+</span><span id="line-39"></span><span>    </span><span class="hs-comment">-- This thread becomes the sender in http2 library.</span><span>
+</span><span id="line-40"></span><span>    </span><span class="hs-comment">-- In the case of event source, one request comes and one</span><span>
+</span><span id="line-41"></span><span>    </span><span class="hs-comment">-- worker gets busy. But it is likely that the receiver does</span><span>
+</span><span id="line-42"></span><span>    </span><span class="hs-comment">-- not receive any data at all while the sender is sending</span><span>
+</span><span id="line-43"></span><span>    </span><span class="hs-comment">-- output data from the worker. It's not good enough to tickle</span><span>
+</span><span id="line-44"></span><span>    </span><span class="hs-comment">-- the time handler in the receiver only. So, we should tickle</span><span>
+</span><span id="line-45"></span><span>    </span><span class="hs-comment">-- the time handler in both the receiver and the sender.</span><span>
+</span><span id="line-46"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679111858"><span class="annot"><span class="annottext">recvN :: RecvN
+</span><a href="#local-6989586621679111858"><span class="hs-identifier hs-var hs-var">recvN</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; IORef Bool -&gt; Int -&gt; RecvN -&gt; RecvN
+</span><a href="Network.Wai.Handler.Warp.HTTP2.html#wrappedRecvN"><span class="hs-identifier hs-var">wrappedRecvN</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679111850"><span class="hs-identifier hs-var">th</span></a></span><span> </span><span class="annot"><span class="annottext">IORef Bool
+</span><a href="#local-6989586621679111852"><span class="hs-identifier hs-var">istatus</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Settings -&gt; Int
+</span><a href="Network.Wai.Handler.Warp.Settings.html#settingsSlowlorisSize"><span class="hs-identifier hs-var">S.settingsSlowlorisSize</span></a></span><span> </span><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111844"><span class="hs-identifier hs-var">settings</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">RecvN
+</span><a href="#local-6989586621679111853"><span class="hs-identifier hs-var">rawRecvN</span></a></span><span>
+</span><span id="line-47"></span><span>        </span><span id="local-6989586621679111862"><span class="annot"><span class="annottext">sendBS :: ByteString -&gt; IO ()
+</span><a href="#local-6989586621679111862"><span class="hs-identifier hs-var hs-var">sendBS</span></a></span></span><span> </span><span id="local-6989586621679111863"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111863"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Connection -&gt; ByteString -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.Types.html#connSendAll"><span class="hs-identifier hs-var">connSendAll</span></a></span><span> </span><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679111846"><span class="hs-identifier hs-var">conn</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111863"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO () -&gt; IO ()
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.tickle</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679111850"><span class="hs-identifier hs-var">th</span></a></span><span>
+</span><span id="line-48"></span><span>        </span><span id="local-6989586621679111866"><span class="annot"><span class="annottext">conf :: Config
+</span><a href="#local-6989586621679111866"><span class="hs-identifier hs-var hs-var">conf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H2.Config</span></span><span> </span><span class="hs-special">{</span><span>
+</span><span id="line-49"></span><span>            </span><span class="annot"><span class="annottext">confWriteBuffer :: Buffer
+</span><span class="hs-identifier hs-var">confWriteBuffer</span></span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Buffer
+</span><a href="Network.Wai.Handler.Warp.Types.html#bufBuffer"><span class="hs-identifier hs-var">bufBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679111856"><span class="hs-identifier hs-var">writeBuffer</span></a></span><span>
+</span><span id="line-50"></span><span>          </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">confBufferSize :: Int
+</span><span class="hs-identifier hs-var">confBufferSize</span></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int
+</span><a href="Network.Wai.Handler.Warp.Types.html#bufSize"><span class="hs-identifier hs-var">bufSize</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679111856"><span class="hs-identifier hs-var">writeBuffer</span></a></span><span>
+</span><span id="line-51"></span><span>          </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">confSendAll :: ByteString -&gt; IO ()
+</span><span class="hs-identifier hs-var">confSendAll</span></span><span>           </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679111862"><span class="hs-identifier hs-var">sendBS</span></a></span><span>
+</span><span id="line-52"></span><span>          </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">confReadN :: RecvN
+</span><span class="hs-identifier hs-var">confReadN</span></span><span>             </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RecvN
+</span><a href="#local-6989586621679111858"><span class="hs-identifier hs-var">recvN</span></a></span><span>
+</span><span id="line-53"></span><span>          </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">confPositionReadMaker :: PositionReadMaker
+</span><span class="hs-identifier hs-var">confPositionReadMaker</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InternalInfo -&gt; PositionReadMaker
+</span><a href="Network.Wai.Handler.Warp.HTTP2.File.html#pReadMaker"><span class="hs-identifier hs-var">pReadMaker</span></a></span><span> </span><span class="annot"><span class="annottext">InternalInfo
+</span><a href="#local-6989586621679111845"><span class="hs-identifier hs-var">ii</span></a></span><span>
+</span><span id="line-54"></span><span>          </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">confTimeoutManager :: Manager
+</span><span class="hs-identifier hs-var">confTimeoutManager</span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InternalInfo -&gt; Manager
+</span><a href="Network.Wai.Handler.Warp.Types.html#timeoutManager"><span class="hs-identifier hs-var">timeoutManager</span></a></span><span> </span><span class="annot"><span class="annottext">InternalInfo
+</span><a href="#local-6989586621679111845"><span class="hs-identifier hs-var">ii</span></a></span><span class="hs-cpp">
+#if MIN_VERSION_http2(4,2,0)
+</span><span>          </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">confMySockAddr :: SockAddr
+</span><span class="hs-identifier hs-var">confMySockAddr</span></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Connection -&gt; SockAddr
+</span><a href="Network.Wai.Handler.Warp.Types.html#connMySockAddr"><span class="hs-identifier hs-var">connMySockAddr</span></a></span><span> </span><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679111846"><span class="hs-identifier hs-var">conn</span></a></span><span>
+</span><span id="line-57"></span><span>          </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">confPeerSockAddr :: SockAddr
+</span><span class="hs-identifier hs-var">confPeerSockAddr</span></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679111849"><span class="hs-identifier hs-var">peersa</span></a></span><span class="hs-cpp">
+#endif
+</span><span>          </span><span class="hs-special">}</span><span>
+</span><span id="line-60"></span><span>    </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679111881"><span class="hs-identifier hs-var">checkTLS</span></a></span><span>
+</span><span id="line-61"></span><span>    </span><span class="annot"><span class="annottext">Connection -&gt; Bool -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.Types.html#setConnHTTP2"><span class="hs-identifier hs-var">setConnHTTP2</span></a></span><span> </span><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679111846"><span class="hs-identifier hs-var">conn</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><span class="annottext">ServerConfig -&gt; Config -&gt; Server -&gt; IO ()
+</span><span class="hs-identifier hs-var">H2.run</span></span><span> </span><span class="annot"><span class="annottext">ServerConfig
+</span><span class="hs-identifier hs-var">H2.defaultServerConfig</span></span><span> </span><span class="annot"><span class="annottext">Config
+</span><a href="#local-6989586621679111866"><span class="hs-identifier hs-var">conf</span></a></span><span> </span><span class="annot"><span class="annottext">(Server -&gt; IO ()) -&gt; Server -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Settings
+-&gt; InternalInfo -&gt; Transport -&gt; SockAddr -&gt; Application -&gt; Server
+</span><a href="Network.Wai.Handler.Warp.HTTP2.html#http2server"><span class="hs-identifier hs-var">http2server</span></a></span><span> </span><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111844"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="annot"><span class="annottext">InternalInfo
+</span><a href="#local-6989586621679111845"><span class="hs-identifier hs-var">ii</span></a></span><span> </span><span class="annot"><span class="annottext">Transport
+</span><a href="#local-6989586621679111847"><span class="hs-identifier hs-var">transport</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679111849"><span class="hs-identifier hs-var">peersa</span></a></span><span> </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679111848"><span class="hs-identifier hs-var">app</span></a></span><span>
+</span><span id="line-63"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-64"></span><span>    </span><span id="local-6989586621679111881"><span class="annot"><span class="annottext">checkTLS :: IO ()
+</span><a href="#local-6989586621679111881"><span class="hs-identifier hs-var hs-var">checkTLS</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Transport
+</span><a href="#local-6989586621679111847"><span class="hs-identifier hs-var">transport</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-65"></span><span>        </span><span class="annot"><span class="annottext">Transport
+</span><a href="Network.Wai.Handler.Warp.Types.html#TCP"><span class="hs-identifier hs-var">TCP</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-comment">-- direct</span><span>
+</span><span id="line-66"></span><span>        </span><span id="local-6989586621679111889"><span class="annot"><span class="annottext">Transport
+</span><a href="#local-6989586621679111889"><span class="hs-identifier hs-var">tls</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Transport -&gt; Bool
+</span><a href="#local-6989586621679111891"><span class="hs-identifier hs-var">tls12orLater</span></a></span><span> </span><span class="annot"><span class="annottext">Transport
+</span><a href="#local-6989586621679111889"><span class="hs-identifier hs-var">tls</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Connection -&gt; ErrorCodeId -&gt; ByteString -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.HTTP2.html#goaway"><span class="hs-identifier hs-var">goaway</span></a></span><span> </span><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679111846"><span class="hs-identifier hs-var">conn</span></a></span><span> </span><span class="annot"><span class="annottext">ErrorCodeId
+</span><span class="hs-identifier hs-var">H2.InadequateSecurity</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;Weak TLS&quot;</span></span><span>
+</span><span id="line-67"></span><span>    </span><span id="local-6989586621679111891"><span class="annot"><span class="annottext">tls12orLater :: Transport -&gt; Bool
+</span><a href="#local-6989586621679111891"><span class="hs-identifier hs-var hs-var">tls12orLater</span></a></span></span><span> </span><span id="local-6989586621679111900"><span class="annot"><span class="annottext">Transport
+</span><a href="#local-6989586621679111900"><span class="hs-identifier hs-var">tls</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Transport -&gt; Int
+</span><a href="Network.Wai.Handler.Warp.Types.html#tlsMajorVersion"><span class="hs-identifier hs-var">tlsMajorVersion</span></a></span><span> </span><span class="annot"><span class="annottext">Transport
+</span><a href="#local-6989586621679111900"><span class="hs-identifier hs-var">tls</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Transport -&gt; Int
+</span><a href="Network.Wai.Handler.Warp.Types.html#tlsMinorVersion"><span class="hs-identifier hs-var">tlsMinorVersion</span></a></span><span> </span><span class="annot"><span class="annottext">Transport
+</span><a href="#local-6989586621679111900"><span class="hs-identifier hs-var">tls</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- | Converting WAI application to the server type of http2 library.</span><span>
+</span><span id="line-70"></span><span class="hs-comment">--</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- Since 3.3.11</span><span>
+</span><span id="line-72"></span><span class="annot"><a href="Network.Wai.Handler.Warp.HTTP2.html#http2server"><span class="hs-identifier hs-type">http2server</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Settings.html#Settings"><span class="hs-identifier hs-type">S.Settings</span></a></span><span>
+</span><span id="line-73"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html#InternalInfo"><span class="hs-identifier hs-type">InternalInfo</span></a></span><span>
+</span><span id="line-74"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html#Transport"><span class="hs-identifier hs-type">Transport</span></a></span><span>
+</span><span id="line-75"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SockAddr</span></span><span>
+</span><span id="line-76"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Application</span></span><span>
+</span><span id="line-77"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H2.Server</span></span><span>
+</span><span id="line-78"></span><span id="http2server"><span class="annot"><span class="annottext">http2server :: Settings
+-&gt; InternalInfo -&gt; Transport -&gt; SockAddr -&gt; Application -&gt; Server
+</span><a href="Network.Wai.Handler.Warp.HTTP2.html#http2server"><span class="hs-identifier hs-var hs-var">http2server</span></a></span></span><span> </span><span id="local-6989586621679111904"><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111904"><span class="hs-identifier hs-var">settings</span></a></span></span><span> </span><span id="local-6989586621679111905"><span class="annot"><span class="annottext">InternalInfo
+</span><a href="#local-6989586621679111905"><span class="hs-identifier hs-var">ii</span></a></span></span><span> </span><span id="local-6989586621679111906"><span class="annot"><span class="annottext">Transport
+</span><a href="#local-6989586621679111906"><span class="hs-identifier hs-var">transport</span></a></span></span><span> </span><span id="local-6989586621679111907"><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679111907"><span class="hs-identifier hs-var">addr</span></a></span></span><span> </span><span id="local-6989586621679111908"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679111908"><span class="hs-identifier hs-var">app</span></a></span></span><span> </span><span id="local-6989586621679111909"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111909"><span class="hs-identifier hs-var">h2req0</span></a></span></span><span> </span><span id="local-6989586621679111910"><span class="annot"><span class="annottext">Aux
+</span><a href="#local-6989586621679111910"><span class="hs-identifier hs-var">aux0</span></a></span></span><span> </span><span id="local-6989586621679111911"><span class="annot"><span class="annottext">Response -&gt; [PushPromise] -&gt; IO ()
+</span><a href="#local-6989586621679111911"><span class="hs-identifier hs-var">response</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-79"></span><span>    </span><span id="local-6989586621679111912"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111912"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Request -&gt; Aux -&gt; IO Request
+</span><a href="#local-6989586621679111913"><span class="hs-identifier hs-var">toWAIRequest</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111909"><span class="hs-identifier hs-var">h2req0</span></a></span><span> </span><span class="annot"><span class="annottext">Aux
+</span><a href="#local-6989586621679111910"><span class="hs-identifier hs-var">aux0</span></a></span><span>
+</span><span id="line-80"></span><span>    </span><span id="local-6989586621679111914"><span class="annot"><span class="annottext">IORef (Maybe (Response, [PushPromise], Status))
+</span><a href="#local-6989586621679111914"><span class="hs-identifier hs-var">ref</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe (Response, [PushPromise], Status)
+-&gt; IO (IORef (Maybe (Response, [PushPromise], Status)))
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">I.newIORef</span></span><span> </span><span class="annot"><span class="annottext">Maybe (Response, [PushPromise], Status)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-81"></span><span>    </span><span id="local-6989586621679111915"><span class="annot"><span class="annottext">Either SomeException ResponseReceived
+</span><a href="#local-6989586621679111915"><span class="hs-identifier hs-var">eResponseReceived</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO ResponseReceived -&gt; IO (Either SomeException ResponseReceived)
+forall (m :: * -&gt; *) a.
+MonadUnliftIO m =&gt;
+m a -&gt; m (Either SomeException a)
+</span><span class="hs-identifier hs-var">UnliftIO.tryAny</span></span><span> </span><span class="annot"><span class="annottext">(IO ResponseReceived -&gt; IO (Either SomeException ResponseReceived))
+-&gt; IO ResponseReceived
+-&gt; IO (Either SomeException ResponseReceived)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679111908"><span class="hs-identifier hs-var">app</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111912"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">((Response -&gt; IO ResponseReceived) -&gt; IO ResponseReceived)
+-&gt; (Response -&gt; IO ResponseReceived) -&gt; IO ResponseReceived
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679111917"><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111917"><span class="hs-identifier hs-var">rsp</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-82"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679111918"><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111918"><span class="hs-identifier hs-var">h2rsp</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679111919"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679111919"><span class="hs-identifier hs-var">st</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679111920"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679111920"><span class="hs-identifier hs-var">hasBody</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Settings
+-&gt; InternalInfo
+-&gt; Request
+-&gt; Response
+-&gt; IO (Response, Status, Bool)
+</span><a href="Network.Wai.Handler.Warp.HTTP2.Response.html#fromResponse"><span class="hs-identifier hs-var">fromResponse</span></a></span><span> </span><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111904"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="annot"><span class="annottext">InternalInfo
+</span><a href="#local-6989586621679111905"><span class="hs-identifier hs-var">ii</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111912"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111917"><span class="hs-identifier hs-var">rsp</span></a></span><span>
+</span><span id="line-83"></span><span>        </span><span id="local-6989586621679111922"><span class="annot"><span class="annottext">[PushPromise]
+</span><a href="#local-6989586621679111922"><span class="hs-identifier hs-var">pps</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679111920"><span class="hs-identifier hs-var">hasBody</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">InternalInfo -&gt; Request -&gt; IO [PushPromise]
+</span><a href="Network.Wai.Handler.Warp.HTTP2.PushPromise.html#fromPushPromises"><span class="hs-identifier hs-var">fromPushPromises</span></a></span><span> </span><span class="annot"><span class="annottext">InternalInfo
+</span><a href="#local-6989586621679111905"><span class="hs-identifier hs-var">ii</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111912"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">[PushPromise] -&gt; IO [PushPromise]
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-84"></span><span>        </span><span class="annot"><span class="annottext">IORef (Maybe (Response, [PushPromise], Status))
+-&gt; Maybe (Response, [PushPromise], Status) -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">I.writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe (Response, [PushPromise], Status))
+</span><a href="#local-6989586621679111914"><span class="hs-identifier hs-var">ref</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe (Response, [PushPromise], Status) -&gt; IO ())
+-&gt; Maybe (Response, [PushPromise], Status) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Response, [PushPromise], Status)
+-&gt; Maybe (Response, [PushPromise], Status)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111918"><span class="hs-identifier hs-var">h2rsp</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[PushPromise]
+</span><a href="#local-6989586621679111922"><span class="hs-identifier hs-var">pps</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679111919"><span class="hs-identifier hs-var">st</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-85"></span><span>        </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Response -&gt; [PushPromise] -&gt; IO ()
+</span><a href="#local-6989586621679111911"><span class="hs-identifier hs-var">response</span></a></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111918"><span class="hs-identifier hs-var">h2rsp</span></a></span><span> </span><span class="annot"><span class="annottext">[PushPromise]
+</span><a href="#local-6989586621679111922"><span class="hs-identifier hs-var">pps</span></a></span><span>
+</span><span id="line-86"></span><span>        </span><span class="annot"><span class="annottext">ResponseReceived -&gt; IO ResponseReceived
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ResponseReceived
+</span><span class="hs-identifier hs-var">ResponseReceived</span></span><span>
+</span><span id="line-87"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either SomeException ResponseReceived
+</span><a href="#local-6989586621679111915"><span class="hs-identifier hs-var">eResponseReceived</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-88"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span class="annot"><span class="annottext">ResponseReceived
+</span><span class="hs-identifier hs-var">ResponseReceived</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-89"></span><span>          </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679111925"><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111925"><span class="hs-identifier hs-var">h2rsp</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679111926"><span class="annot"><span class="annottext">[PushPromise]
+</span><a href="#local-6989586621679111926"><span class="hs-identifier hs-var">pps</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679111927"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679111927"><span class="hs-identifier hs-var">st</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef (Maybe (Response, [PushPromise], Status))
+-&gt; IO (Maybe (Response, [PushPromise], Status))
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">I.readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe (Response, [PushPromise], Status))
+</span><a href="#local-6989586621679111914"><span class="hs-identifier hs-var">ref</span></a></span><span>
+</span><span id="line-90"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679111934"><span class="annot"><span class="annottext">msiz :: Maybe Integer
+</span><a href="#local-6989586621679111934"><span class="hs-identifier hs-var hs-var">msiz</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Integer) -&gt; Maybe Int -&gt; Maybe Integer
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Response -&gt; Maybe Int
+</span><span class="hs-identifier hs-var">H2.responseBodySize</span></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111925"><span class="hs-identifier hs-var">h2rsp</span></a></span><span>
+</span><span id="line-91"></span><span>          </span><span class="annot"><span class="annottext">Request -&gt; Status -&gt; Maybe Integer -&gt; IO ()
+</span><a href="#local-6989586621679111937"><span class="hs-identifier hs-var">logResponse</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111912"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679111927"><span class="hs-identifier hs-var">st</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Integer
+</span><a href="#local-6989586621679111934"><span class="hs-identifier hs-var">msiz</span></a></span><span>
+</span><span id="line-92"></span><span>          </span><span class="annot"><span class="annottext">(PushPromise -&gt; IO ()) -&gt; [PushPromise] -&gt; IO ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Request -&gt; PushPromise -&gt; IO ()
+</span><a href="#local-6989586621679111939"><span class="hs-identifier hs-var">logPushPromise</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111912"><span class="hs-identifier hs-var">req</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[PushPromise]
+</span><a href="#local-6989586621679111926"><span class="hs-identifier hs-var">pps</span></a></span><span>
+</span><span id="line-93"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621679111940"><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679111940"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-94"></span><span>            </span><span class="annot"><span class="annottext">Settings -&gt; Maybe Request -&gt; SomeException -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.Settings.html#settingsOnException"><span class="hs-identifier hs-var">S.settingsOnException</span></a></span><span> </span><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111904"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Request -&gt; Maybe Request
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111912"><span class="hs-identifier hs-var">req</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679111940"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-95"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679111942"><span class="annot"><span class="annottext">ersp :: Response
+</span><a href="#local-6989586621679111942"><span class="hs-identifier hs-var hs-var">ersp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Settings -&gt; SomeException -&gt; Response
+</span><a href="Network.Wai.Handler.Warp.Settings.html#settingsOnExceptionResponse"><span class="hs-identifier hs-var">S.settingsOnExceptionResponse</span></a></span><span> </span><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111904"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679111940"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-96"></span><span>                </span><span id="local-6989586621679111944"><span class="annot"><span class="annottext">st :: Status
+</span><a href="#local-6989586621679111944"><span class="hs-identifier hs-var hs-var">st</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response -&gt; Status
+</span><span class="hs-identifier hs-var">responseStatus</span></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111942"><span class="hs-identifier hs-var">ersp</span></a></span><span>
+</span><span id="line-97"></span><span>            </span><span class="hs-special">(</span><span id="local-6989586621679111946"><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111946"><span class="hs-identifier hs-var">h2rsp'</span></a></span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Status
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Settings
+-&gt; InternalInfo
+-&gt; Request
+-&gt; Response
+-&gt; IO (Response, Status, Bool)
+</span><a href="Network.Wai.Handler.Warp.HTTP2.Response.html#fromResponse"><span class="hs-identifier hs-var">fromResponse</span></a></span><span> </span><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111904"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="annot"><span class="annottext">InternalInfo
+</span><a href="#local-6989586621679111905"><span class="hs-identifier hs-var">ii</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111912"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111942"><span class="hs-identifier hs-var">ersp</span></a></span><span>
+</span><span id="line-98"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679111950"><span class="annot"><span class="annottext">msiz :: Maybe Integer
+</span><a href="#local-6989586621679111950"><span class="hs-identifier hs-var hs-var">msiz</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Integer) -&gt; Maybe Int -&gt; Maybe Integer
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Response -&gt; Maybe Int
+</span><span class="hs-identifier hs-var">H2.responseBodySize</span></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111946"><span class="hs-identifier hs-var">h2rsp'</span></a></span><span>
+</span><span id="line-99"></span><span>            </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Response -&gt; [PushPromise] -&gt; IO ()
+</span><a href="#local-6989586621679111911"><span class="hs-identifier hs-var">response</span></a></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679111946"><span class="hs-identifier hs-var">h2rsp'</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-100"></span><span>            </span><span class="annot"><span class="annottext">Request -&gt; Status -&gt; Maybe Integer -&gt; IO ()
+</span><a href="#local-6989586621679111937"><span class="hs-identifier hs-var">logResponse</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111912"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679111944"><span class="hs-identifier hs-var">st</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Integer
+</span><a href="#local-6989586621679111950"><span class="hs-identifier hs-var">msiz</span></a></span><span>
+</span><span id="line-101"></span><span>    </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-103"></span><span>    </span><span id="local-6989586621679111913"><span class="annot"><span class="annottext">toWAIRequest :: Request -&gt; Aux -&gt; IO Request
+</span><a href="#local-6989586621679111913"><span class="hs-identifier hs-var hs-var">toWAIRequest</span></a></span></span><span> </span><span id="local-6989586621679111951"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111951"><span class="hs-identifier hs-var">h2req</span></a></span></span><span> </span><span id="local-6989586621679111952"><span class="annot"><span class="annottext">Aux
+</span><a href="#local-6989586621679111952"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InternalInfo -&gt; Settings -&gt; SockAddr -&gt; ToReq
+</span><a href="Network.Wai.Handler.Warp.HTTP2.Request.html#toRequest"><span class="hs-identifier hs-var">toRequest</span></a></span><span> </span><span class="annot"><span class="annottext">InternalInfo
+</span><a href="#local-6989586621679111905"><span class="hs-identifier hs-var">ii</span></a></span><span> </span><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111904"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="annot"><span class="annottext">SockAddr
+</span><a href="#local-6989586621679111907"><span class="hs-identifier hs-var">addr</span></a></span><span> </span><span class="annot"><span class="annottext">HeaderTable
+</span><a href="#local-6989586621679111954"><span class="hs-identifier hs-var">hdr</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Int
+</span><a href="#local-6989586621679111955"><span class="hs-identifier hs-var">bdylen</span></a></span><span> </span><span class="annot"><span class="annottext">Recv
+</span><a href="#local-6989586621679111956"><span class="hs-identifier hs-var">bdy</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679111957"><span class="hs-identifier hs-var">th</span></a></span><span> </span><span class="annot"><span class="annottext">Transport
+</span><a href="#local-6989586621679111906"><span class="hs-identifier hs-var">transport</span></a></span><span>
+</span><span id="line-104"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-105"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679111954"><span class="annot"><span class="annottext">hdr :: HeaderTable
+</span><a href="#local-6989586621679111954"><span class="hs-identifier hs-var hs-var">hdr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Request -&gt; HeaderTable
+</span><span class="hs-identifier hs-var">H2.requestHeaders</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111951"><span class="hs-identifier hs-var">h2req</span></a></span><span>
+</span><span id="line-106"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679111956"><span class="annot"><span class="annottext">bdy :: Recv
+</span><a href="#local-6989586621679111956"><span class="hs-identifier hs-var hs-var">bdy</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Request -&gt; Recv
+</span><span class="hs-identifier hs-var">H2.getRequestBodyChunk</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111951"><span class="hs-identifier hs-var">h2req</span></a></span><span>
+</span><span id="line-107"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679111955"><span class="annot"><span class="annottext">bdylen :: Maybe Int
+</span><a href="#local-6989586621679111955"><span class="hs-identifier hs-var hs-var">bdylen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Request -&gt; Maybe Int
+</span><span class="hs-identifier hs-var">H2.requestBodySize</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111951"><span class="hs-identifier hs-var">h2req</span></a></span><span>
+</span><span id="line-108"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679111957"><span class="annot"><span class="annottext">th :: Handle
+</span><a href="#local-6989586621679111957"><span class="hs-identifier hs-var hs-var">th</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Aux -&gt; Handle
+</span><span class="hs-identifier hs-var">H2.auxTimeHandle</span></span><span> </span><span class="annot"><span class="annottext">Aux
+</span><a href="#local-6989586621679111952"><span class="hs-identifier hs-var">aux</span></a></span><span>
+</span><span id="line-109"></span><span>
+</span><span id="line-110"></span><span>    </span><span id="local-6989586621679111937"><span class="annot"><span class="annottext">logResponse :: Request -&gt; Status -&gt; Maybe Integer -&gt; IO ()
+</span><a href="#local-6989586621679111937"><span class="hs-identifier hs-var hs-var">logResponse</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Settings -&gt; Request -&gt; Status -&gt; Maybe Integer -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.Settings.html#settingsLogger"><span class="hs-identifier hs-var">S.settingsLogger</span></a></span><span> </span><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111904"><span class="hs-identifier hs-var">settings</span></a></span><span>
+</span><span id="line-111"></span><span>
+</span><span id="line-112"></span><span>    </span><span id="local-6989586621679111939"><span class="annot"><span class="annottext">logPushPromise :: Request -&gt; PushPromise -&gt; IO ()
+</span><a href="#local-6989586621679111939"><span class="hs-identifier hs-var hs-var">logPushPromise</span></a></span></span><span> </span><span id="local-6989586621679111963"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111963"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span id="local-6989586621679111964"><span class="annot"><span class="annottext">PushPromise
+</span><a href="#local-6989586621679111964"><span class="hs-identifier hs-var">pp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Request -&gt; ByteString -&gt; Integer -&gt; IO ()
+</span><a href="#local-6989586621679111965"><span class="hs-identifier hs-var">logger</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679111963"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111966"><span class="hs-identifier hs-var">path</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679111967"><span class="hs-identifier hs-var">siz</span></a></span><span>
+</span><span id="line-113"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-114"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679111965"><span class="annot"><span class="annottext">logger :: Request -&gt; ByteString -&gt; Integer -&gt; IO ()
+</span><a href="#local-6989586621679111965"><span class="hs-identifier hs-var hs-var">logger</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Settings -&gt; Request -&gt; ByteString -&gt; Integer -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.Settings.html#settingsServerPushLogger"><span class="hs-identifier hs-var">S.settingsServerPushLogger</span></a></span><span> </span><span class="annot"><span class="annottext">Settings
+</span><a href="#local-6989586621679111904"><span class="hs-identifier hs-var">settings</span></a></span><span>
+</span><span id="line-115"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679111966"><span class="annot"><span class="annottext">path :: ByteString
+</span><a href="#local-6989586621679111966"><span class="hs-identifier hs-var hs-var">path</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PushPromise -&gt; ByteString
+</span><span class="hs-identifier hs-var">H2.promiseRequestPath</span></span><span> </span><span class="annot"><span class="annottext">PushPromise
+</span><a href="#local-6989586621679111964"><span class="hs-identifier hs-var">pp</span></a></span><span>
+</span><span id="line-116"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679111967"><span class="annot"><span class="annottext">siz :: Integer
+</span><a href="#local-6989586621679111967"><span class="hs-identifier hs-var hs-var">siz</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Response -&gt; Maybe Int
+</span><span class="hs-identifier hs-var">H2.responseBodySize</span></span><span> </span><span class="annot"><span class="annottext">(Response -&gt; Maybe Int) -&gt; Response -&gt; Maybe Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PushPromise -&gt; Response
+</span><span class="hs-identifier hs-var">H2.promiseResponse</span></span><span> </span><span class="annot"><span class="annottext">PushPromise
+</span><a href="#local-6989586621679111964"><span class="hs-identifier hs-var">pp</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-117"></span><span>            </span><span class="annot"><span class="annottext">Maybe Int
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-118"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679111974"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679111974"><span class="hs-identifier hs-var">s</span></a></span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679111974"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-119"></span><span>
+</span><span id="line-120"></span><span class="annot"><a href="Network.Wai.Handler.Warp.HTTP2.html#wrappedRecvN"><span class="hs-identifier hs-type">wrappedRecvN</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Handle</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BufSize</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BufSize</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-121"></span><span id="wrappedRecvN"><span class="annot"><span class="annottext">wrappedRecvN :: Handle -&gt; IORef Bool -&gt; Int -&gt; RecvN -&gt; RecvN
+</span><a href="Network.Wai.Handler.Warp.HTTP2.html#wrappedRecvN"><span class="hs-identifier hs-var hs-var">wrappedRecvN</span></a></span></span><span> </span><span id="local-6989586621679111976"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679111976"><span class="hs-identifier hs-var">th</span></a></span></span><span> </span><span id="local-6989586621679111977"><span class="annot"><span class="annottext">IORef Bool
+</span><a href="#local-6989586621679111977"><span class="hs-identifier hs-var">istatus</span></a></span></span><span> </span><span id="local-6989586621679111978"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679111978"><span class="hs-identifier hs-var">slowlorisSize</span></a></span></span><span> </span><span id="local-6989586621679111979"><span class="annot"><span class="annottext">RecvN
+</span><a href="#local-6989586621679111979"><span class="hs-identifier hs-var">readN</span></a></span></span><span> </span><span id="local-6989586621679111980"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679111980"><span class="hs-identifier hs-var">bufsize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-122"></span><span>    </span><span id="local-6989586621679111981"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111981"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>  </span><span class="annot"><span class="annottext">(SomeException -&gt; Recv) -&gt; Recv -&gt; Recv
+forall (m :: * -&gt; *) a.
+MonadUnliftIO m =&gt;
+(SomeException -&gt; m a) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">UnliftIO.handleAny</span></span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; Recv
+</span><a href="#local-6989586621679111983"><span class="hs-identifier hs-var">handler</span></a></span><span> </span><span class="annot"><span class="annottext">(Recv -&gt; Recv) -&gt; Recv -&gt; Recv
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">RecvN
+</span><a href="#local-6989586621679111979"><span class="hs-identifier hs-var">readN</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679111980"><span class="hs-identifier hs-var">bufsize</span></a></span><span>
+</span><span id="line-123"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">BS.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111981"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-124"></span><span>        </span><span class="annot"><span class="annottext">IORef Bool -&gt; Bool -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Bool
+</span><a href="#local-6989586621679111977"><span class="hs-identifier hs-var">istatus</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-125"></span><span>    </span><span class="hs-comment">-- TODO: think about the slowloris protection in HTTP2: current code</span><span>
+</span><span id="line-126"></span><span>    </span><span class="hs-comment">-- might open a slow-loris attack vector. Rather than timing we should</span><span>
+</span><span id="line-127"></span><span>    </span><span class="hs-comment">-- consider limiting the per-client connections assuming that in HTTP2</span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-comment">-- we should allow only few connections per host (real-world</span><span>
+</span><span id="line-129"></span><span>    </span><span class="hs-comment">-- deployments with large NATs may be trickier).</span><span>
+</span><span id="line-130"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">BS.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111981"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679111978"><span class="hs-identifier hs-var">slowlorisSize</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679111980"><span class="hs-identifier hs-var">bufsize</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679111978"><span class="hs-identifier hs-var">slowlorisSize</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.tickle</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679111976"><span class="hs-identifier hs-var">th</span></a></span><span>
+</span><span id="line-131"></span><span>    </span><span class="annot"><span class="annottext">ByteString -&gt; Recv
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679111981"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-132"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-133"></span><span>   </span><span class="annot"><a href="#local-6989586621679111983"><span class="hs-identifier hs-type">handler</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UnliftIO.SomeException</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-134"></span><span>   </span><span id="local-6989586621679111983"><span class="annot"><span class="annottext">handler :: SomeException -&gt; Recv
+</span><a href="#local-6989586621679111983"><span class="hs-identifier hs-var hs-var">handler</span></a></span></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Recv
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;&quot;</span></span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span class="hs-comment">-- connClose must not be called here since Run:fork calls it</span><span>
+</span><span id="line-137"></span><span class="annot"><a href="Network.Wai.Handler.Warp.HTTP2.html#goaway"><span class="hs-identifier hs-type">goaway</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html#Connection"><span class="hs-identifier hs-type">Connection</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H2.ErrorCodeId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-138"></span><span id="goaway"><span class="annot"><span class="annottext">goaway :: Connection -&gt; ErrorCodeId -&gt; ByteString -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.HTTP2.html#goaway"><span class="hs-identifier hs-var hs-var">goaway</span></a></span></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html#Connection"><span class="hs-identifier hs-type">Connection</span></a></span><span class="hs-special">{</span><span id="local-6989586621679111990"><span id="local-6989586621679111991"><span id="local-6989586621679111992"><span id="local-6989586621679111993"><span id="local-6989586621679111994"><span id="local-6989586621679111995"><span id="local-6989586621679111996"><span id="local-6989586621679111997"><span id="local-6989586621679111998"><span class="annot"><span class="annottext">IO ()
+Recv
+IORef Bool
+IORef WriteBuffer
+SockAddr
+[ByteString] -&gt; IO ()
+RecvBuf
+ByteString -&gt; IO ()
+SendFile
+connRecv :: Connection -&gt; Recv
+connWriteBuffer :: Connection -&gt; IORef WriteBuffer
+connSendAll :: Connection -&gt; ByteString -&gt; IO ()
+connMySockAddr :: Connection -&gt; SockAddr
+connSendMany :: [ByteString] -&gt; IO ()
+connSendAll :: ByteString -&gt; IO ()
+connSendFile :: SendFile
+connClose :: IO ()
+connRecv :: Recv
+connRecvBuf :: RecvBuf
+connWriteBuffer :: IORef WriteBuffer
+connHTTP2 :: IORef Bool
+connMySockAddr :: SockAddr
+connSendMany :: Connection -&gt; [ByteString] -&gt; IO ()
+connSendFile :: Connection -&gt; SendFile
+connClose :: Connection -&gt; IO ()
+connRecvBuf :: Connection -&gt; RecvBuf
+connHTTP2 :: Connection -&gt; IORef Bool
+</span><a href="Network.Wai.Handler.Warp.Types.html#connRecv"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679112004"><span class="annot"><span class="annottext">ErrorCodeId
+</span><a href="#local-6989586621679112004"><span class="hs-identifier hs-var">etype</span></a></span></span><span> </span><span id="local-6989586621679112005"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112005"><span class="hs-identifier hs-var">debugmsg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679111991"><span class="hs-identifier hs-var">connSendAll</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112006"><span class="hs-identifier hs-var">bytestream</span></a></span><span>
+</span><span id="line-139"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-140"></span><span>    </span><span id="local-6989586621679112007"><span class="annot"><span class="annottext">einfo :: EncodeInfo
+</span><a href="#local-6989586621679112007"><span class="hs-identifier hs-var hs-var">einfo</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(FrameFlags -&gt; FrameFlags) -&gt; Int -&gt; EncodeInfo
+</span><span class="hs-identifier hs-var">H2.encodeInfo</span></span><span> </span><span class="annot"><span class="annottext">FrameFlags -&gt; FrameFlags
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-141"></span><span>    </span><span id="local-6989586621679112010"><span class="annot"><span class="annottext">frame :: FramePayload
+</span><a href="#local-6989586621679112010"><span class="hs-identifier hs-var hs-var">frame</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ErrorCodeId -&gt; ByteString -&gt; FramePayload
+</span><span class="hs-identifier hs-var">H2.GoAwayFrame</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">ErrorCodeId
+</span><a href="#local-6989586621679112004"><span class="hs-identifier hs-var">etype</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112005"><span class="hs-identifier hs-var">debugmsg</span></a></span><span>
+</span><span id="line-142"></span><span>    </span><span id="local-6989586621679112006"><span class="annot"><span class="annottext">bytestream :: ByteString
+</span><a href="#local-6989586621679112006"><span class="hs-identifier hs-var hs-var">bytestream</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodeInfo -&gt; FramePayload -&gt; ByteString
+</span><span class="hs-identifier hs-var">H2.encodeFrame</span></span><span> </span><span class="annot"><span class="annottext">EncodeInfo
+</span><a href="#local-6989586621679112007"><span class="hs-identifier hs-var">einfo</span></a></span><span> </span><span class="annot"><span class="annottext">FramePayload
+</span><a href="#local-6989586621679112010"><span class="hs-identifier hs-var">frame</span></a></span><span>
+</span><span id="line-143"></span></pre></body></html>

@@ -1,0 +1,748 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE RankNTypes #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- | Backend for Common Gateway Interface. Almost all users should use the</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- 'run' function.</span><span>
+</span><span id="line-6"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.Wai.Handler.CGI</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Network.Wai.Handler.CGI.html#run"><span class="hs-identifier">run</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Network.Wai.Handler.CGI.html#runSendfile"><span class="hs-identifier">runSendfile</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Network.Wai.Handler.CGI.html#runGeneric"><span class="hs-identifier">runGeneric</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Network.Wai.Handler.CGI.html#requestBodyFunc"><span class="hs-identifier">requestBodyFunc</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-12"></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Arrow</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-operator">(***)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unless</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">void</span></span><span class="hs-special">)</span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Builder</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">byteString</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">string8</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">toLazyByteString</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Builder.Extra</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">flush</span></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Char8</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Lazy</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">L</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Lazy.Internal</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">defaultChunkSize</span></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.CaseInsensitive</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">CI</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Char</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">toLower</span></span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Function</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">fix</span></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">newIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">readIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">writeIORef</span></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">fromMaybe</span></span><span class="hs-special">)</span><span class="hs-cpp">
+#if __GLASGOW_HASKELL__ &lt; 710
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-identifier">Data.Monoid</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">mconcat</span><span class="hs-special">,</span><span> </span><span class="hs-identifier">mempty</span><span class="hs-special">,</span><span> </span><span class="hs-identifier">mappend</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Streaming.ByteString.Builder</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Builder</span></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.String</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">String</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word8</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">_lf</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">_space</span></span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.HTTP.Types</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Status</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">hContentLength</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">hContentType</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">hRange</span></span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Network.HTTP.Types</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">H</span></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Socket</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">addrAddress</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">getAddrInfo</span></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Wai</span></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Wai.Internal</span></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Handle</span></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">System.IO</span></span><span class="hs-cpp">
+
+#if WINDOWS
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-identifier">System.Environment</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">getEnvironment</span><span class="hs-special">)</span><span class="hs-cpp">
+#else
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">System.Posix.Env.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Env</span></span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#getEnvironment"><span class="hs-identifier hs-type">getEnvironment</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-45"></span><span id="getEnvironment"><span class="annot"><span class="annottext">getEnvironment :: IO [(String, String)]
+</span><a href="Network.Wai.Handler.CGI.html#getEnvironment"><span class="hs-identifier hs-var hs-var">getEnvironment</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((ByteString, ByteString) -&gt; (String, String))
+-&gt; [(ByteString, ByteString)] -&gt; [(String, String)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; String
+</span><span class="hs-identifier hs-var">B.unpack</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; String)
+-&gt; (ByteString -&gt; String)
+-&gt; (ByteString, ByteString)
+-&gt; (String, String)
+forall b c b' c'. (b -&gt; c) -&gt; (b' -&gt; c') -&gt; (b, b') -&gt; (c, c')
+forall (a :: * -&gt; * -&gt; *) b c b' c'.
+Arrow a =&gt;
+a b c -&gt; a b' c' -&gt; a (b, b') (c, c')
+</span><span class="hs-operator hs-var">***</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; String
+</span><span class="hs-identifier hs-var">B.unpack</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(ByteString, ByteString)] -&gt; [(String, String)])
+-&gt; IO [(ByteString, ByteString)] -&gt; IO [(String, String)]
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">`fmap`</span></span><span> </span><span class="annot"><span class="annottext">IO [(ByteString, ByteString)]
+</span><span class="hs-identifier hs-var">Env.getEnvironment</span></span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-48"></span><span id="local-6989586621679125978"><span class="annot"><a href="Network.Wai.Handler.CGI.html#safeRead"><span class="hs-identifier hs-type">safeRead</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Read</span></span><span> </span><span class="annot"><a href="#local-6989586621679125978"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679125978"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679125978"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-49"></span><span id="safeRead"><span class="annot"><span class="annottext">safeRead :: forall a. Read a =&gt; a -&gt; String -&gt; a
+</span><a href="Network.Wai.Handler.CGI.html#safeRead"><span class="hs-identifier hs-var hs-var">safeRead</span></a></span></span><span> </span><span id="local-6989586621679126135"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679126135"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span id="local-6989586621679126136"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126136"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-50"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ReadS a
+forall a. Read a =&gt; ReadS a
+</span><span class="hs-identifier hs-var">reads</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126136"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-51"></span><span>        </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621679126138"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679126138"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[(a, String)]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679126138"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-52"></span><span>        </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679126135"><span class="hs-identifier hs-var">d</span></a></span><span>
+</span><span id="line-53"></span><span>
+</span><span id="line-54"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#lookup%27"><span class="hs-identifier hs-type">lookup'</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span>
+</span><span id="line-55"></span><span id="lookup%27"><span class="annot"><span class="annottext">lookup' :: String -&gt; [(String, String)] -&gt; String
+</span><a href="Network.Wai.Handler.CGI.html#lookup%27"><span class="hs-identifier hs-var hs-var">lookup'</span></a></span></span><span> </span><span id="local-6989586621679126140"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126140"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span id="local-6989586621679126141"><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126141"><span class="hs-identifier hs-var">pairs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Maybe String -&gt; String
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">(Maybe String -&gt; String) -&gt; Maybe String -&gt; String
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; [(String, String)] -&gt; Maybe String
+forall a b. Eq a =&gt; a -&gt; [(a, b)] -&gt; Maybe b
+</span><span class="hs-identifier hs-var">lookup</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126140"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126141"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-56"></span><span>
+</span><span id="line-57"></span><span class="annot"><span class="hs-comment">-- | Run an application using CGI.</span></span><span>
+</span><span id="line-58"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#run"><span class="hs-identifier hs-type">run</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Application</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-59"></span><span id="run"><span class="annot"><span class="annottext">run :: Application -&gt; IO ()
+</span><a href="Network.Wai.Handler.CGI.html#run"><span class="hs-identifier hs-var hs-var">run</span></a></span></span><span> </span><span id="local-6989586621679126143"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679126143"><span class="hs-identifier hs-var">app</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-60"></span><span>    </span><span id="local-6989586621679126144"><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126144"><span class="hs-identifier hs-var">vars</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO [(String, String)]
+</span><a href="Network.Wai.Handler.CGI.html#getEnvironment"><span class="hs-identifier hs-var">getEnvironment</span></a></span><span>
+</span><span id="line-61"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679126145"><span class="annot"><span class="annottext">input :: Int -&gt; IO (IO ByteString)
+</span><a href="#local-6989586621679126145"><span class="hs-identifier hs-var hs-var">input</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Int -&gt; IO (IO ByteString)
+</span><a href="Network.Wai.Handler.CGI.html#requestBodyHandle"><span class="hs-identifier hs-var">requestBodyHandle</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">System.IO.stdin</span></span><span>
+</span><span id="line-62"></span><span>        </span><span id="local-6989586621679126148"><span class="annot"><span class="annottext">output :: ByteString -&gt; IO ()
+</span><a href="#local-6989586621679126148"><span class="hs-identifier hs-var hs-var">output</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; ByteString -&gt; IO ()
+</span><span class="hs-identifier hs-var">B.hPut</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">System.IO.stdout</span></span><span>
+</span><span id="line-63"></span><span>    </span><span class="annot"><span class="annottext">[(String, String)]
+-&gt; (Int -&gt; IO (IO ByteString))
+-&gt; (ByteString -&gt; IO ())
+-&gt; Maybe ByteString
+-&gt; Application
+-&gt; IO ()
+</span><a href="Network.Wai.Handler.CGI.html#runGeneric"><span class="hs-identifier hs-var">runGeneric</span></a></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126144"><span class="hs-identifier hs-var">vars</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (IO ByteString)
+</span><a href="#local-6989586621679126145"><span class="hs-identifier hs-var">input</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679126148"><span class="hs-identifier hs-var">output</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679126143"><span class="hs-identifier hs-var">app</span></a></span><span>
+</span><span id="line-64"></span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- | Some web servers provide an optimization for sending files via a sendfile</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- system call via a special header. To use this feature, provide that header</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- name here.</span><span>
+</span><span id="line-68"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#runSendfile"><span class="hs-identifier hs-type">runSendfile</span></a></span><span>
+</span><span id="line-69"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span>
+</span><span id="line-70"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ sendfile header</span></span><span>
+</span><span id="line-71"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Application</span></span><span>
+</span><span id="line-72"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-73"></span><span id="runSendfile"><span class="annot"><span class="annottext">runSendfile :: ByteString -&gt; Application -&gt; IO ()
+</span><a href="Network.Wai.Handler.CGI.html#runSendfile"><span class="hs-identifier hs-var hs-var">runSendfile</span></a></span></span><span> </span><span id="local-6989586621679126151"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126151"><span class="hs-identifier hs-var">sf</span></a></span></span><span> </span><span id="local-6989586621679126152"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679126152"><span class="hs-identifier hs-var">app</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-74"></span><span>    </span><span id="local-6989586621679126153"><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126153"><span class="hs-identifier hs-var">vars</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO [(String, String)]
+</span><a href="Network.Wai.Handler.CGI.html#getEnvironment"><span class="hs-identifier hs-var">getEnvironment</span></a></span><span>
+</span><span id="line-75"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679126154"><span class="annot"><span class="annottext">input :: Int -&gt; IO (IO ByteString)
+</span><a href="#local-6989586621679126154"><span class="hs-identifier hs-var hs-var">input</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Int -&gt; IO (IO ByteString)
+</span><a href="Network.Wai.Handler.CGI.html#requestBodyHandle"><span class="hs-identifier hs-var">requestBodyHandle</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">System.IO.stdin</span></span><span>
+</span><span id="line-76"></span><span>        </span><span id="local-6989586621679126155"><span class="annot"><span class="annottext">output :: ByteString -&gt; IO ()
+</span><a href="#local-6989586621679126155"><span class="hs-identifier hs-var hs-var">output</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; ByteString -&gt; IO ()
+</span><span class="hs-identifier hs-var">B.hPut</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">System.IO.stdout</span></span><span>
+</span><span id="line-77"></span><span>    </span><span class="annot"><span class="annottext">[(String, String)]
+-&gt; (Int -&gt; IO (IO ByteString))
+-&gt; (ByteString -&gt; IO ())
+-&gt; Maybe ByteString
+-&gt; Application
+-&gt; IO ()
+</span><a href="Network.Wai.Handler.CGI.html#runGeneric"><span class="hs-identifier hs-var">runGeneric</span></a></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126153"><span class="hs-identifier hs-var">vars</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (IO ByteString)
+</span><a href="#local-6989586621679126154"><span class="hs-identifier hs-var">input</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679126155"><span class="hs-identifier hs-var">output</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Maybe ByteString
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126151"><span class="hs-identifier hs-var">sf</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679126152"><span class="hs-identifier hs-var">app</span></a></span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- | A generic CGI helper, which allows other backends (FastCGI and SCGI) to</span><span>
+</span><span id="line-80"></span><span class="hs-comment">-- use the same code as CGI. Most users will not need this function, and can</span><span>
+</span><span id="line-81"></span><span class="hs-comment">-- stick with 'run' or 'runSendfile'.</span><span>
+</span><span id="line-82"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#runGeneric"><span class="hs-identifier hs-type">runGeneric</span></a></span><span>
+</span><span id="line-83"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-84"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ all variables</span></span><span>
+</span><span id="line-85"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ responseBody of input</span></span><span>
+</span><span id="line-87"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ destination for output</span></span><span>
+</span><span id="line-89"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span>
+</span><span id="line-90"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ does the server support the X-Sendfile header?</span></span><span>
+</span><span id="line-91"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Application</span></span><span>
+</span><span id="line-92"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span id="runGeneric"><span class="annot"><span class="annottext">runGeneric :: [(String, String)]
+-&gt; (Int -&gt; IO (IO ByteString))
+-&gt; (ByteString -&gt; IO ())
+-&gt; Maybe ByteString
+-&gt; Application
+-&gt; IO ()
+</span><a href="Network.Wai.Handler.CGI.html#runGeneric"><span class="hs-identifier hs-var hs-var">runGeneric</span></a></span></span><span> </span><span id="local-6989586621679126156"><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126156"><span class="hs-identifier hs-var">vars</span></a></span></span><span> </span><span id="local-6989586621679126157"><span class="annot"><span class="annottext">Int -&gt; IO (IO ByteString)
+</span><a href="#local-6989586621679126157"><span class="hs-identifier hs-var">inputH</span></a></span></span><span> </span><span id="local-6989586621679126158"><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679126158"><span class="hs-identifier hs-var">outputH</span></a></span></span><span> </span><span id="local-6989586621679126159"><span class="annot"><span class="annottext">Maybe ByteString
+</span><a href="#local-6989586621679126159"><span class="hs-identifier hs-var">xsendfile</span></a></span></span><span> </span><span id="local-6989586621679126160"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679126160"><span class="hs-identifier hs-var">app</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-94"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679126161"><span class="annot"><span class="annottext">rmethod :: ByteString
+</span><a href="#local-6989586621679126161"><span class="hs-identifier hs-var hs-var">rmethod</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; ByteString
+</span><span class="hs-identifier hs-var">B.pack</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; ByteString) -&gt; String -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; [(String, String)] -&gt; String
+</span><a href="Network.Wai.Handler.CGI.html#lookup%27"><span class="hs-identifier hs-var">lookup'</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;REQUEST_METHOD&quot;</span></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126156"><span class="hs-identifier hs-var">vars</span></a></span><span>
+</span><span id="line-95"></span><span>        </span><span id="local-6989586621679126163"><span class="annot"><span class="annottext">pinfo :: String
+</span><a href="#local-6989586621679126163"><span class="hs-identifier hs-var hs-var">pinfo</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; [(String, String)] -&gt; String
+</span><a href="Network.Wai.Handler.CGI.html#lookup%27"><span class="hs-identifier hs-var">lookup'</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;PATH_INFO&quot;</span></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126156"><span class="hs-identifier hs-var">vars</span></a></span><span>
+</span><span id="line-96"></span><span>        </span><span id="local-6989586621679126164"><span class="annot"><span class="annottext">qstring :: String
+</span><a href="#local-6989586621679126164"><span class="hs-identifier hs-var hs-var">qstring</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; [(String, String)] -&gt; String
+</span><a href="Network.Wai.Handler.CGI.html#lookup%27"><span class="hs-identifier hs-var">lookup'</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;QUERY_STRING&quot;</span></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126156"><span class="hs-identifier hs-var">vars</span></a></span><span>
+</span><span id="line-97"></span><span>        </span><span id="local-6989586621679126168"><span class="annot"><span class="annottext">contentLength :: Int
+</span><a href="#local-6989586621679126168"><span class="hs-identifier hs-var hs-var">contentLength</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; String -&gt; Int
+forall a. Read a =&gt; a -&gt; String -&gt; a
+</span><a href="Network.Wai.Handler.CGI.html#safeRead"><span class="hs-identifier hs-var">safeRead</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; Int) -&gt; String -&gt; Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; [(String, String)] -&gt; String
+</span><a href="Network.Wai.Handler.CGI.html#lookup%27"><span class="hs-identifier hs-var">lookup'</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;CONTENT_LENGTH&quot;</span></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126156"><span class="hs-identifier hs-var">vars</span></a></span><span>
+</span><span id="line-98"></span><span>        </span><span id="local-6989586621679126173"><span class="annot"><span class="annottext">remoteHost' :: String
+</span><a href="#local-6989586621679126173"><span class="hs-identifier hs-var hs-var">remoteHost'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-99"></span><span>            </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">String -&gt; [(String, String)] -&gt; Maybe String
+forall a b. Eq a =&gt; a -&gt; [(a, b)] -&gt; Maybe b
+</span><span class="hs-identifier hs-var">lookup</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;REMOTE_ADDR&quot;</span></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126156"><span class="hs-identifier hs-var">vars</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-100"></span><span>                </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679126174"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126174"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126174"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-101"></span><span>                </span><span class="annot"><span class="annottext">Maybe String
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; [(String, String)] -&gt; String
+</span><a href="Network.Wai.Handler.CGI.html#lookup%27"><span class="hs-identifier hs-var">lookup'</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;REMOTE_HOST&quot;</span></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126156"><span class="hs-identifier hs-var">vars</span></a></span><span>
+</span><span id="line-102"></span><span>        </span><span id="local-6989586621679126179"><span class="annot"><span class="annottext">isSecure' :: Bool
+</span><a href="#local-6989586621679126179"><span class="hs-identifier hs-var hs-var">isSecure'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-103"></span><span>            </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Char) -&gt; String -&gt; String
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Char
+</span><span class="hs-identifier hs-var">toLower</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; String) -&gt; String -&gt; String
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; [(String, String)] -&gt; String
+</span><a href="Network.Wai.Handler.CGI.html#lookup%27"><span class="hs-identifier hs-var">lookup'</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;SERVER_PROTOCOL&quot;</span></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126156"><span class="hs-identifier hs-var">vars</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-104"></span><span>                </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;https&quot;</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-105"></span><span>                </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-106"></span><span>    </span><span id="local-6989586621679126180"><span class="annot"><span class="annottext">[AddrInfo]
+</span><a href="#local-6989586621679126180"><span class="hs-identifier hs-var">addrs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe AddrInfo -&gt; Maybe String -&gt; Maybe String -&gt; IO [AddrInfo]
+</span><span class="hs-identifier hs-var">getAddrInfo</span></span><span> </span><span class="annot"><span class="annottext">Maybe AddrInfo
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Maybe String
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126173"><span class="hs-identifier hs-var">remoteHost'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Maybe String
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-107"></span><span>    </span><span id="local-6989586621679126181"><span class="annot"><span class="annottext">IO ByteString
+</span><a href="#local-6989586621679126181"><span class="hs-identifier hs-var">requestBody'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (IO ByteString)
+</span><a href="#local-6989586621679126157"><span class="hs-identifier hs-var">inputH</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126168"><span class="hs-identifier hs-var">contentLength</span></a></span><span>
+</span><span id="line-108"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679126186"><span class="annot"><span class="annottext">addr :: SockAddr
+</span><a href="#local-6989586621679126186"><span class="hs-identifier hs-var hs-var">addr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-109"></span><span>            </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">[AddrInfo]
+</span><a href="#local-6989586621679126180"><span class="hs-identifier hs-var">addrs</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-110"></span><span>                </span><span id="local-6989586621679126187"><span class="annot"><span class="annottext">AddrInfo
+</span><a href="#local-6989586621679126187"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[AddrInfo]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AddrInfo -&gt; SockAddr
+</span><span class="hs-identifier hs-var">addrAddress</span></span><span> </span><span class="annot"><span class="annottext">AddrInfo
+</span><a href="#local-6989586621679126187"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-111"></span><span>                </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; SockAddr
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; SockAddr) -&gt; String -&gt; SockAddr
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Invalid REMOTE_ADDR or REMOTE_HOST: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126173"><span class="hs-identifier hs-var">remoteHost'</span></a></span><span>
+</span><span id="line-112"></span><span>        </span><span id="local-6989586621679126190"><span class="annot"><span class="annottext">reqHeaders :: [(CI ByteString, ByteString)]
+</span><a href="#local-6989586621679126190"><span class="hs-identifier hs-var hs-var">reqHeaders</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((String, String) -&gt; (CI ByteString, ByteString))
+-&gt; [(String, String)] -&gt; [(CI ByteString, ByteString)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; CI ByteString
+</span><a href="Network.Wai.Handler.CGI.html#cleanupVarName"><span class="hs-identifier hs-var">cleanupVarName</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; CI ByteString)
+-&gt; (String -&gt; ByteString)
+-&gt; (String, String)
+-&gt; (CI ByteString, ByteString)
+forall b c b' c'. (b -&gt; c) -&gt; (b' -&gt; c') -&gt; (b, b') -&gt; (c, c')
+forall (a :: * -&gt; * -&gt; *) b c b' c'.
+Arrow a =&gt;
+a b c -&gt; a b' c' -&gt; a (b, b') (c, c')
+</span><span class="hs-operator hs-var">***</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; ByteString
+</span><span class="hs-identifier hs-var">B.pack</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679126156"><span class="hs-identifier hs-var">vars</span></a></span><span>
+</span><span id="line-113"></span><span>        </span><span id="local-6989586621679126210"><span class="annot"><span class="annottext">env :: Request
+</span><a href="#local-6989586621679126210"><span class="hs-identifier hs-var hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-114"></span><span>            </span><span class="annot"><span class="annottext">IO ByteString -&gt; Request -&gt; Request
+</span><span class="hs-identifier hs-var">setRequestBodyChunks</span></span><span> </span><span class="annot"><span class="annottext">IO ByteString
+</span><a href="#local-6989586621679126181"><span class="hs-identifier hs-var">requestBody'</span></a></span><span> </span><span class="annot"><span class="annottext">(Request -&gt; Request) -&gt; Request -&gt; Request
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-115"></span><span>                </span><span class="annot"><span class="annottext">Request
+</span><span class="hs-identifier hs-var">defaultRequest</span></span><span>
+</span><span id="line-116"></span><span>                    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="hs-identifier hs-var">requestMethod</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679126161"><span class="hs-identifier hs-type">rmethod</span></a></span><span>
+</span><span id="line-117"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">rawPathInfo</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.pack</span></span><span> </span><span class="annot"><a href="#local-6989586621679126163"><span class="hs-identifier hs-type">pinfo</span></a></span><span>
+</span><span id="line-118"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">pathInfo</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.decodePathSegments</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">$</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.pack</span></span><span> </span><span class="annot"><a href="#local-6989586621679126163"><span class="hs-identifier hs-type">pinfo</span></a></span><span>
+</span><span id="line-119"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">rawQueryString</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.pack</span></span><span> </span><span class="annot"><a href="#local-6989586621679126164"><span class="hs-identifier hs-type">qstring</span></a></span><span>
+</span><span id="line-120"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">queryString</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.parseQuery</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">$</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.pack</span></span><span> </span><span class="annot"><a href="#local-6989586621679126164"><span class="hs-identifier hs-type">qstring</span></a></span><span>
+</span><span id="line-121"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">requestHeaders</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679126190"><span class="hs-identifier hs-type">reqHeaders</span></a></span><span>
+</span><span id="line-122"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">isSecure</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679126179"><span class="hs-identifier hs-type">isSecure'</span></a></span><span>
+</span><span id="line-123"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">remoteHost</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679126186"><span class="hs-identifier hs-type">addr</span></a></span><span>
+</span><span id="line-124"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">httpVersion</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.http11</span></span><span> </span><span class="hs-comment">-- FIXME</span><span>
+</span><span id="line-125"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">vault</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">mempty</span></span><span>
+</span><span id="line-126"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">requestBodyLength</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">KnownLength</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">$</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">fromIntegral</span></span><span> </span><span class="annot"><a href="#local-6989586621679126168"><span class="hs-identifier hs-type">contentLength</span></a></span><span>
+</span><span id="line-127"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">requestHeaderHost</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">lookup</span></span><span> </span><span class="annot"><span class="hs-string">&quot;host&quot;</span></span><span> </span><span class="annot"><a href="#local-6989586621679126190"><span class="hs-identifier hs-type">reqHeaders</span></a></span><span>
+</span><span id="line-128"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">requestHeaderRange</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">lookup</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">hRange</span></span><span> </span><span class="annot"><a href="#local-6989586621679126190"><span class="hs-identifier hs-type">reqHeaders</span></a></span><span class="hs-cpp">
+#if MIN_VERSION_wai(3,2,0)
+</span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">requestHeaderReferer</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">lookup</span></span><span> </span><span class="annot"><span class="hs-string">&quot;referer&quot;</span></span><span> </span><span class="annot"><a href="#local-6989586621679126190"><span class="hs-identifier hs-type">reqHeaders</span></a></span><span>
+</span><span id="line-131"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">requestHeaderUserAgent</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">lookup</span></span><span> </span><span class="annot"><span class="hs-string">&quot;user-agent&quot;</span></span><span> </span><span class="annot"><a href="#local-6989586621679126190"><span class="hs-identifier hs-type">reqHeaders</span></a></span><span class="hs-cpp">
+#endif
+</span><span>                    </span><span class="hs-special">}</span><span>
+</span><span id="line-134"></span><span>    </span><span class="annot"><span class="annottext">IO ResponseReceived -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO ResponseReceived -&gt; IO ()) -&gt; IO ResponseReceived -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679126160"><span class="hs-identifier hs-var">app</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679126210"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">((Response -&gt; IO ResponseReceived) -&gt; IO ResponseReceived)
+-&gt; (Response -&gt; IO ResponseReceived) -&gt; IO ResponseReceived
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679126232"><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679126232"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-135"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe ByteString
+</span><a href="#local-6989586621679126159"><span class="hs-identifier hs-var">xsendfile</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679126232"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-136"></span><span>            </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679126233"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126233"><span class="hs-identifier hs-var">sf</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ResponseFile</span></span><span> </span><span id="local-6989586621679126235"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679126235"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679126236"><span class="annot"><span class="annottext">[(CI ByteString, ByteString)]
+</span><a href="#local-6989586621679126236"><span class="hs-identifier hs-var">hs</span></a></span></span><span> </span><span id="local-6989586621679126237"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126237"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="annot"><span class="annottext">Maybe FilePart
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-137"></span><span>                </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ()) -&gt; [ByteString] -&gt; IO ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679126158"><span class="hs-identifier hs-var">outputH</span></a></span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; IO ()) -&gt; [ByteString] -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [ByteString]
+</span><span class="hs-identifier hs-var">L.toChunks</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; [ByteString]) -&gt; ByteString -&gt; [ByteString]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Builder -&gt; ByteString
+</span><span class="hs-identifier hs-var">toLazyByteString</span></span><span> </span><span class="annot"><span class="annottext">(Builder -&gt; ByteString) -&gt; Builder -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Status
+-&gt; [(CI ByteString, ByteString)] -&gt; ByteString -&gt; String -&gt; Builder
+</span><a href="#local-6989586621679126240"><span class="hs-identifier hs-var">sfBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679126235"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">[(CI ByteString, ByteString)]
+</span><a href="#local-6989586621679126236"><span class="hs-identifier hs-var">hs</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126233"><span class="hs-identifier hs-var">sf</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126237"><span class="hs-identifier hs-var">fp</span></a></span><span>
+</span><span id="line-138"></span><span>                </span><span class="annot"><span class="annottext">ResponseReceived -&gt; IO ResponseReceived
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ResponseReceived
+</span><span class="hs-identifier hs-var">ResponseReceived</span></span><span>
+</span><span id="line-139"></span><span>            </span><span class="annot"><span class="annottext">(Maybe ByteString, Response)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-140"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679126242"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679126242"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679126243"><span class="annot"><span class="annottext">[(CI ByteString, ByteString)]
+</span><a href="#local-6989586621679126243"><span class="hs-identifier hs-var">hs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679126244"><span class="annot"><span class="annottext">(StreamingBody -&gt; IO a) -&gt; IO a
+</span><a href="#local-6989586621679126244"><span class="hs-identifier hs-var">wb</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response
+-&gt; (Status, [(CI ByteString, ByteString)],
+    (StreamingBody -&gt; IO a) -&gt; IO a)
+forall a.
+Response
+-&gt; (Status, [(CI ByteString, ByteString)],
+    (StreamingBody -&gt; IO a) -&gt; IO a)
+</span><span class="hs-identifier hs-var">responseToStream</span></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679126232"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-141"></span><span>                </span><span class="hs-special">(</span><span id="local-6989586621679126246"><span class="annot"><span class="annottext">BuilderRecv
+</span><a href="#local-6989586621679126246"><span class="hs-identifier hs-var">blazeRecv</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679126247"><span class="annot"><span class="annottext">BuilderFinish
+</span><a href="#local-6989586621679126247"><span class="hs-identifier hs-var">blazeFinish</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BufferAllocStrategy -&gt; IO (BuilderRecv, BuilderFinish)
+</span><span class="hs-identifier hs-var">Builder.newBuilderRecv</span></span><span> </span><span class="annot"><span class="annottext">BufferAllocStrategy
+</span><span class="hs-identifier hs-var">Builder.defaultStrategy</span></span><span>
+</span><span id="line-142"></span><span>                </span><span class="annot"><span class="annottext">(StreamingBody -&gt; IO ()) -&gt; IO ()
+forall {a}. (StreamingBody -&gt; IO a) -&gt; IO a
+</span><a href="#local-6989586621679126244"><span class="hs-identifier hs-var">wb</span></a></span><span> </span><span class="annot"><span class="annottext">((StreamingBody -&gt; IO ()) -&gt; IO ())
+-&gt; (StreamingBody -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679126250"><span class="annot"><span class="annottext">StreamingBody
+</span><a href="#local-6989586621679126250"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-143"></span><span>                    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679126256"><span class="annot"><span class="annottext">sendBuilder :: Builder -&gt; IO ()
+</span><a href="#local-6989586621679126256"><span class="hs-identifier hs-var hs-var">sendBuilder</span></a></span></span><span> </span><span id="local-6989586621679126257"><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679126257"><span class="hs-identifier hs-var">builder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-144"></span><span>                            </span><span id="local-6989586621679126258"><span class="annot"><span class="annottext">IO ByteString
+</span><a href="#local-6989586621679126258"><span class="hs-identifier hs-var">popper</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BuilderRecv
+</span><a href="#local-6989586621679126246"><span class="hs-identifier hs-var">blazeRecv</span></a></span><span> </span><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679126257"><span class="hs-identifier hs-var">builder</span></a></span><span>
+</span><span id="line-145"></span><span>                            </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO ()
+forall a. (a -&gt; a) -&gt; a
+</span><span class="hs-identifier hs-var">fix</span></span><span> </span><span class="annot"><span class="annottext">((IO () -&gt; IO ()) -&gt; IO ()) -&gt; (IO () -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679126259"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679126259"><span class="hs-identifier hs-var">loop</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-146"></span><span>                                </span><span id="local-6989586621679126260"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126260"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO ByteString
+</span><a href="#local-6989586621679126258"><span class="hs-identifier hs-var">popper</span></a></span><span>
+</span><span id="line-147"></span><span>                                </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">B.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126260"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-148"></span><span>                                    </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679126158"><span class="hs-identifier hs-var">outputH</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126260"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-149"></span><span>                                    </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679126259"><span class="hs-identifier hs-var">loop</span></a></span><span>
+</span><span id="line-150"></span><span>                    </span><span class="annot"><span class="annottext">Builder -&gt; IO ()
+</span><a href="#local-6989586621679126256"><span class="hs-identifier hs-var">sendBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder -&gt; IO ()) -&gt; Builder -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Status -&gt; [(CI ByteString, ByteString)] -&gt; Builder
+</span><a href="#local-6989586621679126262"><span class="hs-identifier hs-var">headers</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679126242"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">[(CI ByteString, ByteString)]
+</span><a href="#local-6989586621679126243"><span class="hs-identifier hs-var">hs</span></a></span><span> </span><span class="annot"><span class="annottext">Builder -&gt; Builder -&gt; Builder
+forall a. Monoid a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`mappend`</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Builder
+</span><span class="hs-identifier hs-var">word8</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-identifier hs-var">_lf</span></span><span>
+</span><span id="line-151"></span><span>                    </span><span class="annot"><span class="annottext">StreamingBody
+</span><a href="#local-6989586621679126250"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Builder -&gt; IO ()
+</span><a href="#local-6989586621679126256"><span class="hs-identifier hs-var">sendBuilder</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Builder -&gt; IO ()
+</span><a href="#local-6989586621679126256"><span class="hs-identifier hs-var">sendBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">Builder
+</span><span class="hs-identifier hs-var">flush</span></span><span class="hs-special">)</span><span>
+</span><span id="line-152"></span><span>                </span><span class="annot"><span class="annottext">BuilderFinish
+</span><a href="#local-6989586621679126247"><span class="hs-identifier hs-var">blazeFinish</span></a></span><span> </span><span class="annot"><span class="annottext">BuilderFinish -&gt; (Maybe ByteString -&gt; IO ()) -&gt; IO ()
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; (ByteString -&gt; IO ()) -&gt; Maybe ByteString -&gt; IO ()
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679126158"><span class="hs-identifier hs-var">outputH</span></a></span><span>
+</span><span id="line-153"></span><span>                </span><span class="annot"><span class="annottext">ResponseReceived -&gt; IO ResponseReceived
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ResponseReceived
+</span><span class="hs-identifier hs-var">ResponseReceived</span></span><span>
+</span><span id="line-154"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-155"></span><span>    </span><span id="local-6989586621679126262"><span class="annot"><span class="annottext">headers :: Status -&gt; [(CI ByteString, ByteString)] -&gt; Builder
+</span><a href="#local-6989586621679126262"><span class="hs-identifier hs-var hs-var">headers</span></a></span></span><span> </span><span id="local-6989586621679126266"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679126266"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679126267"><span class="annot"><span class="annottext">[(CI ByteString, ByteString)]
+</span><a href="#local-6989586621679126267"><span class="hs-identifier hs-var">hs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Builder] -&gt; Builder
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((Builder, Builder) -&gt; Builder)
+-&gt; [(Builder, Builder)] -&gt; [Builder]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(Builder, Builder) -&gt; Builder
+</span><a href="#local-6989586621679126268"><span class="hs-identifier hs-var">header</span></a></span><span> </span><span class="annot"><span class="annottext">([(Builder, Builder)] -&gt; [Builder])
+-&gt; [(Builder, Builder)] -&gt; [Builder]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Status -&gt; (Builder, Builder)
+</span><a href="#local-6989586621679126269"><span class="hs-identifier hs-var">status</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679126266"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder, Builder) -&gt; [(Builder, Builder)] -&gt; [(Builder, Builder)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">((CI ByteString, ByteString) -&gt; (Builder, Builder))
+-&gt; [(CI ByteString, ByteString)] -&gt; [(Builder, Builder)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(CI ByteString, ByteString) -&gt; (Builder, Builder)
+</span><a href="#local-6989586621679126270"><span class="hs-identifier hs-var">header'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(CI ByteString, ByteString)] -&gt; [(CI ByteString, ByteString)]
+forall {b}.
+IsString b =&gt;
+[(CI ByteString, b)] -&gt; [(CI ByteString, b)]
+</span><a href="#local-6989586621679126271"><span class="hs-identifier hs-var">fixHeaders</span></a></span><span> </span><span class="annot"><span class="annottext">[(CI ByteString, ByteString)]
+</span><a href="#local-6989586621679126267"><span class="hs-identifier hs-var">hs</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-156"></span><span>    </span><span id="local-6989586621679126269"><span class="annot"><span class="annottext">status :: Status -&gt; (Builder, Builder)
+</span><a href="#local-6989586621679126269"><span class="hs-identifier hs-var hs-var">status</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Status</span></span><span> </span><span id="local-6989586621679126277"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126277"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621679126278"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126278"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-157"></span><span>        </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">byteString</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;Status&quot;</span></span><span>
+</span><span id="line-158"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Builder] -&gt; Builder
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span>
+</span><span id="line-159"></span><span>            </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">String -&gt; Builder
+</span><span class="hs-identifier hs-var">string8</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; Builder) -&gt; String -&gt; Builder
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; String
+forall a. Show a =&gt; a -&gt; String
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126277"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-160"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Builder
+</span><span class="hs-identifier hs-var">word8</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-identifier hs-var">_space</span></span><span>
+</span><span id="line-161"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">byteString</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126278"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-162"></span><span>            </span><span class="hs-special">]</span><span>
+</span><span id="line-163"></span><span>        </span><span class="hs-special">)</span><span>
+</span><span id="line-164"></span><span>    </span><span id="local-6989586621679126270"><span class="annot"><span class="annottext">header' :: (CI ByteString, ByteString) -&gt; (Builder, Builder)
+</span><a href="#local-6989586621679126270"><span class="hs-identifier hs-var hs-var">header'</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679126280"><span class="annot"><span class="annottext">CI ByteString
+</span><a href="#local-6989586621679126280"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679126281"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126281"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">byteString</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Builder) -&gt; ByteString -&gt; Builder
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">CI ByteString -&gt; ByteString
+forall s. CI s -&gt; s
+</span><span class="hs-identifier hs-var">CI.original</span></span><span> </span><span class="annot"><span class="annottext">CI ByteString
+</span><a href="#local-6989586621679126280"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">byteString</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126281"><span class="hs-identifier hs-var">y</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-165"></span><span>    </span><span id="local-6989586621679126268"><span class="annot"><span class="annottext">header :: (Builder, Builder) -&gt; Builder
+</span><a href="#local-6989586621679126268"><span class="hs-identifier hs-var hs-var">header</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679126285"><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679126285"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679126286"><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679126286"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-166"></span><span>        </span><span class="annot"><span class="annottext">[Builder] -&gt; Builder
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span>
+</span><span id="line-167"></span><span>            </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679126285"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-168"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">byteString</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;: &quot;</span></span><span>
+</span><span id="line-169"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679126286"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-170"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Builder
+</span><span class="hs-identifier hs-var">word8</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-identifier hs-var">_lf</span></span><span>
+</span><span id="line-171"></span><span>            </span><span class="hs-special">]</span><span>
+</span><span id="line-172"></span><span>    </span><span id="local-6989586621679126240"><span class="annot"><span class="annottext">sfBuilder :: Status
+-&gt; [(CI ByteString, ByteString)] -&gt; ByteString -&gt; String -&gt; Builder
+</span><a href="#local-6989586621679126240"><span class="hs-identifier hs-var hs-var">sfBuilder</span></a></span></span><span> </span><span id="local-6989586621679126289"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679126289"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679126290"><span class="annot"><span class="annottext">[(CI ByteString, ByteString)]
+</span><a href="#local-6989586621679126290"><span class="hs-identifier hs-var">hs</span></a></span></span><span> </span><span id="local-6989586621679126291"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126291"><span class="hs-identifier hs-var">sf</span></a></span></span><span> </span><span id="local-6989586621679126292"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126292"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-173"></span><span>        </span><span class="annot"><span class="annottext">[Builder] -&gt; Builder
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span>
+</span><span id="line-174"></span><span>            </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Status -&gt; [(CI ByteString, ByteString)] -&gt; Builder
+</span><a href="#local-6989586621679126262"><span class="hs-identifier hs-var">headers</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679126289"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">[(CI ByteString, ByteString)]
+</span><a href="#local-6989586621679126290"><span class="hs-identifier hs-var">hs</span></a></span><span>
+</span><span id="line-175"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(Builder, Builder) -&gt; Builder
+</span><a href="#local-6989586621679126268"><span class="hs-identifier hs-var">header</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">byteString</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126291"><span class="hs-identifier hs-var">sf</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">String -&gt; Builder
+</span><span class="hs-identifier hs-var">string8</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126292"><span class="hs-identifier hs-var">fp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-176"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Builder
+</span><span class="hs-identifier hs-var">word8</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-identifier hs-var">_lf</span></span><span>
+</span><span id="line-177"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">byteString</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126291"><span class="hs-identifier hs-var">sf</span></a></span><span>
+</span><span id="line-178"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">byteString</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot; not supported&quot;</span></span><span>
+</span><span id="line-179"></span><span>            </span><span class="hs-special">]</span><span>
+</span><span id="line-180"></span><span>    </span><span id="local-6989586621679126271"><span class="annot"><span class="annottext">fixHeaders :: [(CI ByteString, b)] -&gt; [(CI ByteString, b)]
+</span><a href="#local-6989586621679126271"><span class="hs-identifier hs-var hs-var">fixHeaders</span></a></span></span><span> </span><span id="local-6989586621679126297"><span class="annot"><span class="annottext">[(CI ByteString, b)]
+</span><a href="#local-6989586621679126297"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-181"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">CI ByteString -&gt; [(CI ByteString, b)] -&gt; Maybe b
+forall a b. Eq a =&gt; a -&gt; [(a, b)] -&gt; Maybe b
+</span><span class="hs-identifier hs-var">lookup</span></span><span> </span><span class="annot"><span class="annottext">CI ByteString
+</span><span class="hs-identifier hs-var">hContentType</span></span><span> </span><span class="annot"><span class="annottext">[(CI ByteString, b)]
+</span><a href="#local-6989586621679126297"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-182"></span><span>            </span><span class="annot"><span class="annottext">Maybe b
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CI ByteString
+</span><span class="hs-identifier hs-var">hContentType</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">b
+</span><span class="hs-string">&quot;text/html; charset=utf-8&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(CI ByteString, b) -&gt; [(CI ByteString, b)] -&gt; [(CI ByteString, b)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[(CI ByteString, b)]
+</span><a href="#local-6989586621679126297"><span class="hs-identifier hs-var">h</span></a></span><span>
+</span><span id="line-183"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="annot"><span class="annottext">b
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[(CI ByteString, b)]
+</span><a href="#local-6989586621679126297"><span class="hs-identifier hs-var">h</span></a></span><span>
+</span><span id="line-184"></span><span>
+</span><span id="line-185"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#cleanupVarName"><span class="hs-identifier hs-type">cleanupVarName</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">CI.CI</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span>
+</span><span id="line-186"></span><span id="cleanupVarName"><span class="annot"><span class="annottext">cleanupVarName :: String -&gt; CI ByteString
+</span><a href="Network.Wai.Handler.CGI.html#cleanupVarName"><span class="hs-identifier hs-var hs-var">cleanupVarName</span></a></span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;CONTENT_TYPE&quot;</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CI ByteString
+</span><span class="hs-identifier hs-var">hContentType</span></span><span>
+</span><span id="line-187"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#cleanupVarName"><span class="hs-identifier hs-var">cleanupVarName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;CONTENT_LENGTH&quot;</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CI ByteString
+</span><span class="hs-identifier hs-var">hContentLength</span></span><span>
+</span><span id="line-188"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#cleanupVarName"><span class="hs-identifier hs-var">cleanupVarName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;SCRIPT_NAME&quot;</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CI ByteString
+</span><span class="hs-string">&quot;CGI-Script-Name&quot;</span></span><span>
+</span><span id="line-189"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#cleanupVarName"><span class="hs-identifier hs-var">cleanupVarName</span></a></span><span> </span><span id="local-6989586621679126298"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126298"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-190"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126298"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-191"></span><span>        </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'H'</span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'T'</span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'T'</span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'P'</span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'_'</span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621679126299"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679126299"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621679126300"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126300"><span class="hs-keyword hs-var">as</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; CI ByteString
+forall a. IsString a =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">String.fromString</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; CI ByteString) -&gt; String -&gt; CI ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679126299"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; String -&gt; String
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String
+</span><a href="#local-6989586621679126301"><span class="hs-identifier hs-var">helper'</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126300"><span class="hs-keyword hs-var">as</span></a></span><span>
+</span><span id="line-192"></span><span>        </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; CI ByteString
+forall a. IsString a =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">String.fromString</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126298"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-comment">-- FIXME remove?</span><span>
+</span><span id="line-193"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-194"></span><span>    </span><span id="local-6989586621679126301"><span class="annot"><span class="annottext">helper' :: String -&gt; String
+</span><a href="#local-6989586621679126301"><span class="hs-identifier hs-var hs-var">helper'</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'_'</span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621679126302"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679126302"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621679126303"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126303"><span class="hs-identifier hs-var">rest</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'-'</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; String -&gt; String
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679126302"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; String -&gt; String
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String
+</span><a href="#local-6989586621679126301"><span class="hs-identifier hs-var">helper'</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126303"><span class="hs-identifier hs-var">rest</span></a></span><span>
+</span><span id="line-195"></span><span>    </span><span class="annot"><a href="#local-6989586621679126301"><span class="hs-identifier hs-var">helper'</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679126304"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679126304"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621679126305"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126305"><span class="hs-identifier hs-var">rest</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Char
+</span><span class="hs-identifier hs-var">toLower</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679126304"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; String -&gt; String
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String
+</span><a href="#local-6989586621679126301"><span class="hs-identifier hs-var">helper'</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679126305"><span class="hs-identifier hs-var">rest</span></a></span><span>
+</span><span id="line-196"></span><span>    </span><span class="annot"><a href="#local-6989586621679126301"><span class="hs-identifier hs-var">helper'</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-197"></span><span>
+</span><span id="line-198"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#requestBodyHandle"><span class="hs-identifier hs-type">requestBodyHandle</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Handle</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-199"></span><span id="requestBodyHandle"><span class="annot"><span class="annottext">requestBodyHandle :: Handle -&gt; Int -&gt; IO (IO ByteString)
+</span><a href="Network.Wai.Handler.CGI.html#requestBodyHandle"><span class="hs-identifier hs-var hs-var">requestBodyHandle</span></a></span></span><span> </span><span id="local-6989586621679126306"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679126306"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Int -&gt; BuilderFinish) -&gt; Int -&gt; IO (IO ByteString)
+</span><a href="Network.Wai.Handler.CGI.html#requestBodyFunc"><span class="hs-identifier hs-var">requestBodyFunc</span></a></span><span> </span><span class="annot"><span class="annottext">((Int -&gt; BuilderFinish) -&gt; Int -&gt; IO (IO ByteString))
+-&gt; (Int -&gt; BuilderFinish) -&gt; Int -&gt; IO (IO ByteString)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679126307"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126307"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-200"></span><span>    </span><span id="local-6989586621679126308"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126308"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Int -&gt; IO ByteString
+</span><span class="hs-identifier hs-var">B.hGet</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679126306"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126307"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-201"></span><span>    </span><span class="annot"><span class="annottext">Maybe ByteString -&gt; BuilderFinish
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Maybe ByteString -&gt; BuilderFinish)
+-&gt; Maybe ByteString -&gt; BuilderFinish
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">B.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126308"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe ByteString
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679126308"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-202"></span><span>
+</span><span id="line-203"></span><span class="annot"><a href="Network.Wai.Handler.CGI.html#requestBodyFunc"><span class="hs-identifier hs-type">requestBodyFunc</span></a></span><span>
+</span><span id="line-204"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-205"></span><span id="requestBodyFunc"><span class="annot"><span class="annottext">requestBodyFunc :: (Int -&gt; BuilderFinish) -&gt; Int -&gt; IO (IO ByteString)
+</span><a href="Network.Wai.Handler.CGI.html#requestBodyFunc"><span class="hs-identifier hs-var hs-var">requestBodyFunc</span></a></span></span><span> </span><span id="local-6989586621679126310"><span class="annot"><span class="annottext">Int -&gt; BuilderFinish
+</span><a href="#local-6989586621679126310"><span class="hs-identifier hs-var">get</span></a></span></span><span> </span><span id="local-6989586621679126311"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126311"><span class="hs-identifier hs-var">count0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-206"></span><span>    </span><span id="local-6989586621679126312"><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679126312"><span class="hs-identifier hs-var">ref</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (IORef Int)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126311"><span class="hs-identifier hs-var">count0</span></a></span><span>
+</span><span id="line-207"></span><span>    </span><span class="annot"><span class="annottext">IO ByteString -&gt; IO (IO ByteString)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(IO ByteString -&gt; IO (IO ByteString))
+-&gt; IO ByteString -&gt; IO (IO ByteString)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-208"></span><span>        </span><span id="local-6989586621679126313"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126313"><span class="hs-identifier hs-var">count</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef Int -&gt; IO Int
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679126312"><span class="hs-identifier hs-var">ref</span></a></span><span>
+</span><span id="line-209"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126313"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-210"></span><span>            </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">B.empty</span></span><span>
+</span><span id="line-211"></span><span>            </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-212"></span><span>                </span><span id="local-6989586621679126316"><span class="annot"><span class="annottext">Maybe ByteString
+</span><a href="#local-6989586621679126316"><span class="hs-identifier hs-var">mbs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; BuilderFinish
+</span><a href="#local-6989586621679126310"><span class="hs-identifier hs-var">get</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; BuilderFinish) -&gt; Int -&gt; BuilderFinish
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Ord a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">min</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126313"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier hs-var">defaultChunkSize</span></span><span>
+</span><span id="line-213"></span><span>                </span><span class="annot"><span class="annottext">IORef Int -&gt; Int -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679126312"><span class="hs-identifier hs-var">ref</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; IO ()) -&gt; Int -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679126313"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (ByteString -&gt; Int) -&gt; Maybe ByteString -&gt; Int
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+</span><a href="#local-6989586621679126316"><span class="hs-identifier hs-var">mbs</span></a></span><span>
+</span><span id="line-214"></span><span>                </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ByteString) -&gt; ByteString -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe ByteString -&gt; ByteString
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">B.empty</span></span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+</span><a href="#local-6989586621679126316"><span class="hs-identifier hs-var">mbs</span></a></span><span>
+</span><span id="line-215"></span></pre></body></html>

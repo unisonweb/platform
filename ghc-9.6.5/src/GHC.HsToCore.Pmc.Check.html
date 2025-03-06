@@ -1,0 +1,893 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE DeriveFunctor     #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE GADTs             #-}</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- | Coverage checking step of the</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- [Lower Your Guards paper](https://dl.acm.org/doi/abs/10.1145/3408989).</span><span>
+</span><span id="line-8"></span><span class="hs-comment">--</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- Coverage check guard trees (like @'PmMatch' 'Pre'@) to get a</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- 'CheckResult', containing</span><span>
+</span><span id="line-11"></span><span class="hs-comment">--</span><span>
+</span><span id="line-12"></span><span class="hs-comment">--   1. The set of uncovered values, 'cr_uncov'</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--   2. And an annotated tree variant (like @'PmMatch' 'Post'@) that captures</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--      redundancy and inaccessibility information as 'RedSets' annotations</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- Basically the UA function from Section 5.1, which is an optimised</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- interleaving of U and A from Section 3.2 (Figure 5).</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- The Normalised Refinement Types 'Nablas' are maintained in</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- &quot;GHC.HsToCore.Pmc.Solver&quot;.</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.HsToCore.Pmc.Check</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-21"></span><span>        </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier">CheckAction</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>        </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkMatchGroup"><span class="hs-identifier">checkMatchGroup</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkGRHSs"><span class="hs-identifier">checkGRHSs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkPatBind"><span class="hs-identifier">checkPatBind</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkEmptyCase"><span class="hs-identifier">checkEmptyCase</span></a></span><span>
+</span><span id="line-23"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Builtin.Names.html"><span class="hs-identifier">GHC.Builtin.Names</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Types.Unique.html#hasKey"><span class="hs-identifier">hasKey</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Builtin.Names.html#considerAccessibleIdKey"><span class="hs-identifier">considerAccessibleIdKey</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Builtin.Names.html#trueDataConKey"><span class="hs-identifier">trueDataConKey</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.HsToCore.Monad.html"><span class="hs-identifier">GHC.HsToCore.Monad</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.HsToCore.Types.html#DsM"><span class="hs-identifier">DsM</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html"><span class="hs-identifier">GHC.HsToCore.Pmc.Types</span></a></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Utils.html"><span class="hs-identifier">GHC.HsToCore.Pmc.Utils</span></a></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Solver.html"><span class="hs-identifier">GHC.HsToCore.Pmc.Solver</span></a></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Driver.Session.html"><span class="hs-identifier">GHC.Driver.Session</span></a></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html"><span class="hs-identifier">GHC.Utils.Outputable</span></a></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Tc.Utils.TcType.html"><span class="hs-identifier">GHC.Tc.Utils.TcType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Tc.Utils.TcType.html#evVarPred"><span class="hs-identifier">evVarPred</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Data.OrdList.html"><span class="hs-identifier">GHC.Data.OrdList</span></a></span><span>
+</span><span id="line-36"></span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Semigroup.html#/Data.Semigroup.html"><span class="hs-identifier">Data.Semigroup</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Semi</span></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.List.NonEmpty.html#/Data.List.NonEmpty.html"><span class="hs-identifier">Data.List.NonEmpty</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#NonEmpty/GHC.Base.html#NonEmpty"><span class="hs-identifier">NonEmpty</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.List.NonEmpty.html#/Data.List.NonEmpty.html"><span class="hs-identifier">Data.List.NonEmpty</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">NE</span></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Coerce.html#/Data.Coerce.html"><span class="hs-identifier">Data.Coerce</span></a></span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="annot"><span class="hs-comment">-- | Coverage checking action. Can be composed 'leftToRight' or 'topToBottom'.</span></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">newtype</span><span> </span><span id="CheckAction"><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-var">CheckAction</span></a></span></span><span> </span><span id="local-6989586621682041136"><span class="annot"><a href="#local-6989586621682041136"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="CA"><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CA"><span class="hs-identifier hs-var">CA</span></a></span></span><span> </span><span class="hs-special">{</span><span> </span><span id="unCA"><span class="annot"><span class="annottext">forall a. CheckAction a -&gt; Nablas -&gt; DsM (CheckResult a)
+</span><a href="GHC.HsToCore.Pmc.Check.html#unCA"><span class="hs-identifier hs-var hs-var">unCA</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Solver.Types.html#Nablas"><span class="hs-identifier hs-type">Nablas</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Types.html#DsM"><span class="hs-identifier hs-type">DsM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#CheckResult"><span class="hs-identifier hs-type">CheckResult</span></a></span><span> </span><span class="annot"><a href="#local-6989586621682041136"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-44"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621682041304"><span id="local-6989586621682041310"><span class="annot"><span class="annottext">(forall a b. (a -&gt; b) -&gt; CheckAction a -&gt; CheckAction b)
+-&gt; (forall a b. a -&gt; CheckAction b -&gt; CheckAction a)
+-&gt; Functor CheckAction
+forall a b. a -&gt; CheckAction b -&gt; CheckAction a
+forall a b. (a -&gt; b) -&gt; CheckAction a -&gt; CheckAction b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+$cfmap :: forall a b. (a -&gt; b) -&gt; CheckAction a -&gt; CheckAction b
+fmap :: forall a b. (a -&gt; b) -&gt; CheckAction a -&gt; CheckAction b
+$c&lt;$ :: forall a b. a -&gt; CheckAction b -&gt; CheckAction a
+&lt;$ :: forall a b. a -&gt; CheckAction b -&gt; CheckAction a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#Functor/GHC.Base.html#Functor"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></a></span></span></span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- | Composes 'CheckAction's top-to-bottom:</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- If a value falls through the resulting action, then it must fall through the</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- first action and then through the second action.</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- If a value matches the resulting action, then it either matches the</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- first action or matches the second action.</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- Basically the semantics of the LYG branching construct.</span><span>
+</span><span id="line-52"></span><span id="local-6989586621682041146"><span id="local-6989586621682041147"><span id="local-6989586621682041148"><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#topToBottom"><span class="hs-identifier hs-type">topToBottom</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621682041146"><span class="hs-identifier hs-type">top</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621682041147"><span class="hs-identifier hs-type">bot</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621682041148"><span class="hs-identifier hs-type">ret</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-53"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621682041146"><span class="hs-identifier hs-type">top</span></a></span><span>
+</span><span id="line-54"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621682041147"><span class="hs-identifier hs-type">bot</span></a></span><span>
+</span><span id="line-55"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621682041148"><span class="hs-identifier hs-type">ret</span></a></span></span></span></span><span>
+</span><span id="line-56"></span><span id="topToBottom"><span class="annot"><span class="annottext">topToBottom :: forall top bot ret.
+(top -&gt; bot -&gt; ret)
+-&gt; CheckAction top -&gt; CheckAction bot -&gt; CheckAction ret
+</span><a href="GHC.HsToCore.Pmc.Check.html#topToBottom"><span class="hs-identifier hs-var hs-var">topToBottom</span></a></span></span><span> </span><span id="local-6989586621682041319"><span class="annot"><span class="annottext">top -&gt; bot -&gt; ret
+</span><a href="#local-6989586621682041319"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CA"><span class="hs-identifier hs-type">CA</span></a></span><span> </span><span id="local-6989586621682041320"><span class="annot"><span class="annottext">Nablas -&gt; DsM (CheckResult top)
+</span><a href="#local-6989586621682041320"><span class="hs-identifier hs-var">top</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CA"><span class="hs-identifier hs-type">CA</span></a></span><span> </span><span id="local-6989586621682041321"><span class="annot"><span class="annottext">Nablas -&gt; DsM (CheckResult bot)
+</span><a href="#local-6989586621682041321"><span class="hs-identifier hs-var">bot</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Nablas -&gt; DsM (CheckResult ret)) -&gt; CheckAction ret
+forall a. (Nablas -&gt; DsM (CheckResult a)) -&gt; CheckAction a
+</span><a href="GHC.HsToCore.Pmc.Check.html#CA"><span class="hs-identifier hs-var">CA</span></a></span><span> </span><span class="annot"><span class="annottext">((Nablas -&gt; DsM (CheckResult ret)) -&gt; CheckAction ret)
+-&gt; (Nablas -&gt; DsM (CheckResult ret)) -&gt; CheckAction ret
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621682041322"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041322"><span class="hs-identifier hs-var">inc</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-57"></span><span>  </span><span id="local-6989586621682041323"><span class="annot"><span class="annottext">CheckResult top
+</span><a href="#local-6989586621682041323"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; DsM (CheckResult top)
+</span><a href="#local-6989586621682041320"><span class="hs-identifier hs-var">top</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041322"><span class="hs-identifier hs-var">inc</span></a></span><span>
+</span><span id="line-58"></span><span>  </span><span id="local-6989586621682041324"><span class="annot"><span class="annottext">CheckResult bot
+</span><a href="#local-6989586621682041324"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; DsM (CheckResult bot)
+</span><a href="#local-6989586621682041321"><span class="hs-identifier hs-var">bot</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CheckResult top -&gt; Nablas
+forall a. CheckResult a -&gt; Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult top
+</span><a href="#local-6989586621682041323"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-59"></span><span>  </span><span class="annot"><span class="annottext">CheckResult ret -&gt; DsM (CheckResult ret)
+forall a. a -&gt; IOEnv (Env DsGblEnv DsLclEnv) a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#CheckResult"><span class="hs-identifier hs-type">CheckResult</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">cr_ret :: ret
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">top -&gt; bot -&gt; ret
+</span><a href="#local-6989586621682041319"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CheckResult top -&gt; top
+forall a. CheckResult a -&gt; a
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult top
+</span><a href="#local-6989586621682041323"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CheckResult bot -&gt; bot
+forall a. CheckResult a -&gt; a
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult bot
+</span><a href="#local-6989586621682041324"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-60"></span><span>                   </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_uncov :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CheckResult bot -&gt; Nablas
+forall a. CheckResult a -&gt; Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult bot
+</span><a href="#local-6989586621682041324"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-61"></span><span>                   </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_approx :: Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CheckResult top -&gt; Precision
+forall a. CheckResult a -&gt; Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult top
+</span><a href="#local-6989586621682041323"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Precision -&gt; Precision -&gt; Precision
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-var">Semi.&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult bot -&gt; Precision
+forall a. CheckResult a -&gt; Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult bot
+</span><a href="#local-6989586621682041324"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- | Composes 'CheckAction's left-to-right:</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- If a value falls through the resulting action, then it either falls through the</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- first action or through the second action.</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- If a value matches the resulting action, then it must match the first action</span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- and then match the second action.</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- Basically the semantics of the LYG guard construct.</span><span>
+</span><span id="line-70"></span><span id="local-6989586621682041161"><span id="local-6989586621682041162"><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#leftToRight"><span class="hs-identifier hs-type">leftToRight</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#RedSets"><span class="hs-identifier hs-type">RedSets</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621682041161"><span class="hs-identifier hs-type">right</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621682041162"><span class="hs-identifier hs-type">ret</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-71"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#RedSets"><span class="hs-identifier hs-type">RedSets</span></a></span><span>
+</span><span id="line-72"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621682041161"><span class="hs-identifier hs-type">right</span></a></span><span>
+</span><span id="line-73"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621682041162"><span class="hs-identifier hs-type">ret</span></a></span></span></span><span>
+</span><span id="line-74"></span><span id="leftToRight"><span class="annot"><span class="annottext">leftToRight :: forall right ret.
+(Post -&gt; right -&gt; ret)
+-&gt; CheckAction Post -&gt; CheckAction right -&gt; CheckAction ret
+</span><a href="GHC.HsToCore.Pmc.Check.html#leftToRight"><span class="hs-identifier hs-var hs-var">leftToRight</span></a></span></span><span> </span><span id="local-6989586621682041340"><span class="annot"><span class="annottext">Post -&gt; right -&gt; ret
+</span><a href="#local-6989586621682041340"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CA"><span class="hs-identifier hs-type">CA</span></a></span><span> </span><span id="local-6989586621682041341"><span class="annot"><span class="annottext">Nablas -&gt; DsM (CheckResult Post)
+</span><a href="#local-6989586621682041341"><span class="hs-identifier hs-var">left</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CA"><span class="hs-identifier hs-type">CA</span></a></span><span> </span><span id="local-6989586621682041342"><span class="annot"><span class="annottext">Nablas -&gt; DsM (CheckResult right)
+</span><a href="#local-6989586621682041342"><span class="hs-identifier hs-var">right</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Nablas -&gt; DsM (CheckResult ret)) -&gt; CheckAction ret
+forall a. (Nablas -&gt; DsM (CheckResult a)) -&gt; CheckAction a
+</span><a href="GHC.HsToCore.Pmc.Check.html#CA"><span class="hs-identifier hs-var">CA</span></a></span><span> </span><span class="annot"><span class="annottext">((Nablas -&gt; DsM (CheckResult ret)) -&gt; CheckAction ret)
+-&gt; (Nablas -&gt; DsM (CheckResult ret)) -&gt; CheckAction ret
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621682041343"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041343"><span class="hs-identifier hs-var">inc</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-75"></span><span>  </span><span id="local-6989586621682041344"><span class="annot"><span class="annottext">CheckResult Post
+</span><a href="#local-6989586621682041344"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; DsM (CheckResult Post)
+</span><a href="#local-6989586621682041341"><span class="hs-identifier hs-var">left</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041343"><span class="hs-identifier hs-var">inc</span></a></span><span>
+</span><span id="line-76"></span><span>  </span><span id="local-6989586621682041345"><span class="annot"><span class="annottext">CheckResult right
+</span><a href="#local-6989586621682041345"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; DsM (CheckResult right)
+</span><a href="#local-6989586621682041342"><span class="hs-identifier hs-var">right</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Post -&gt; Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_cov"><span class="hs-identifier hs-var">rs_cov</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CheckResult Post -&gt; Post
+forall a. CheckResult a -&gt; a
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult Post
+</span><a href="#local-6989586621682041344"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>  </span><span id="local-6989586621682041347"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621682041347"><span class="hs-identifier hs-var">limit</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">DynFlags -&gt; Int
+</span><a href="GHC.Driver.Session.html#maxPmCheckModels"><span class="hs-identifier hs-var">maxPmCheckModels</span></a></span><span> </span><span class="annot"><span class="annottext">(DynFlags -&gt; Int)
+-&gt; IOEnv (Env DsGblEnv DsLclEnv) DynFlags
+-&gt; IOEnv (Env DsGblEnv DsLclEnv) Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">IOEnv (Env DsGblEnv DsLclEnv) DynFlags
+forall (m :: * -&gt; *). HasDynFlags m =&gt; m DynFlags
+</span><a href="GHC.Driver.Session.html#getDynFlags"><span class="hs-identifier hs-var">getDynFlags</span></a></span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621682041351"><span class="annot"><span class="annottext">uncov :: Nablas
+</span><a href="#local-6989586621682041351"><span class="hs-identifier hs-var hs-var">uncov</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CheckResult Post -&gt; Nablas
+forall a. CheckResult a -&gt; Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult Post
+</span><a href="#local-6989586621682041344"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; Nablas -&gt; Nablas
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-var">Semi.&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult right -&gt; Nablas
+forall a. CheckResult a -&gt; Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult right
+</span><a href="#local-6989586621682041345"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-79"></span><span>  </span><span class="hs-comment">-- See Note [Countering exponential blowup]</span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621682041352"><span class="annot"><span class="annottext">Precision
+</span><a href="#local-6989586621682041352"><span class="hs-identifier hs-var">prec'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621682041353"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041353"><span class="hs-identifier hs-var">uncov'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Nablas -&gt; Nablas -&gt; (Precision, Nablas)
+</span><a href="GHC.HsToCore.Pmc.Check.html#throttle"><span class="hs-identifier hs-var">throttle</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621682041347"><span class="hs-identifier hs-var">limit</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041343"><span class="hs-identifier hs-var">inc</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041351"><span class="hs-identifier hs-var">uncov</span></a></span><span>
+</span><span id="line-81"></span><span>  </span><span class="annot"><span class="annottext">CheckResult ret -&gt; DsM (CheckResult ret)
+forall a. a -&gt; IOEnv (Env DsGblEnv DsLclEnv) a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#CheckResult"><span class="hs-identifier hs-type">CheckResult</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">cr_ret :: ret
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Post -&gt; right -&gt; ret
+</span><a href="#local-6989586621682041340"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CheckResult Post -&gt; Post
+forall a. CheckResult a -&gt; a
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult Post
+</span><a href="#local-6989586621682041344"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CheckResult right -&gt; right
+forall a. CheckResult a -&gt; a
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult right
+</span><a href="#local-6989586621682041345"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span>                   </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_uncov :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041353"><span class="hs-identifier hs-var">uncov'</span></a></span><span>
+</span><span id="line-83"></span><span>                   </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_approx :: Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Precision
+</span><a href="#local-6989586621682041352"><span class="hs-identifier hs-var">prec'</span></a></span><span> </span><span class="annot"><span class="annottext">Precision -&gt; Precision -&gt; Precision
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-var">Semi.&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult Post -&gt; Precision
+forall a. CheckResult a -&gt; Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult Post
+</span><a href="#local-6989586621682041344"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Precision -&gt; Precision -&gt; Precision
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-var">Semi.&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult right -&gt; Precision
+forall a. CheckResult a -&gt; Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="annot"><span class="annottext">CheckResult right
+</span><a href="#local-6989586621682041345"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-84"></span><span>
+</span><span id="line-85"></span><span class="hs-comment">-- | @throttle limit old new@ returns @old@ if the number of 'Nabla's in @new@</span><span>
+</span><span id="line-86"></span><span class="hs-comment">-- is exceeding the given @limit@ and the @old@ number of 'Nabla's.</span><span>
+</span><span id="line-87"></span><span class="hs-comment">-- See Note [Countering exponential blowup].</span><span>
+</span><span id="line-88"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#throttle"><span class="hs-identifier hs-type">throttle</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Solver.Types.html#Nablas"><span class="hs-identifier hs-type">Nablas</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Solver.Types.html#Nablas"><span class="hs-identifier hs-type">Nablas</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Precision"><span class="hs-identifier hs-type">Precision</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Solver.Types.html#Nablas"><span class="hs-identifier hs-type">Nablas</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span id="throttle"><span class="annot"><span class="annottext">throttle :: Int -&gt; Nablas -&gt; Nablas -&gt; (Precision, Nablas)
+</span><a href="GHC.HsToCore.Pmc.Check.html#throttle"><span class="hs-identifier hs-var hs-var">throttle</span></a></span></span><span> </span><span id="local-6989586621682041355"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621682041355"><span class="hs-identifier hs-var">limit</span></a></span></span><span> </span><span id="local-6989586621682041356"><span class="annot"><span class="annottext">old :: Nablas
+</span><a href="#local-6989586621682041356"><span class="hs-identifier hs-var">old</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Solver.Types.html#MkNablas"><span class="hs-identifier hs-type">MkNablas</span></a></span><span> </span><span id="local-6989586621682041358"><span class="annot"><span class="annottext">Bag Nabla
+</span><a href="#local-6989586621682041358"><span class="hs-identifier hs-var">old_ds</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621682041359"><span class="annot"><span class="annottext">new :: Nablas
+</span><a href="#local-6989586621682041359"><span class="hs-identifier hs-var">new</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Solver.Types.html#MkNablas"><span class="hs-identifier hs-type">MkNablas</span></a></span><span> </span><span id="local-6989586621682041360"><span class="annot"><span class="annottext">Bag Nabla
+</span><a href="#local-6989586621682041360"><span class="hs-identifier hs-var">new_ds</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-90"></span><span>  </span><span class="hs-comment">--- | pprTrace &quot;PmCheck:throttle&quot; (ppr (length old_ds) &lt;+&gt; ppr (length new_ds) &lt;+&gt; ppr limit) False = undefined</span><span>
+</span><span id="line-91"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bag Nabla -&gt; Int
+forall a. Bag a -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#length/Data.Foldable.html#length"><span class="hs-identifier hs-var">length</span></a></span><span> </span><span class="annot"><span class="annottext">Bag Nabla
+</span><a href="#local-6989586621682041360"><span class="hs-identifier hs-var">new_ds</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Ord a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">max</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621682041355"><span class="hs-identifier hs-var">limit</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bag Nabla -&gt; Int
+forall a. Bag a -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#length/Data.Foldable.html#length"><span class="hs-identifier hs-var">length</span></a></span><span> </span><span class="annot"><span class="annottext">Bag Nabla
+</span><a href="#local-6989586621682041358"><span class="hs-identifier hs-var">old_ds</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#Approximate"><span class="hs-identifier hs-var">Approximate</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041356"><span class="hs-identifier hs-var">old</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-92"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>                                 </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#Precise"><span class="hs-identifier hs-var">Precise</span></a></span><span class="hs-special">,</span><span>     </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041359"><span class="hs-identifier hs-var">new</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span id="local-6989586621682041179"><span id="local-6989586621682041180"><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkSequence"><span class="hs-identifier hs-type">checkSequence</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621682041179"><span class="hs-identifier hs-type">grdtree</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621682041180"><span class="hs-identifier hs-type">anntree</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#NonEmpty/GHC.Base.html#NonEmpty"><span class="hs-identifier hs-type">NonEmpty</span></a></span><span> </span><span class="annot"><a href="#local-6989586621682041179"><span class="hs-identifier hs-type">grdtree</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#NonEmpty/GHC.Base.html#NonEmpty"><span class="hs-identifier hs-type">NonEmpty</span></a></span><span> </span><span class="annot"><a href="#local-6989586621682041180"><span class="hs-identifier hs-type">anntree</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-95"></span><span class="hs-comment">-- The implementation is pretty similar to</span><span>
+</span><span id="line-96"></span><span class="hs-comment">-- @traverse1 :: Apply f =&gt; (a -&gt; f b) -&gt; NonEmpty a -&gt; f (NonEmpty b)@</span><span>
+</span><span id="line-97"></span><span id="checkSequence"><span class="annot"><span class="annottext">checkSequence :: forall grdtree anntree.
+(grdtree -&gt; CheckAction anntree)
+-&gt; NonEmpty grdtree -&gt; CheckAction (NonEmpty anntree)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkSequence"><span class="hs-identifier hs-var hs-var">checkSequence</span></a></span></span><span> </span><span id="local-6989586621682041368"><span class="annot"><span class="annottext">grdtree -&gt; CheckAction anntree
+</span><a href="#local-6989586621682041368"><span class="hs-identifier hs-var">act</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621682041369"><span class="annot"><span class="annottext">grdtree
+</span><a href="#local-6989586621682041369"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#%3A%7C/GHC.Base.html#%3A%7C"><span class="hs-operator hs-type">:|</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">anntree -&gt; [anntree] -&gt; NonEmpty anntree
+forall a. a -&gt; [a] -&gt; NonEmpty a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3A%7C/GHC.Base.html#%3A%7C"><span class="hs-operator hs-var">:|</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(anntree -&gt; NonEmpty anntree)
+-&gt; CheckAction anntree -&gt; CheckAction (NonEmpty anntree)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">grdtree -&gt; CheckAction anntree
+</span><a href="#local-6989586621682041368"><span class="hs-identifier hs-var">act</span></a></span><span> </span><span class="annot"><span class="annottext">grdtree
+</span><a href="#local-6989586621682041369"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-98"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkSequence"><span class="hs-identifier hs-var">checkSequence</span></a></span><span> </span><span id="local-6989586621682041371"><span class="annot"><span class="annottext">grdtree -&gt; CheckAction anntree
+</span><a href="#local-6989586621682041371"><span class="hs-identifier hs-var">act</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621682041372"><span class="annot"><span class="annottext">grdtree
+</span><a href="#local-6989586621682041372"><span class="hs-identifier hs-var">t1</span></a></span></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#%3A%7C/GHC.Base.html#%3A%7C"><span class="hs-operator hs-type">:|</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621682041373"><span class="annot"><span class="annottext">grdtree
+</span><a href="#local-6989586621682041373"><span class="hs-identifier hs-var">t2</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621682041374"><span class="annot"><span class="annottext">[grdtree]
+</span><a href="#local-6989586621682041374"><span class="hs-identifier hs-var">ts</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-99"></span><span>  </span><span class="annot"><span class="annottext">(anntree -&gt; NonEmpty anntree -&gt; NonEmpty anntree)
+-&gt; CheckAction anntree
+-&gt; CheckAction (NonEmpty anntree)
+-&gt; CheckAction (NonEmpty anntree)
+forall top bot ret.
+(top -&gt; bot -&gt; ret)
+-&gt; CheckAction top -&gt; CheckAction bot -&gt; CheckAction ret
+</span><a href="GHC.HsToCore.Pmc.Check.html#topToBottom"><span class="hs-identifier hs-var">topToBottom</span></a></span><span> </span><span class="annot"><span class="annottext">anntree -&gt; NonEmpty anntree -&gt; NonEmpty anntree
+forall a. a -&gt; NonEmpty a -&gt; NonEmpty a
+</span><a href="../../base-4.18.2.1/src/Data.List.NonEmpty.html#%3C%7C/Data.List.NonEmpty.html#%3C%7C"><span class="hs-operator hs-var">(NE.&lt;|)</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">grdtree -&gt; CheckAction anntree
+</span><a href="#local-6989586621682041371"><span class="hs-identifier hs-var">act</span></a></span><span> </span><span class="annot"><span class="annottext">grdtree
+</span><a href="#local-6989586621682041372"><span class="hs-identifier hs-var">t1</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(grdtree -&gt; CheckAction anntree)
+-&gt; NonEmpty grdtree -&gt; CheckAction (NonEmpty anntree)
+forall grdtree anntree.
+(grdtree -&gt; CheckAction anntree)
+-&gt; NonEmpty grdtree -&gt; CheckAction (NonEmpty anntree)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkSequence"><span class="hs-identifier hs-var">checkSequence</span></a></span><span> </span><span class="annot"><span class="annottext">grdtree -&gt; CheckAction anntree
+</span><a href="#local-6989586621682041371"><span class="hs-identifier hs-var">act</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">grdtree
+</span><a href="#local-6989586621682041373"><span class="hs-identifier hs-var">t2</span></a></span><span class="annot"><span class="annottext">grdtree -&gt; [grdtree] -&gt; NonEmpty grdtree
+forall a. a -&gt; [a] -&gt; NonEmpty a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3A%7C/GHC.Base.html#%3A%7C"><span class="hs-operator hs-var">:|</span></a></span><span class="annot"><span class="annottext">[grdtree]
+</span><a href="#local-6989586621682041374"><span class="hs-identifier hs-var">ts</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#emptyRedSets"><span class="hs-identifier hs-type">emptyRedSets</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#RedSets"><span class="hs-identifier hs-type">RedSets</span></a></span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- Semigroup instance would be misleading!</span><span>
+</span><span id="line-103"></span><span id="emptyRedSets"><span class="annot"><span class="annottext">emptyRedSets :: Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#emptyRedSets"><span class="hs-identifier hs-var hs-var">emptyRedSets</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; Nablas -&gt; OrdList (Nablas, SrcInfo) -&gt; Post
+</span><a href="GHC.HsToCore.Pmc.Types.html#RedSets"><span class="hs-identifier hs-var">RedSets</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+forall a. Monoid a =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mempty/GHC.Base.html#mempty"><span class="hs-identifier hs-var">mempty</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+forall a. Monoid a =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mempty/GHC.Base.html#mempty"><span class="hs-identifier hs-var">mempty</span></a></span><span> </span><span class="annot"><span class="annottext">OrdList (Nablas, SrcInfo)
+forall a. Monoid a =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mempty/GHC.Base.html#mempty"><span class="hs-identifier hs-var">mempty</span></a></span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkGrd"><span class="hs-identifier hs-type">checkGrd</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmGrd"><span class="hs-identifier hs-type">PmGrd</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#RedSets"><span class="hs-identifier hs-type">RedSets</span></a></span><span>
+</span><span id="line-106"></span><span id="checkGrd"><span class="annot"><span class="annottext">checkGrd :: PmGrd -&gt; CheckAction Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGrd"><span class="hs-identifier hs-var hs-var">checkGrd</span></a></span></span><span> </span><span id="local-6989586621682041378"><span class="annot"><span class="annottext">PmGrd
+</span><a href="#local-6989586621682041378"><span class="hs-identifier hs-var">grd</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Nablas -&gt; DsM (CheckResult Post)) -&gt; CheckAction Post
+forall a. (Nablas -&gt; DsM (CheckResult a)) -&gt; CheckAction a
+</span><a href="GHC.HsToCore.Pmc.Check.html#CA"><span class="hs-identifier hs-var">CA</span></a></span><span> </span><span class="annot"><span class="annottext">((Nablas -&gt; DsM (CheckResult Post)) -&gt; CheckAction Post)
+-&gt; (Nablas -&gt; DsM (CheckResult Post)) -&gt; CheckAction Post
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621682041379"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041379"><span class="hs-identifier hs-var">inc</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">PmGrd
+</span><a href="#local-6989586621682041378"><span class="hs-identifier hs-var">grd</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-107"></span><span>  </span><span class="hs-comment">-- let x = e: Refine with x ~ e</span><span>
+</span><span id="line-108"></span><span>  </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmLet"><span class="hs-identifier hs-type">PmLet</span></a></span><span> </span><span id="local-6989586621682041381"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041381"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621682041382"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621682041382"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-109"></span><span>    </span><span id="local-6989586621682041383"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041383"><span class="hs-identifier hs-var">matched</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; PhiCt -&gt; DsM Nablas
+</span><a href="GHC.HsToCore.Pmc.Solver.html#addPhiCtNablas"><span class="hs-identifier hs-var">addPhiCtNablas</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041379"><span class="hs-identifier hs-var">inc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; CoreExpr -&gt; PhiCt
+</span><a href="GHC.HsToCore.Pmc.Solver.html#PhiCoreCt"><span class="hs-identifier hs-var">PhiCoreCt</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041381"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621682041382"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-110"></span><span>    </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; DsM ()
+</span><a href="GHC.HsToCore.Pmc.Utils.html#tracePm"><span class="hs-identifier hs-var">tracePm</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;check:Let&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041381"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; SDoc
+forall doc. IsLine doc =&gt; Char -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#char"><span class="hs-identifier hs-var">char</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'='</span></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621682041382"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-111"></span><span>    </span><span class="annot"><span class="annottext">CheckResult Post -&gt; DsM (CheckResult Post)
+forall a. a -&gt; IOEnv (Env DsGblEnv DsLclEnv) a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#CheckResult"><span class="hs-identifier hs-type">CheckResult</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">cr_ret :: Post
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#emptyRedSets"><span class="hs-identifier hs-var">emptyRedSets</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#rs_cov"><span class="hs-identifier hs-var">rs_cov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621682041383"><span class="hs-identifier hs-type">matched</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-112"></span><span>                     </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_uncov :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nablas
+forall a. Monoid a =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mempty/GHC.Base.html#mempty"><span class="hs-identifier hs-var">mempty</span></a></span><span>
+</span><span id="line-113"></span><span>                     </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_approx :: Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#Precise"><span class="hs-identifier hs-var">Precise</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-114"></span><span>  </span><span class="hs-comment">-- Bang x _: Diverge on x ~ &#8869;, refine with x &#8769; &#8869;</span><span>
+</span><span id="line-115"></span><span>  </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmBang"><span class="hs-identifier hs-type">PmBang</span></a></span><span> </span><span id="local-6989586621682041391"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041391"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621682041392"><span class="annot"><span class="annottext">Maybe SrcInfo
+</span><a href="#local-6989586621682041392"><span class="hs-identifier hs-var">mb_info</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-116"></span><span>    </span><span id="local-6989586621682041393"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041393"><span class="hs-identifier hs-var">div</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; PhiCt -&gt; DsM Nablas
+</span><a href="GHC.HsToCore.Pmc.Solver.html#addPhiCtNablas"><span class="hs-identifier hs-var">addPhiCtNablas</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041379"><span class="hs-identifier hs-var">inc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; PhiCt
+</span><a href="GHC.HsToCore.Pmc.Solver.html#PhiBotCt"><span class="hs-identifier hs-var">PhiBotCt</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041391"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-117"></span><span>    </span><span id="local-6989586621682041395"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041395"><span class="hs-identifier hs-var">matched</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; PhiCt -&gt; DsM Nablas
+</span><a href="GHC.HsToCore.Pmc.Solver.html#addPhiCtNablas"><span class="hs-identifier hs-var">addPhiCtNablas</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041379"><span class="hs-identifier hs-var">inc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; PhiCt
+</span><a href="GHC.HsToCore.Pmc.Solver.html#PhiNotBotCt"><span class="hs-identifier hs-var">PhiNotBotCt</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041391"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-118"></span><span>    </span><span class="hs-comment">-- See Note [Dead bang patterns]</span><span>
+</span><span id="line-119"></span><span>    </span><span class="hs-comment">-- mb_info = Just info &lt;==&gt; PmBang originates from bang pattern in source</span><span>
+</span><span id="line-120"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621682041397"><span class="annot"><span class="annottext">bangs :: OrdList (Nablas, SrcInfo)
+</span><a href="#local-6989586621682041397"><span class="hs-identifier hs-var hs-var">bangs</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621682041398"><span class="annot"><span class="annottext">SrcInfo
+</span><a href="#local-6989586621682041398"><span class="hs-identifier hs-var">info</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe SrcInfo
+</span><a href="#local-6989586621682041392"><span class="hs-identifier hs-var">mb_info</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Nablas, SrcInfo) -&gt; OrdList (Nablas, SrcInfo)
+forall a. a -&gt; OrdList a
+</span><a href="GHC.Data.OrdList.html#unitOL"><span class="hs-identifier hs-var">unitOL</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041393"><span class="hs-identifier hs-var">div</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SrcInfo
+</span><a href="#local-6989586621682041398"><span class="hs-identifier hs-var">info</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-121"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>            </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OrdList (Nablas, SrcInfo)
+forall a. OrdList a
+</span><a href="GHC.Data.OrdList.html#NilOL"><span class="hs-identifier hs-var">NilOL</span></a></span><span>
+</span><span id="line-122"></span><span>    </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; DsM ()
+</span><a href="GHC.HsToCore.Pmc.Utils.html#tracePm"><span class="hs-identifier hs-var">tracePm</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;check:Bang&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041391"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041393"><span class="hs-identifier hs-var">div</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>    </span><span class="annot"><span class="annottext">CheckResult Post -&gt; DsM (CheckResult Post)
+forall a. a -&gt; IOEnv (Env DsGblEnv DsLclEnv) a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#CheckResult"><span class="hs-identifier hs-type">CheckResult</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">cr_ret :: Post
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#RedSets"><span class="hs-identifier hs-type">RedSets</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">rs_cov :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_cov"><span class="hs-identifier hs-var">rs_cov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041395"><span class="hs-identifier hs-var">matched</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">rs_div :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_div"><span class="hs-identifier hs-var">rs_div</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041393"><span class="hs-identifier hs-var">div</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">rs_bangs :: OrdList (Nablas, SrcInfo)
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_bangs"><span class="hs-identifier hs-var">rs_bangs</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OrdList (Nablas, SrcInfo)
+</span><a href="#local-6989586621682041397"><span class="hs-identifier hs-var">bangs</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-124"></span><span>                     </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_uncov :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nablas
+forall a. Monoid a =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mempty/GHC.Base.html#mempty"><span class="hs-identifier hs-var">mempty</span></a></span><span>
+</span><span id="line-125"></span><span>                     </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_approx :: Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#Precise"><span class="hs-identifier hs-var">Precise</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-126"></span><span>  </span><span class="hs-comment">-- See point (3) of Note [considerAccessible]</span><span>
+</span><span id="line-127"></span><span>  </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmCon"><span class="hs-identifier hs-type">PmCon</span></a></span><span> </span><span id="local-6989586621682041404"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041404"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Solver.Types.html#PmAltConLike"><span class="hs-identifier hs-type">PmAltConLike</span></a></span><span> </span><span id="local-6989586621682041406"><span class="annot"><span class="annottext">ConLike
+</span><a href="#local-6989586621682041406"><span class="hs-identifier hs-var">con</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><span class="hs-identifier">_</span></span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041404"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Id -&gt; Unique -&gt; Bool
+forall a. Uniquable a =&gt; a -&gt; Unique -&gt; Bool
+</span><a href="GHC.Types.Unique.html#hasKey"><span class="hs-operator hs-var">`hasKey`</span></a></span><span> </span><span class="annot"><span class="annottext">Unique
+</span><a href="GHC.Builtin.Names.html#considerAccessibleIdKey"><span class="hs-identifier hs-var">considerAccessibleIdKey</span></a></span><span>
+</span><span id="line-129"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ConLike
+</span><a href="#local-6989586621682041406"><span class="hs-identifier hs-var">con</span></a></span><span> </span><span class="annot"><span class="annottext">ConLike -&gt; Unique -&gt; Bool
+forall a. Uniquable a =&gt; a -&gt; Unique -&gt; Bool
+</span><a href="GHC.Types.Unique.html#hasKey"><span class="hs-operator hs-var">`hasKey`</span></a></span><span> </span><span class="annot"><span class="annottext">Unique
+</span><a href="GHC.Builtin.Names.html#trueDataConKey"><span class="hs-identifier hs-var">trueDataConKey</span></a></span><span>
+</span><span id="line-130"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">CheckResult Post -&gt; DsM (CheckResult Post)
+forall a. a -&gt; IOEnv (Env DsGblEnv DsLclEnv) a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#CheckResult"><span class="hs-identifier hs-type">CheckResult</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">cr_ret :: Post
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#emptyRedSets"><span class="hs-identifier hs-var">emptyRedSets</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#rs_cov"><span class="hs-identifier hs-var">rs_cov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Solver.Types.html#initNablas"><span class="hs-identifier hs-type">initNablas</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-131"></span><span>                        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_uncov :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nablas
+forall a. Monoid a =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mempty/GHC.Base.html#mempty"><span class="hs-identifier hs-var">mempty</span></a></span><span>
+</span><span id="line-132"></span><span>                        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_approx :: Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#Precise"><span class="hs-identifier hs-var">Precise</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-133"></span><span>  </span><span class="hs-comment">-- Con: Fall through on x &#8769; K and refine with x ~ K ys and type info</span><span>
+</span><span id="line-134"></span><span>  </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmCon"><span class="hs-identifier hs-type">PmCon</span></a></span><span> </span><span id="local-6989586621682041408"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041408"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621682041409"><span class="annot"><span class="annottext">PmAltCon
+</span><a href="#local-6989586621682041409"><span class="hs-identifier hs-var">con</span></a></span></span><span> </span><span id="local-6989586621682041410"><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621682041410"><span class="hs-identifier hs-var">tvs</span></a></span></span><span> </span><span id="local-6989586621682041411"><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621682041411"><span class="hs-identifier hs-var">dicts</span></a></span></span><span> </span><span id="local-6989586621682041412"><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621682041412"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-135"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621682041413"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041413"><span class="hs-identifier hs-var">div</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">PmAltCon -&gt; Bool
+</span><a href="GHC.HsToCore.Pmc.Solver.Types.html#isPmAltConMatchStrict"><span class="hs-identifier hs-var">isPmAltConMatchStrict</span></a></span><span> </span><span class="annot"><span class="annottext">PmAltCon
+</span><a href="#local-6989586621682041409"><span class="hs-identifier hs-var">con</span></a></span><span>
+</span><span id="line-136"></span><span>      </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; PhiCt -&gt; DsM Nablas
+</span><a href="GHC.HsToCore.Pmc.Solver.html#addPhiCtNablas"><span class="hs-identifier hs-var">addPhiCtNablas</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041379"><span class="hs-identifier hs-var">inc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; PhiCt
+</span><a href="GHC.HsToCore.Pmc.Solver.html#PhiBotCt"><span class="hs-identifier hs-var">PhiBotCt</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041408"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-137"></span><span>      </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; DsM Nablas
+forall a. a -&gt; IOEnv (Env DsGblEnv DsLclEnv) a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+forall a. Monoid a =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mempty/GHC.Base.html#mempty"><span class="hs-identifier hs-var">mempty</span></a></span><span>
+</span><span id="line-138"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621682041415"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041415"><span class="hs-identifier hs-var">matched</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; PhiCt -&gt; DsM Nablas
+</span><a href="GHC.HsToCore.Pmc.Solver.html#addPhiCtNablas"><span class="hs-identifier hs-var">addPhiCtNablas</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041379"><span class="hs-identifier hs-var">inc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; PmAltCon -&gt; [Id] -&gt; [PredType] -&gt; [Id] -&gt; PhiCt
+</span><a href="GHC.HsToCore.Pmc.Solver.html#PhiConCt"><span class="hs-identifier hs-var">PhiConCt</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041408"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">PmAltCon
+</span><a href="#local-6989586621682041409"><span class="hs-identifier hs-var">con</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621682041410"><span class="hs-identifier hs-var">tvs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Id -&gt; PredType) -&gt; [Id] -&gt; [PredType]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">Id -&gt; PredType
+</span><a href="GHC.Tc.Utils.TcType.html#evVarPred"><span class="hs-identifier hs-var">evVarPred</span></a></span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621682041411"><span class="hs-identifier hs-var">dicts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Id]
+</span><a href="#local-6989586621682041412"><span class="hs-identifier hs-var">args</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621682041417"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041417"><span class="hs-identifier hs-var">uncov</span></a></span></span><span>   </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; PhiCt -&gt; DsM Nablas
+</span><a href="GHC.HsToCore.Pmc.Solver.html#addPhiCtNablas"><span class="hs-identifier hs-var">addPhiCtNablas</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041379"><span class="hs-identifier hs-var">inc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; PmAltCon -&gt; PhiCt
+</span><a href="GHC.HsToCore.Pmc.Solver.html#PhiNotConCt"><span class="hs-identifier hs-var">PhiNotConCt</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041408"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">PmAltCon
+</span><a href="#local-6989586621682041409"><span class="hs-identifier hs-var">con</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-140"></span><span>    </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; DsM ()
+</span><a href="GHC.HsToCore.Pmc.Utils.html#tracePm"><span class="hs-identifier hs-var">tracePm</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;check:Con&quot;</span></span><span> </span><span class="annot"><span class="annottext">(SDoc -&gt; DsM ()) -&gt; SDoc -&gt; DsM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[SDoc] -&gt; SDoc
+forall doc. IsDoc doc =&gt; [doc] -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#vcat"><span class="hs-identifier hs-var">vcat</span></a></span><span>
+</span><span id="line-141"></span><span>      </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">PmGrd -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">PmGrd
+</span><a href="#local-6989586621682041378"><span class="hs-identifier hs-var">grd</span></a></span><span>
+</span><span id="line-142"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041379"><span class="hs-identifier hs-var">inc</span></a></span><span>
+</span><span id="line-143"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; Int -&gt; SDoc -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#hang"><span class="hs-identifier hs-var">hang</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;div&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Nablas -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041413"><span class="hs-identifier hs-var">div</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; Int -&gt; SDoc -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#hang"><span class="hs-identifier hs-var">hang</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;matched&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Nablas -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041415"><span class="hs-identifier hs-var">matched</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-145"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; Int -&gt; SDoc -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#hang"><span class="hs-identifier hs-var">hang</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; SDoc
+forall doc. IsLine doc =&gt; String -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#text"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;uncov&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Nablas -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041417"><span class="hs-identifier hs-var">uncov</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-146"></span><span>      </span><span class="hs-special">]</span><span>
+</span><span id="line-147"></span><span>    </span><span class="annot"><span class="annottext">CheckResult Post -&gt; DsM (CheckResult Post)
+forall a. a -&gt; IOEnv (Env DsGblEnv DsLclEnv) a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#CheckResult"><span class="hs-identifier hs-type">CheckResult</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">cr_ret :: Post
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#emptyRedSets"><span class="hs-identifier hs-var">emptyRedSets</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#rs_cov"><span class="hs-identifier hs-var">rs_cov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621682041415"><span class="hs-identifier hs-type">matched</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#rs_div"><span class="hs-identifier hs-var">rs_div</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621682041413"><span class="hs-identifier hs-type">div</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-148"></span><span>                     </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_uncov :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041417"><span class="hs-identifier hs-var">uncov</span></a></span><span>
+</span><span id="line-149"></span><span>                     </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_approx :: Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#Precise"><span class="hs-identifier hs-var">Precise</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-150"></span><span>
+</span><span id="line-151"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkGrds"><span class="hs-identifier hs-type">checkGrds</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmGrd"><span class="hs-identifier hs-type">PmGrd</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#RedSets"><span class="hs-identifier hs-type">RedSets</span></a></span><span>
+</span><span id="line-152"></span><span id="checkGrds"><span class="annot"><span class="annottext">checkGrds :: [PmGrd] -&gt; CheckAction Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGrds"><span class="hs-identifier hs-var hs-var">checkGrds</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Nablas -&gt; DsM (CheckResult Post)) -&gt; CheckAction Post
+forall a. (Nablas -&gt; DsM (CheckResult a)) -&gt; CheckAction a
+</span><a href="GHC.HsToCore.Pmc.Check.html#CA"><span class="hs-identifier hs-var">CA</span></a></span><span> </span><span class="annot"><span class="annottext">((Nablas -&gt; DsM (CheckResult Post)) -&gt; CheckAction Post)
+-&gt; (Nablas -&gt; DsM (CheckResult Post)) -&gt; CheckAction Post
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621682041423"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041423"><span class="hs-identifier hs-var">inc</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-153"></span><span>  </span><span class="annot"><span class="annottext">CheckResult Post -&gt; DsM (CheckResult Post)
+forall a. a -&gt; IOEnv (Env DsGblEnv DsLclEnv) a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#CheckResult"><span class="hs-identifier hs-type">CheckResult</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">cr_ret :: Post
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#emptyRedSets"><span class="hs-identifier hs-var">emptyRedSets</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#rs_cov"><span class="hs-identifier hs-var">rs_cov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621682041423"><span class="hs-identifier hs-type">inc</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-154"></span><span>                   </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_uncov :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nablas
+forall a. Monoid a =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mempty/GHC.Base.html#mempty"><span class="hs-identifier hs-var">mempty</span></a></span><span>
+</span><span id="line-155"></span><span>                   </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_approx :: Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#Precise"><span class="hs-identifier hs-var">Precise</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-156"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkGrds"><span class="hs-identifier hs-var">checkGrds</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621682041424"><span class="annot"><span class="annottext">PmGrd
+</span><a href="#local-6989586621682041424"><span class="hs-identifier hs-var">g</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621682041425"><span class="annot"><span class="annottext">[PmGrd]
+</span><a href="#local-6989586621682041425"><span class="hs-identifier hs-var">grds</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Post -&gt; Post -&gt; Post)
+-&gt; CheckAction Post -&gt; CheckAction Post -&gt; CheckAction Post
+forall right ret.
+(Post -&gt; right -&gt; ret)
+-&gt; CheckAction Post -&gt; CheckAction right -&gt; CheckAction ret
+</span><a href="GHC.HsToCore.Pmc.Check.html#leftToRight"><span class="hs-identifier hs-var">leftToRight</span></a></span><span> </span><span class="annot"><span class="annottext">Post -&gt; Post -&gt; Post
+</span><a href="#local-6989586621682041426"><span class="hs-identifier hs-var">merge</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PmGrd -&gt; CheckAction Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGrd"><span class="hs-identifier hs-var">checkGrd</span></a></span><span> </span><span class="annot"><span class="annottext">PmGrd
+</span><a href="#local-6989586621682041424"><span class="hs-identifier hs-var">g</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[PmGrd] -&gt; CheckAction Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGrds"><span class="hs-identifier hs-var">checkGrds</span></a></span><span> </span><span class="annot"><span class="annottext">[PmGrd]
+</span><a href="#local-6989586621682041425"><span class="hs-identifier hs-var">grds</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-157"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-158"></span><span>    </span><span id="local-6989586621682041426"><span class="annot"><span class="annottext">merge :: Post -&gt; Post -&gt; Post
+</span><a href="#local-6989586621682041426"><span class="hs-identifier hs-var hs-var">merge</span></a></span></span><span> </span><span id="local-6989586621682041430"><span class="annot"><span class="annottext">Post
+</span><a href="#local-6989586621682041430"><span class="hs-identifier hs-var">ri_g</span></a></span></span><span> </span><span id="local-6989586621682041431"><span class="annot"><span class="annottext">Post
+</span><a href="#local-6989586621682041431"><span class="hs-identifier hs-var">ri_grds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-comment">-- This operation would /not/ form a Semigroup!</span><span>
+</span><span id="line-159"></span><span>      </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#RedSets"><span class="hs-identifier hs-type">RedSets</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">rs_cov :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_cov"><span class="hs-identifier hs-var">rs_cov</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Post -&gt; Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_cov"><span class="hs-identifier hs-var">rs_cov</span></a></span><span> </span><span class="annot"><span class="annottext">Post
+</span><a href="#local-6989586621682041431"><span class="hs-identifier hs-var">ri_grds</span></a></span><span>
+</span><span id="line-160"></span><span>              </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">rs_div :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_div"><span class="hs-identifier hs-var">rs_div</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Post -&gt; Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_div"><span class="hs-identifier hs-var">rs_div</span></a></span><span> </span><span class="annot"><span class="annottext">Post
+</span><a href="#local-6989586621682041430"><span class="hs-identifier hs-var">ri_g</span></a></span><span>   </span><span class="annot"><span class="annottext">Nablas -&gt; Nablas -&gt; Nablas
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-var">Semi.&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Post -&gt; Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_div"><span class="hs-identifier hs-var">rs_div</span></a></span><span> </span><span class="annot"><span class="annottext">Post
+</span><a href="#local-6989586621682041431"><span class="hs-identifier hs-var">ri_grds</span></a></span><span>
+</span><span id="line-161"></span><span>              </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">rs_bangs :: OrdList (Nablas, SrcInfo)
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_bangs"><span class="hs-identifier hs-var">rs_bangs</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Post -&gt; OrdList (Nablas, SrcInfo)
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_bangs"><span class="hs-identifier hs-var">rs_bangs</span></a></span><span> </span><span class="annot"><span class="annottext">Post
+</span><a href="#local-6989586621682041430"><span class="hs-identifier hs-var">ri_g</span></a></span><span> </span><span class="annot"><span class="annottext">OrdList (Nablas, SrcInfo)
+-&gt; OrdList (Nablas, SrcInfo) -&gt; OrdList (Nablas, SrcInfo)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%3E/GHC.Base.html#%3C%3E"><span class="hs-operator hs-var">Semi.&lt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Post -&gt; OrdList (Nablas, SrcInfo)
+</span><a href="GHC.HsToCore.Pmc.Types.html#rs_bangs"><span class="hs-identifier hs-var">rs_bangs</span></a></span><span> </span><span class="annot"><span class="annottext">Post
+</span><a href="#local-6989586621682041431"><span class="hs-identifier hs-var">ri_grds</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-162"></span><span>
+</span><span id="line-163"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkMatchGroup"><span class="hs-identifier hs-type">checkMatchGroup</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmMatchGroup"><span class="hs-identifier hs-type">PmMatchGroup</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Pre"><span class="hs-identifier hs-type">Pre</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmMatchGroup"><span class="hs-identifier hs-type">PmMatchGroup</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Post"><span class="hs-identifier hs-type">Post</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-164"></span><span id="checkMatchGroup"><span class="annot"><span class="annottext">checkMatchGroup :: PmMatchGroup Pre -&gt; CheckAction (PmMatchGroup Post)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkMatchGroup"><span class="hs-identifier hs-var hs-var">checkMatchGroup</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmMatchGroup"><span class="hs-identifier hs-type">PmMatchGroup</span></a></span><span> </span><span id="local-6989586621682041433"><span class="annot"><span class="annottext">NonEmpty (PmMatch Pre)
+</span><a href="#local-6989586621682041433"><span class="hs-identifier hs-var">matches</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-165"></span><span>  </span><span class="annot"><span class="annottext">NonEmpty (PmMatch Post) -&gt; PmMatchGroup Post
+forall p. NonEmpty (PmMatch p) -&gt; PmMatchGroup p
+</span><a href="GHC.HsToCore.Pmc.Types.html#PmMatchGroup"><span class="hs-identifier hs-var">PmMatchGroup</span></a></span><span> </span><span class="annot"><span class="annottext">(NonEmpty (PmMatch Post) -&gt; PmMatchGroup Post)
+-&gt; CheckAction (NonEmpty (PmMatch Post))
+-&gt; CheckAction (PmMatchGroup Post)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">(PmMatch Pre -&gt; CheckAction (PmMatch Post))
+-&gt; NonEmpty (PmMatch Pre) -&gt; CheckAction (NonEmpty (PmMatch Post))
+forall grdtree anntree.
+(grdtree -&gt; CheckAction anntree)
+-&gt; NonEmpty grdtree -&gt; CheckAction (NonEmpty anntree)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkSequence"><span class="hs-identifier hs-var">checkSequence</span></a></span><span> </span><span class="annot"><span class="annottext">PmMatch Pre -&gt; CheckAction (PmMatch Post)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkMatch"><span class="hs-identifier hs-var">checkMatch</span></a></span><span> </span><span class="annot"><span class="annottext">NonEmpty (PmMatch Pre)
+</span><a href="#local-6989586621682041433"><span class="hs-identifier hs-var">matches</span></a></span><span>
+</span><span id="line-166"></span><span>
+</span><span id="line-167"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkMatch"><span class="hs-identifier hs-type">checkMatch</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmMatch"><span class="hs-identifier hs-type">PmMatch</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Pre"><span class="hs-identifier hs-type">Pre</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmMatch"><span class="hs-identifier hs-type">PmMatch</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Post"><span class="hs-identifier hs-type">Post</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-168"></span><span id="checkMatch"><span class="annot"><span class="annottext">checkMatch :: PmMatch Pre -&gt; CheckAction (PmMatch Post)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkMatch"><span class="hs-identifier hs-var hs-var">checkMatch</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmMatch"><span class="hs-identifier hs-type">PmMatch</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">pm_pats :: forall p. PmMatch p -&gt; p
+</span><a href="GHC.HsToCore.Pmc.Types.html#pm_pats"><span class="hs-identifier hs-var">pm_pats</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#GrdVec"><span class="hs-identifier hs-type">GrdVec</span></a></span><span> </span><span id="local-6989586621682041437"><span class="annot"><span class="annottext">[PmGrd]
+</span><a href="#local-6989586621682041437"><span class="hs-identifier hs-var">grds</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">pm_grhss :: forall p. PmMatch p -&gt; PmGRHSs p
+</span><a href="GHC.HsToCore.Pmc.Types.html#pm_grhss"><span class="hs-identifier hs-var">pm_grhss</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621682041439"><span class="annot"><span class="annottext">PmGRHSs Pre
+</span><a href="#local-6989586621682041439"><span class="hs-identifier hs-var">grhss</span></a></span></span><span> </span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-169"></span><span>  </span><span class="annot"><span class="annottext">(Post -&gt; PmGRHSs Post -&gt; PmMatch Post)
+-&gt; CheckAction Post
+-&gt; CheckAction (PmGRHSs Post)
+-&gt; CheckAction (PmMatch Post)
+forall right ret.
+(Post -&gt; right -&gt; ret)
+-&gt; CheckAction Post -&gt; CheckAction right -&gt; CheckAction ret
+</span><a href="GHC.HsToCore.Pmc.Check.html#leftToRight"><span class="hs-identifier hs-var">leftToRight</span></a></span><span> </span><span class="annot"><span class="annottext">Post -&gt; PmGRHSs Post -&gt; PmMatch Post
+forall p. p -&gt; PmGRHSs p -&gt; PmMatch p
+</span><a href="GHC.HsToCore.Pmc.Types.html#PmMatch"><span class="hs-identifier hs-var">PmMatch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[PmGrd] -&gt; CheckAction Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGrds"><span class="hs-identifier hs-var">checkGrds</span></a></span><span> </span><span class="annot"><span class="annottext">[PmGrd]
+</span><a href="#local-6989586621682041437"><span class="hs-identifier hs-var">grds</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PmGRHSs Pre -&gt; CheckAction (PmGRHSs Post)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGRHSs"><span class="hs-identifier hs-var">checkGRHSs</span></a></span><span> </span><span class="annot"><span class="annottext">PmGRHSs Pre
+</span><a href="#local-6989586621682041439"><span class="hs-identifier hs-var">grhss</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-170"></span><span>
+</span><span id="line-171"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkGRHSs"><span class="hs-identifier hs-type">checkGRHSs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmGRHSs"><span class="hs-identifier hs-type">PmGRHSs</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Pre"><span class="hs-identifier hs-type">Pre</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmGRHSs"><span class="hs-identifier hs-type">PmGRHSs</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Post"><span class="hs-identifier hs-type">Post</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-172"></span><span id="checkGRHSs"><span class="annot"><span class="annottext">checkGRHSs :: PmGRHSs Pre -&gt; CheckAction (PmGRHSs Post)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGRHSs"><span class="hs-identifier hs-var hs-var">checkGRHSs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmGRHSs"><span class="hs-identifier hs-type">PmGRHSs</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">pgs_lcls :: forall p. PmGRHSs p -&gt; p
+</span><a href="GHC.HsToCore.Pmc.Types.html#pgs_lcls"><span class="hs-identifier hs-var">pgs_lcls</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#GrdVec"><span class="hs-identifier hs-type">GrdVec</span></a></span><span> </span><span id="local-6989586621682041442"><span class="annot"><span class="annottext">[PmGrd]
+</span><a href="#local-6989586621682041442"><span class="hs-identifier hs-var">lcls</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">pgs_grhss :: forall p. PmGRHSs p -&gt; NonEmpty (PmGRHS p)
+</span><a href="GHC.HsToCore.Pmc.Types.html#pgs_grhss"><span class="hs-identifier hs-var">pgs_grhss</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621682041444"><span class="annot"><span class="annottext">NonEmpty (PmGRHS Pre)
+</span><a href="#local-6989586621682041444"><span class="hs-identifier hs-var">grhss</span></a></span></span><span> </span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-173"></span><span>  </span><span class="annot"><span class="annottext">(Post -&gt; NonEmpty (PmGRHS Post) -&gt; PmGRHSs Post)
+-&gt; CheckAction Post
+-&gt; CheckAction (NonEmpty (PmGRHS Post))
+-&gt; CheckAction (PmGRHSs Post)
+forall right ret.
+(Post -&gt; right -&gt; ret)
+-&gt; CheckAction Post -&gt; CheckAction right -&gt; CheckAction ret
+</span><a href="GHC.HsToCore.Pmc.Check.html#leftToRight"><span class="hs-identifier hs-var">leftToRight</span></a></span><span> </span><span class="annot"><span class="annottext">Post -&gt; NonEmpty (PmGRHS Post) -&gt; PmGRHSs Post
+forall p. p -&gt; NonEmpty (PmGRHS p) -&gt; PmGRHSs p
+</span><a href="GHC.HsToCore.Pmc.Types.html#PmGRHSs"><span class="hs-identifier hs-var">PmGRHSs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[PmGrd] -&gt; CheckAction Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGrds"><span class="hs-identifier hs-var">checkGrds</span></a></span><span> </span><span class="annot"><span class="annottext">[PmGrd]
+</span><a href="#local-6989586621682041442"><span class="hs-identifier hs-var">lcls</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(PmGRHS Pre -&gt; CheckAction (PmGRHS Post))
+-&gt; NonEmpty (PmGRHS Pre) -&gt; CheckAction (NonEmpty (PmGRHS Post))
+forall grdtree anntree.
+(grdtree -&gt; CheckAction anntree)
+-&gt; NonEmpty grdtree -&gt; CheckAction (NonEmpty anntree)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkSequence"><span class="hs-identifier hs-var">checkSequence</span></a></span><span> </span><span class="annot"><span class="annottext">PmGRHS Pre -&gt; CheckAction (PmGRHS Post)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGRHS"><span class="hs-identifier hs-var">checkGRHS</span></a></span><span> </span><span class="annot"><span class="annottext">NonEmpty (PmGRHS Pre)
+</span><a href="#local-6989586621682041444"><span class="hs-identifier hs-var">grhss</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-174"></span><span>
+</span><span id="line-175"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkGRHS"><span class="hs-identifier hs-type">checkGRHS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmGRHS"><span class="hs-identifier hs-type">PmGRHS</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Pre"><span class="hs-identifier hs-type">Pre</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmGRHS"><span class="hs-identifier hs-type">PmGRHS</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Post"><span class="hs-identifier hs-type">Post</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-176"></span><span id="checkGRHS"><span class="annot"><span class="annottext">checkGRHS :: PmGRHS Pre -&gt; CheckAction (PmGRHS Post)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGRHS"><span class="hs-identifier hs-var hs-var">checkGRHS</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmGRHS"><span class="hs-identifier hs-type">PmGRHS</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">pg_grds :: forall p. PmGRHS p -&gt; p
+</span><a href="GHC.HsToCore.Pmc.Types.html#pg_grds"><span class="hs-identifier hs-var">pg_grds</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#GrdVec"><span class="hs-identifier hs-type">GrdVec</span></a></span><span> </span><span id="local-6989586621682041448"><span class="annot"><span class="annottext">[PmGrd]
+</span><a href="#local-6989586621682041448"><span class="hs-identifier hs-var">grds</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">pg_rhs :: forall p. PmGRHS p -&gt; SrcInfo
+</span><a href="GHC.HsToCore.Pmc.Types.html#pg_rhs"><span class="hs-identifier hs-var">pg_rhs</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621682041450"><span class="annot"><span class="annottext">SrcInfo
+</span><a href="#local-6989586621682041450"><span class="hs-identifier hs-var">rhs_info</span></a></span></span><span> </span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-177"></span><span>  </span><span class="annot"><span class="annottext">(Post -&gt; SrcInfo -&gt; PmGRHS Post) -&gt; SrcInfo -&gt; Post -&gt; PmGRHS Post
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#flip/GHC.Base.html#flip"><span class="hs-identifier hs-var">flip</span></a></span><span> </span><span class="annot"><span class="annottext">Post -&gt; SrcInfo -&gt; PmGRHS Post
+forall p. p -&gt; SrcInfo -&gt; PmGRHS p
+</span><a href="GHC.HsToCore.Pmc.Types.html#PmGRHS"><span class="hs-identifier hs-var">PmGRHS</span></a></span><span> </span><span class="annot"><span class="annottext">SrcInfo
+</span><a href="#local-6989586621682041450"><span class="hs-identifier hs-var">rhs_info</span></a></span><span> </span><span class="annot"><span class="annottext">(Post -&gt; PmGRHS Post)
+-&gt; CheckAction Post -&gt; CheckAction (PmGRHS Post)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">[PmGrd] -&gt; CheckAction Post
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGrds"><span class="hs-identifier hs-var">checkGrds</span></a></span><span> </span><span class="annot"><span class="annottext">[PmGrd]
+</span><a href="#local-6989586621682041448"><span class="hs-identifier hs-var">grds</span></a></span><span>
+</span><span id="line-178"></span><span>
+</span><span id="line-179"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkEmptyCase"><span class="hs-identifier hs-type">checkEmptyCase</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmEmptyCase"><span class="hs-identifier hs-type">PmEmptyCase</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmEmptyCase"><span class="hs-identifier hs-type">PmEmptyCase</span></a></span><span>
+</span><span id="line-180"></span><span class="hs-comment">-- See Note [Checking EmptyCase]</span><span>
+</span><span id="line-181"></span><span id="checkEmptyCase"><span class="annot"><span class="annottext">checkEmptyCase :: PmEmptyCase -&gt; CheckAction PmEmptyCase
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkEmptyCase"><span class="hs-identifier hs-var hs-var">checkEmptyCase</span></a></span></span><span> </span><span id="local-6989586621682041452"><span class="annot"><span class="annottext">pe :: PmEmptyCase
+</span><a href="#local-6989586621682041452"><span class="hs-identifier hs-var">pe</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmEmptyCase"><span class="hs-identifier hs-type">PmEmptyCase</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">pe_var :: PmEmptyCase -&gt; Id
+</span><a href="GHC.HsToCore.Pmc.Types.html#pe_var"><span class="hs-identifier hs-var">pe_var</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="local-6989586621682041455"><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041455"><span class="hs-identifier hs-var">var</span></a></span></span><span> </span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Nablas -&gt; DsM (CheckResult PmEmptyCase))
+-&gt; CheckAction PmEmptyCase
+forall a. (Nablas -&gt; DsM (CheckResult a)) -&gt; CheckAction a
+</span><a href="GHC.HsToCore.Pmc.Check.html#CA"><span class="hs-identifier hs-var">CA</span></a></span><span> </span><span class="annot"><span class="annottext">((Nablas -&gt; DsM (CheckResult PmEmptyCase))
+ -&gt; CheckAction PmEmptyCase)
+-&gt; (Nablas -&gt; DsM (CheckResult PmEmptyCase))
+-&gt; CheckAction PmEmptyCase
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621682041456"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041456"><span class="hs-identifier hs-var">inc</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-182"></span><span>  </span><span id="local-6989586621682041457"><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041457"><span class="hs-identifier hs-var">unc</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Nablas -&gt; PhiCt -&gt; DsM Nablas
+</span><a href="GHC.HsToCore.Pmc.Solver.html#addPhiCtNablas"><span class="hs-identifier hs-var">addPhiCtNablas</span></a></span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041456"><span class="hs-identifier hs-var">inc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Id -&gt; PhiCt
+</span><a href="GHC.HsToCore.Pmc.Solver.html#PhiNotBotCt"><span class="hs-identifier hs-var">PhiNotBotCt</span></a></span><span> </span><span class="annot"><span class="annottext">Id
+</span><a href="#local-6989586621682041455"><span class="hs-identifier hs-var">var</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-183"></span><span>  </span><span class="annot"><span class="annottext">CheckResult PmEmptyCase -&gt; DsM (CheckResult PmEmptyCase)
+forall a. a -&gt; IOEnv (Env DsGblEnv DsLclEnv) a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#CheckResult"><span class="hs-identifier hs-type">CheckResult</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">cr_ret :: PmEmptyCase
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_ret"><span class="hs-identifier hs-var">cr_ret</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PmEmptyCase
+</span><a href="#local-6989586621682041452"><span class="hs-identifier hs-var">pe</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_uncov :: Nablas
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_uncov"><span class="hs-identifier hs-var">cr_uncov</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nablas
+</span><a href="#local-6989586621682041457"><span class="hs-identifier hs-var">unc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">cr_approx :: Precision
+</span><a href="GHC.HsToCore.Pmc.Types.html#cr_approx"><span class="hs-identifier hs-var">cr_approx</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Precision
+forall a. Monoid a =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#mempty/GHC.Base.html#mempty"><span class="hs-identifier hs-var">mempty</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-184"></span><span>
+</span><span id="line-185"></span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#checkPatBind"><span class="hs-identifier hs-type">checkPatBind</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmPatBind"><span class="hs-identifier hs-type">PmPatBind</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Pre"><span class="hs-identifier hs-type">Pre</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Check.html#CheckAction"><span class="hs-identifier hs-type">CheckAction</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#PmPatBind"><span class="hs-identifier hs-type">PmPatBind</span></a></span><span> </span><span class="annot"><a href="GHC.HsToCore.Pmc.Types.html#Post"><span class="hs-identifier hs-type">Post</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-186"></span><span id="checkPatBind"><span class="annot"><span class="annottext">checkPatBind :: PmPatBind Pre -&gt; CheckAction (PmPatBind Post)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkPatBind"><span class="hs-identifier hs-var hs-var">checkPatBind</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(PmGRHS Pre -&gt; CheckAction (PmGRHS Post))
+-&gt; PmPatBind Pre -&gt; CheckAction (PmPatBind Post)
+forall a b. Coercible a b =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">coerce</span></span><span> </span><span class="annot"><span class="annottext">PmGRHS Pre -&gt; CheckAction (PmGRHS Post)
+</span><a href="GHC.HsToCore.Pmc.Check.html#checkGRHS"><span class="hs-identifier hs-var">checkGRHS</span></a></span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span class="hs-comment">{- Note [Checking EmptyCase]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-XEmptyCase is useful for matching on empty data types like 'Void'. For example,
+the following is a complete match:
+
+    f :: Void -&gt; ()
+    f x = case x of {}
+
+Really, -XEmptyCase is the only way to write a program that at the same time is
+safe (@f _ = error &quot;boom&quot;@ is not because of &#8869;), doesn't trigger a warning
+(@f !_ = error &quot;inaccessible&quot; has inaccessible RHS) and doesn't turn an
+exception into divergence (@f x = f x@).
+
+Semantically, unlike every other case expression, -XEmptyCase is strict in its
+match var x, which rules out &#8869; as an inhabitant. So we add x &#8769; &#8869; to the
+initial Nabla and check if there are any values left to match on.
+
+Note [Dead bang patterns]
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Consider
+
+  f :: Bool -&gt; Int
+  f True = 1
+  f !x   = 2
+
+Whenever we fall through to the second equation, we will already have evaluated
+the argument. Thus, the bang pattern serves no purpose and should be warned
+about. We call this kind of bang patterns &quot;dead&quot;. Dead bangs are the ones
+that under no circumstances can force a thunk that wasn't already forced.
+Dead bangs are a form of redundant bangs; see below.
+
+We can detect dead bang patterns by checking whether @x ~ &#8869;@ is satisfiable
+where the PmBang appears in 'checkGrd'. If not, then clearly the bang is
+dead. So for a source bang, we add the refined Nabla and the source info to
+the 'RedSet's 'rs_bangs'. When collecting stuff to warn, we test that Nabla for
+inhabitants. If it's empty, we'll warn that it's redundant.
+
+Note that we don't want to warn for a dead bang that appears on a redundant
+clause. That is because in that case, we recommend to delete the clause wholly,
+including its leading pattern match.
+
+Dead bang patterns are redundant. But there are bang patterns which are
+redundant that aren't dead, for example
+
+  f !() = 0
+
+the bang still forces the match variable, before we attempt to match on (). But
+it is redundant with the forcing done by the () match. We currently don't
+detect redundant bangs that aren't dead.
+
+Note [Countering exponential blowup]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Precise pattern match exhaustiveness checking is necessarily exponential in
+the size of some input programs. We implement a counter-measure in the form of
+the -fmax-pmcheck-models flag, limiting the number of Nablas we check against
+each pattern by a constant.
+
+How do we do that? Consider
+
+  f True True = ()
+  f True True = ()
+
+And imagine we set our limit to 1 for the sake of the example. The first clause
+will be checked against the initial Nabla, {}. Doing so will produce an
+Uncovered set of size 2, containing the models {x&#8769;True} and {x~True,y&#8769;True}.
+Also we find the first clause to cover the model {x~True,y~True}.
+
+But the Uncovered set we get out of the match is too huge! We somehow have to
+ensure not to make things worse as they are already, so we continue checking
+with a singleton Uncovered set of the initial Nabla {}. Why is this
+sound (wrt. the notion in GADTs Meet Their Match)? Well, it basically amounts
+to forgetting that we matched against the first clause. The values represented
+by {} are a superset of those represented by its two refinements {x&#8769;True} and
+{x~True,y&#8769;True}.
+
+This forgetfulness becomes very apparent in the example above: By continuing
+with {} we don't detect the second clause as redundant, as it again covers the
+same non-empty subset of {}. So we don't flag everything as redundant anymore,
+but still will never flag something as redundant that isn't.
+
+For exhaustivity, the converse applies: We will report @f@ as non-exhaustive
+and report @f _ _@ as missing, which is a superset of the actual missing
+matches. But soundness means we will never fail to report a missing match.
+
+This mechanism is implemented in 'throttle'.
+
+Guards are an extreme example in this regard, with #11195 being a particularly
+dreadful example: Since their RHS are often pretty much unique, we split on a
+variable (the one representing the RHS) that doesn't occur anywhere else in the
+program, so we don't actually get useful information out of that split!
+
+Note [considerAccessible]
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Consider (T18610)
+
+  f :: Bool -&gt; Int
+  f x = case (x, x) of
+    (True,  True)  -&gt; 1
+    (False, False) -&gt; 2
+    (True,  False) -&gt; 3 -- Warning: Redundant
+
+The third case is detected as redundant. But it may be the intent of the
+programmer to keep the dead code, in order for it not to bitrot or to support
+debugging scenarios. But there is no way to communicate that to the
+pattern-match checker! The only way is to deactivate pattern-match checking
+whole-sale, which is quite annoying. Hence, we define in &quot;GHC.Exts&quot;:
+
+  considerAccessible = True
+
+'considerAccessible' is treated specially by the pattern-match checker in that a
+guard with it as the scrutinee expression will keep its parent clause alive:
+
+  g :: Bool -&gt; Int
+  g x = case (x, x) of
+    (True,  True)  -&gt; 1
+    (False, False) -&gt; 2
+    (True,  False) | GHC.Exts.considerAccessible -&gt; 3 -- No warning
+
+The key bits of the implementation are:
+
+  1. Its definition is recognised as known-key (see &quot;GHC.Builtin.Names&quot;).
+  2. After &quot;GHC.HsToCore.Pmc.Desugar&quot;, the guard will end up as a 'PmCon', where
+     the match var is the known-key 'considerAccessible' and the constructor
+     against which it matches is 'True'.
+  3. We recognise the 'PmCon' in 'GHC.HsToCore.Check.checkGrd' and inflate the
+     incoming set of values for all guards downstream to the unconstrained
+     'initNablas' set, e.g. /all/ values.
+     (The set of values that falls through that particular guard is empty, as
+     matching 'considerAccessible' against 'True' can't fail.)
+
+Note that 'considerAccessible' breaks the invariant that incoming sets of values
+reaching syntactic children are subsets of that of the syntactic ancestor:
+A whole match, like that of the third clause of the example, might have no
+incoming value, but its single RHS has incoming values because of (3).
+
+That means the 'is_covered' flag computed in 'GHC.HsToCore.Pmc.cirbsMatch'
+is irrelevant and should not be used to flag all children as redundant (which is
+what we used to do).
+
+We achieve great benefits with a very simple implementation.
+There are caveats, though:
+
+  (A) Putting potentially failing guards /after/ the
+      'considerAccessible' guard might lead to weird check results, e.g.,
+
+        h :: Bool -&gt; Int
+        h x = case (x, x) of
+          (True,  True)  -&gt; 1
+          (False, False) -&gt; 2
+          (True,  False) | GHC.Exts.considerAccessible, False &lt;- x -&gt; 3
+          -- Warning: Not matched: (_, _)
+
+      That *is* fixable, although we would pay with a much more complicated
+      implementation.
+  (B) If the programmer puts a 'considerAccessible' marker on an accessible
+      clause, the checker doesn't warn about it. E.g.,
+
+        f :: Bool -&gt; Int
+        f True | considerAccessible = 0
+        f False = 1
+
+      will not emit any warning whatsoever. We could implement code that warns
+      here, but it wouldn't be as simple as it is now.
+-}</span><span>
+</span><span id="line-352"></span></pre></body></html>

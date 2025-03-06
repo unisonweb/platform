@@ -1,0 +1,1087 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE RecordWildCards #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.HPACK.HeaderBlock.Encode</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-5"></span><span>    </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encodeHeader"><span class="hs-identifier">encodeHeader</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-6"></span><span>    </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encodeTokenHeader"><span class="hs-identifier">encodeTokenHeader</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encodeString"><span class="hs-identifier">encodeString</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encodeS"><span class="hs-identifier">encodeS</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">bracket</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">throwIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">E</span></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BS</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Internal</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">create</span></span><span class="hs-special">)</span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Marshal.Alloc</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">free</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">mallocBytes</span></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Marshal.Utils</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">copyBytes</span></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">minusPtr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.ByteOrder</span></span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Imports.html"><span class="hs-identifier">Imports</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Integer.html"><span class="hs-identifier">Network.HPACK.HeaderBlock.Integer</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HPACK.Huffman.html"><span class="hs-identifier">Network.HPACK.Huffman</span></a></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HPACK.Table.html"><span class="hs-identifier">Network.HPACK.Table</span></a></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HPACK.Token.html"><span class="hs-identifier">Network.HPACK.Token</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html"><span class="hs-identifier">Network.HPACK.Types</span></a></span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#changeTableSize"><span class="hs-identifier hs-type">changeTableSize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#DynamicTable"><span class="hs-identifier hs-type">DynamicTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span id="changeTableSize"><span class="annot"><span class="annottext">changeTableSize :: DynamicTable -&gt; WriteBuffer -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#changeTableSize"><span class="hs-identifier hs-var hs-var">changeTableSize</span></a></span></span><span> </span><span id="local-6989586621679112362"><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112362"><span class="hs-identifier hs-var">dyntbl</span></a></span></span><span> </span><span id="local-6989586621679112363"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112363"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-32"></span><span>    </span><span id="local-6989586621679112364"><span class="annot"><span class="annottext">TableSizeAction
+</span><a href="#local-6989586621679112364"><span class="hs-identifier hs-var">msiz</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">DynamicTable -&gt; IO TableSizeAction
+</span><a href="Network.HPACK.Table.Dynamic.html#needChangeTableSize"><span class="hs-identifier hs-var">needChangeTableSize</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112362"><span class="hs-identifier hs-var">dyntbl</span></a></span><span>
+</span><span id="line-33"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">TableSizeAction
+</span><a href="#local-6989586621679112364"><span class="hs-identifier hs-var">msiz</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-34"></span><span>        </span><span class="annot"><span class="annottext">TableSizeAction
+</span><a href="Network.HPACK.Table.Dynamic.html#Keep"><span class="hs-identifier hs-var">Keep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span>        </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#Change"><span class="hs-identifier hs-type">Change</span></a></span><span> </span><span id="local-6989586621679112368"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112368"><span class="hs-identifier hs-var">lim</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-36"></span><span>            </span><span class="annot"><span class="annottext">Int -&gt; DynamicTable -&gt; IO ()
+</span><a href="Network.HPACK.Table.Dynamic.html#renewDynamicTable"><span class="hs-identifier hs-var">renewDynamicTable</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112368"><span class="hs-identifier hs-var">lim</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112362"><span class="hs-identifier hs-var">dyntbl</span></a></span><span>
+</span><span id="line-37"></span><span>            </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#change"><span class="hs-identifier hs-var">change</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112363"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112368"><span class="hs-identifier hs-var">lim</span></a></span><span>
+</span><span id="line-38"></span><span>        </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#Ignore"><span class="hs-identifier hs-type">Ignore</span></a></span><span> </span><span id="local-6989586621679112372"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112372"><span class="hs-identifier hs-var">lim</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-39"></span><span>            </span><span class="annot"><span class="annottext">DynamicTable -&gt; IO ()
+</span><a href="Network.HPACK.Table.Dynamic.html#resetLimitForEncoding"><span class="hs-identifier hs-var">resetLimitForEncoding</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112362"><span class="hs-identifier hs-var">dyntbl</span></a></span><span>
+</span><span id="line-40"></span><span>            </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#change"><span class="hs-identifier hs-var">change</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112363"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112372"><span class="hs-identifier hs-var">lim</span></a></span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- | Converting 'HeaderList' to the HPACK format.</span><span>
+</span><span id="line-45"></span><span class="hs-comment">--   This function has overhead of allocating/freeing a temporary buffer.</span><span>
+</span><span id="line-46"></span><span class="hs-comment">--   'BufferOverrun' will be thrown if the temporary buffer is too small.</span><span>
+</span><span id="line-47"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encodeHeader"><span class="hs-identifier hs-type">encodeHeader</span></a></span><span>
+</span><span id="line-48"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#EncodeStrategy"><span class="hs-identifier hs-type">EncodeStrategy</span></a></span><span>
+</span><span id="line-49"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Entry.html#Size"><span class="hs-identifier hs-type">Size</span></a></span><span>
+</span><span id="line-50"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ The size of a temporary buffer.</span></span><span>
+</span><span id="line-51"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#DynamicTable"><span class="hs-identifier hs-type">DynamicTable</span></a></span><span>
+</span><span id="line-52"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderList"><span class="hs-identifier hs-type">HeaderList</span></a></span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-54"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ An HPACK format</span></span><span>
+</span><span id="line-55"></span><span id="encodeHeader"><span class="annot"><span class="annottext">encodeHeader :: EncodeStrategy
+-&gt; Int -&gt; DynamicTable -&gt; HeaderList -&gt; IO ByteString
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encodeHeader"><span class="hs-identifier hs-var hs-var">encodeHeader</span></a></span></span><span> </span><span id="local-6989586621679112376"><span class="annot"><span class="annottext">EncodeStrategy
+</span><a href="#local-6989586621679112376"><span class="hs-identifier hs-var">stgy</span></a></span></span><span> </span><span id="local-6989586621679112377"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112377"><span class="hs-identifier hs-var">siz</span></a></span></span><span> </span><span id="local-6989586621679112378"><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112378"><span class="hs-identifier hs-var">dyntbl</span></a></span></span><span> </span><span id="local-6989586621679112379"><span class="annot"><span class="annottext">HeaderList
+</span><a href="#local-6989586621679112379"><span class="hs-identifier hs-var">hs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodeStrategy
+-&gt; Int -&gt; DynamicTable -&gt; TokenHeaderList -&gt; IO ByteString
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encodeHeader%27"><span class="hs-identifier hs-var">encodeHeader'</span></a></span><span> </span><span class="annot"><span class="annottext">EncodeStrategy
+</span><a href="#local-6989586621679112376"><span class="hs-identifier hs-var">stgy</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112377"><span class="hs-identifier hs-var">siz</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112378"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">TokenHeaderList
+</span><a href="#local-6989586621679112381"><span class="hs-identifier hs-var">hs'</span></a></span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-57"></span><span>    </span><span id="local-6989586621679112381"><span class="annot"><span class="annottext">hs' :: TokenHeaderList
+</span><a href="#local-6989586621679112381"><span class="hs-identifier hs-var hs-var">hs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((ByteString, ByteString) -&gt; (Token, ByteString))
+-&gt; HeaderList -&gt; TokenHeaderList
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621679112382"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112382"><span class="hs-identifier hs-var">k</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679112383"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112383"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679112384"><span class="annot"><span class="annottext">t :: Token
+</span><a href="#local-6989586621679112384"><span class="hs-identifier hs-var hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Token
+</span><a href="Network.HPACK.Token.html#toToken"><span class="hs-identifier hs-var">toToken</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112382"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Token
+</span><a href="#local-6989586621679112384"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112383"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">HeaderList
+</span><a href="#local-6989586621679112379"><span class="hs-identifier hs-var">hs</span></a></span><span>
+</span><span id="line-58"></span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- | Converting 'HeaderList' to the HPACK format.</span><span>
+</span><span id="line-60"></span><span class="hs-comment">--   'BufferOverrun' will be thrown if the temporary buffer is too small.</span><span>
+</span><span id="line-61"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encodeHeader%27"><span class="hs-identifier hs-type">encodeHeader'</span></a></span><span>
+</span><span id="line-62"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#EncodeStrategy"><span class="hs-identifier hs-type">EncodeStrategy</span></a></span><span>
+</span><span id="line-63"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Entry.html#Size"><span class="hs-identifier hs-type">Size</span></a></span><span>
+</span><span id="line-64"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ The size of a temporary buffer.</span></span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#DynamicTable"><span class="hs-identifier hs-type">DynamicTable</span></a></span><span>
+</span><span id="line-66"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#TokenHeaderList"><span class="hs-identifier hs-type">TokenHeaderList</span></a></span><span>
+</span><span id="line-67"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-68"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ An HPACK format</span></span><span>
+</span><span id="line-69"></span><span id="encodeHeader%27"><span class="annot"><span class="annottext">encodeHeader' :: EncodeStrategy
+-&gt; Int -&gt; DynamicTable -&gt; TokenHeaderList -&gt; IO ByteString
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encodeHeader%27"><span class="hs-identifier hs-var hs-var">encodeHeader'</span></a></span></span><span> </span><span id="local-6989586621679112386"><span class="annot"><span class="annottext">EncodeStrategy
+</span><a href="#local-6989586621679112386"><span class="hs-identifier hs-var">stgy</span></a></span></span><span> </span><span id="local-6989586621679112387"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112387"><span class="hs-identifier hs-var">siz</span></a></span></span><span> </span><span id="local-6989586621679112388"><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112388"><span class="hs-identifier hs-var">dyntbl</span></a></span></span><span> </span><span id="local-6989586621679112389"><span class="annot"><span class="annottext">TokenHeaderList
+</span><a href="#local-6989586621679112389"><span class="hs-identifier hs-var">hs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (Ptr Word8)
+-&gt; (Ptr Word8 -&gt; IO ())
+-&gt; (Ptr Word8 -&gt; IO ByteString)
+-&gt; IO ByteString
+forall a b c. IO a -&gt; (a -&gt; IO b) -&gt; (a -&gt; IO c) -&gt; IO c
+</span><span class="hs-identifier hs-var">bracket</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; IO (Ptr Word8)
+forall a. Int -&gt; IO (Ptr a)
+</span><span class="hs-identifier hs-var">mallocBytes</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112387"><span class="hs-identifier hs-var">siz</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ()
+forall a. Ptr a -&gt; IO ()
+</span><span class="hs-identifier hs-var">free</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO ByteString
+</span><a href="#local-6989586621679112390"><span class="hs-identifier hs-var">enc</span></a></span><span>
+</span><span id="line-70"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-71"></span><span>    </span><span id="local-6989586621679112390"><span class="annot"><span class="annottext">enc :: Ptr Word8 -&gt; IO ByteString
+</span><a href="#local-6989586621679112390"><span class="hs-identifier hs-var hs-var">enc</span></a></span></span><span> </span><span id="local-6989586621679112393"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679112393"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-72"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679112394"><span class="annot"><span class="annottext">TokenHeaderList
+</span><a href="#local-6989586621679112394"><span class="hs-identifier hs-var">hs'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679112395"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112395"><span class="hs-identifier hs-var">len</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+-&gt; Int
+-&gt; EncodeStrategy
+-&gt; Bool
+-&gt; DynamicTable
+-&gt; TokenHeaderList
+-&gt; IO (TokenHeaderList, Int)
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encodeTokenHeader"><span class="hs-identifier hs-var">encodeTokenHeader</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679112393"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112387"><span class="hs-identifier hs-var">siz</span></a></span><span> </span><span class="annot"><span class="annottext">EncodeStrategy
+</span><a href="#local-6989586621679112386"><span class="hs-identifier hs-var">stgy</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112388"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">TokenHeaderList
+</span><a href="#local-6989586621679112389"><span class="hs-identifier hs-var">hs</span></a></span><span>
+</span><span id="line-73"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">TokenHeaderList
+</span><a href="#local-6989586621679112394"><span class="hs-identifier hs-var">hs'</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-74"></span><span>            </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ByteString
+</span><span class="hs-identifier hs-var">create</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112395"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; IO ByteString)
+-&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679112396"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679112396"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+forall a. Ptr a -&gt; Ptr a -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">copyBytes</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679112396"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679112393"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112395"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-75"></span><span>            </span><span class="annot"><span class="annottext">TokenHeaderList
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">BufferOverrun -&gt; IO ByteString
+forall e a. Exception e =&gt; e -&gt; IO a
+</span><span class="hs-identifier hs-var">throwIO</span></span><span> </span><span class="annot"><span class="annottext">BufferOverrun
+</span><span class="hs-identifier hs-var">BufferOverrun</span></span><span>
+</span><span id="line-76"></span><span>
+</span><span id="line-77"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- | Converting 'TokenHeaderList' to the HPACK format directly in the buffer.</span><span>
+</span><span id="line-80"></span><span class="hs-comment">--</span><span>
+</span><span id="line-81"></span><span class="hs-comment">--   When calling this function for a new 'TokenHeaderList',</span><span>
+</span><span id="line-82"></span><span class="hs-comment">--   4th argument must be 'True'.</span><span>
+</span><span id="line-83"></span><span class="hs-comment">--</span><span>
+</span><span id="line-84"></span><span class="hs-comment">--   The return value is a pair of leftover 'TokenHeaderList' and</span><span>
+</span><span id="line-85"></span><span class="hs-comment">--   how many bytes are filled in the buffer.</span><span>
+</span><span id="line-86"></span><span class="hs-comment">--   If the leftover is empty, the encoding is finished.</span><span>
+</span><span id="line-87"></span><span class="hs-comment">--   Otherwise, this function should be called with it again.</span><span>
+</span><span id="line-88"></span><span class="hs-comment">--   4th argument must be 'False'.</span><span>
+</span><span id="line-89"></span><span class="hs-comment">--</span><span>
+</span><span id="line-90"></span><span class="hs-comment">--   4th argument is relating to dynamic table size update.</span><span>
+</span><span id="line-91"></span><span class="hs-comment">--   If 'True' and the limit is set by 'setLimitForEncoding',</span><span>
+</span><span id="line-92"></span><span class="hs-comment">--   dynamic table size update is generated at the beginning of</span><span>
+</span><span id="line-93"></span><span class="hs-comment">--   the HPACK format.</span><span>
+</span><span id="line-94"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encodeTokenHeader"><span class="hs-identifier hs-type">encodeTokenHeader</span></a></span><span>
+</span><span id="line-95"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Buffer</span></span><span>
+</span><span id="line-96"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BufferSize</span></span><span>
+</span><span id="line-97"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#EncodeStrategy"><span class="hs-identifier hs-type">EncodeStrategy</span></a></span><span>
+</span><span id="line-98"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-99"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ 'True' at the first time, 'False' when continued.</span></span><span>
+</span><span id="line-100"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#DynamicTable"><span class="hs-identifier hs-type">DynamicTable</span></a></span><span>
+</span><span id="line-101"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#TokenHeaderList"><span class="hs-identifier hs-type">TokenHeaderList</span></a></span><span>
+</span><span id="line-102"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HPACK.Types.html#TokenHeaderList"><span class="hs-identifier hs-type">TokenHeaderList</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>
+</span><span id="line-103"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Leftover, filled length</span></span><span>
+</span><span id="line-104"></span><span id="encodeTokenHeader"><span class="annot"><span class="annottext">encodeTokenHeader :: Ptr Word8
+-&gt; Int
+-&gt; EncodeStrategy
+-&gt; Bool
+-&gt; DynamicTable
+-&gt; TokenHeaderList
+-&gt; IO (TokenHeaderList, Int)
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encodeTokenHeader"><span class="hs-identifier hs-var hs-var">encodeTokenHeader</span></a></span></span><span> </span><span id="local-6989586621679112400"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679112400"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621679112401"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112401"><span class="hs-identifier hs-var">siz</span></a></span></span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#EncodeStrategy"><span class="hs-identifier hs-type">EncodeStrategy</span></a></span><span class="hs-special">{</span><span id="local-6989586621679112403"><span id="local-6989586621679112404"><span class="annot"><span class="annottext">Bool
+CompressionAlgo
+compressionAlgo :: CompressionAlgo
+useHuffman :: Bool
+compressionAlgo :: EncodeStrategy -&gt; CompressionAlgo
+useHuffman :: EncodeStrategy -&gt; Bool
+</span><a href="#local-6989586621679112403"><span class="hs-glyph hs-var hs-var hs-var hs-var">..</span></a></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679112407"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112407"><span class="hs-identifier hs-var">first</span></a></span></span><span> </span><span id="local-6989586621679112408"><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112408"><span class="hs-identifier hs-var">dyntbl</span></a></span></span><span> </span><span id="local-6989586621679112409"><span class="annot"><span class="annottext">TokenHeaderList
+</span><a href="#local-6989586621679112409"><span class="hs-identifier hs-var">hs0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-105"></span><span>    </span><span id="local-6989586621679112410"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112410"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; IO WriteBuffer
+</span><span class="hs-identifier hs-var">newWriteBuffer</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679112400"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112401"><span class="hs-identifier hs-var">siz</span></a></span><span>
+</span><span id="line-106"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112407"><span class="hs-identifier hs-var">first</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">DynamicTable -&gt; WriteBuffer -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#changeTableSize"><span class="hs-identifier hs-var">changeTableSize</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112408"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112410"><span class="hs-identifier hs-var">wbuf</span></a></span><span>
+</span><span id="line-107"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679112413"><span class="annot"><span class="annottext">fa :: FA
+</span><a href="#local-6989586621679112413"><span class="hs-identifier hs-var hs-var">fa</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FA
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#indexedHeaderField"><span class="hs-identifier hs-var">indexedHeaderField</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112408"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112410"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112404"><span class="hs-identifier hs-var">useHuffman</span></a></span><span>
+</span><span id="line-108"></span><span>        </span><span id="local-6989586621679112415"><span class="annot"><span class="annottext">fb :: FB
+</span><a href="#local-6989586621679112415"><span class="hs-identifier hs-var hs-var">fb</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FB
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithIncrementalIndexingIndexedName"><span class="hs-identifier hs-var">literalHeaderFieldWithIncrementalIndexingIndexedName</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112408"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112410"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112404"><span class="hs-identifier hs-var">useHuffman</span></a></span><span>
+</span><span id="line-109"></span><span>        </span><span id="local-6989586621679112417"><span class="annot"><span class="annottext">fc :: FC
+</span><a href="#local-6989586621679112417"><span class="hs-identifier hs-var hs-var">fc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FC
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithIncrementalIndexingNewName"><span class="hs-identifier hs-var">literalHeaderFieldWithIncrementalIndexingNewName</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112408"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112410"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112404"><span class="hs-identifier hs-var">useHuffman</span></a></span><span>
+</span><span id="line-110"></span><span>        </span><span id="local-6989586621679112419"><span class="annot"><span class="annottext">fd :: FD
+</span><a href="#local-6989586621679112419"><span class="hs-identifier hs-var hs-var">fd</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FD
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithoutIndexingIndexedName"><span class="hs-identifier hs-var">literalHeaderFieldWithoutIndexingIndexedName</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112408"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112410"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112404"><span class="hs-identifier hs-var">useHuffman</span></a></span><span>
+</span><span id="line-111"></span><span>        </span><span id="local-6989586621679112421"><span class="annot"><span class="annottext">fe :: FE
+</span><a href="#local-6989586621679112421"><span class="hs-identifier hs-var hs-var">fe</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FE
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithoutIndexingNewName"><span class="hs-identifier hs-var">literalHeaderFieldWithoutIndexingNewName</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112408"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112410"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112404"><span class="hs-identifier hs-var">useHuffman</span></a></span><span>
+</span><span id="line-112"></span><span>        </span><span id="local-6989586621679112423"><span class="annot"><span class="annottext">fe' :: FE
+</span><a href="#local-6989586621679112423"><span class="hs-identifier hs-var hs-var">fe'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FE
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithoutIndexingNewName%27"><span class="hs-identifier hs-var">literalHeaderFieldWithoutIndexingNewName'</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112408"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112410"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112404"><span class="hs-identifier hs-var">useHuffman</span></a></span><span>
+</span><span id="line-113"></span><span>        </span><span id="local-6989586621679112425"><span class="annot"><span class="annottext">rev :: RevIndex
+</span><a href="#local-6989586621679112425"><span class="hs-identifier hs-var hs-var">rev</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DynamicTable -&gt; RevIndex
+</span><a href="Network.HPACK.Table.Dynamic.html#getRevIndex"><span class="hs-identifier hs-var">getRevIndex</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112408"><span class="hs-identifier hs-var">dyntbl</span></a></span><span>
+</span><span id="line-114"></span><span>        </span><span id="local-6989586621679112427"><span class="annot"><span class="annottext">step0 :: Token -&gt; ByteString -&gt; IO ()
+</span><a href="#local-6989586621679112427"><span class="hs-identifier hs-var hs-var">step0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">CompressionAlgo
+</span><a href="#local-6989586621679112403"><span class="hs-identifier hs-var">compressionAlgo</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-115"></span><span>            </span><span class="annot"><span class="annottext">CompressionAlgo
+</span><a href="Network.HPACK.Types.html#Naive"><span class="hs-identifier hs-var">Naive</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">FE -&gt; Token -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#naiveStep"><span class="hs-identifier hs-var">naiveStep</span></a></span><span> </span><span class="annot"><span class="annottext">FE
+</span><a href="#local-6989586621679112423"><span class="hs-identifier hs-var">fe'</span></a></span><span>
+</span><span id="line-116"></span><span>            </span><span class="annot"><span class="annottext">CompressionAlgo
+</span><a href="Network.HPACK.Types.html#Static"><span class="hs-identifier hs-var">Static</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">FA -&gt; FD -&gt; FE -&gt; Token -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#staticStep"><span class="hs-identifier hs-var">staticStep</span></a></span><span> </span><span class="annot"><span class="annottext">FA
+</span><a href="#local-6989586621679112413"><span class="hs-identifier hs-var">fa</span></a></span><span> </span><span class="annot"><span class="annottext">FD
+</span><a href="#local-6989586621679112419"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="annot"><span class="annottext">FE
+</span><a href="#local-6989586621679112421"><span class="hs-identifier hs-var">fe</span></a></span><span>
+</span><span id="line-117"></span><span>            </span><span class="annot"><span class="annottext">CompressionAlgo
+</span><a href="Network.HPACK.Types.html#Linear"><span class="hs-identifier hs-var">Linear</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">RevIndex -&gt; FA -&gt; FB -&gt; FC -&gt; FD -&gt; Token -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#linearStep"><span class="hs-identifier hs-var">linearStep</span></a></span><span> </span><span class="annot"><span class="annottext">RevIndex
+</span><a href="#local-6989586621679112425"><span class="hs-identifier hs-var">rev</span></a></span><span> </span><span class="annot"><span class="annottext">FA
+</span><a href="#local-6989586621679112413"><span class="hs-identifier hs-var">fa</span></a></span><span> </span><span class="annot"><span class="annottext">FB
+</span><a href="#local-6989586621679112415"><span class="hs-identifier hs-var">fb</span></a></span><span> </span><span class="annot"><span class="annottext">FC
+</span><a href="#local-6989586621679112417"><span class="hs-identifier hs-var">fc</span></a></span><span> </span><span class="annot"><span class="annottext">FD
+</span><a href="#local-6989586621679112419"><span class="hs-identifier hs-var">fd</span></a></span><span>
+</span><span id="line-118"></span><span>    </span><span id="local-6989586621679112434"><span class="annot"><span class="annottext">IORef (Ptr Word8)
+</span><a href="#local-6989586621679112434"><span class="hs-identifier hs-var">ref1</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">WriteBuffer -&gt; IO (Ptr Word8)
+</span><span class="hs-identifier hs-var">currentOffset</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112410"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">IO (Ptr Word8)
+-&gt; (Ptr Word8 -&gt; IO (IORef (Ptr Word8))) -&gt; IO (IORef (Ptr Word8))
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (IORef (Ptr Word8))
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span>
+</span><span id="line-119"></span><span>    </span><span id="local-6989586621679112437"><span class="annot"><span class="annottext">IORef TokenHeaderList
+</span><a href="#local-6989586621679112437"><span class="hs-identifier hs-var">ref2</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TokenHeaderList -&gt; IO (IORef TokenHeaderList)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">TokenHeaderList
+</span><a href="#local-6989586621679112409"><span class="hs-identifier hs-var">hs0</span></a></span><span>
+</span><span id="line-120"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer
+-&gt; IORef (Ptr Word8)
+-&gt; IORef TokenHeaderList
+-&gt; (Token -&gt; ByteString -&gt; IO ())
+-&gt; TokenHeaderList
+-&gt; IO ()
+forall {t} {t} {a}.
+WriteBuffer
+-&gt; IORef (Ptr Word8)
+-&gt; IORef [(t, t)]
+-&gt; (t -&gt; t -&gt; IO a)
+-&gt; [(t, t)]
+-&gt; IO ()
+</span><a href="#local-6989586621679112438"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112410"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (Ptr Word8)
+</span><a href="#local-6989586621679112434"><span class="hs-identifier hs-var">ref1</span></a></span><span> </span><span class="annot"><span class="annottext">IORef TokenHeaderList
+</span><a href="#local-6989586621679112437"><span class="hs-identifier hs-var">ref2</span></a></span><span> </span><span class="annot"><span class="annottext">Token -&gt; ByteString -&gt; IO ()
+</span><a href="#local-6989586621679112427"><span class="hs-identifier hs-var">step0</span></a></span><span> </span><span class="annot"><span class="annottext">TokenHeaderList
+</span><a href="#local-6989586621679112409"><span class="hs-identifier hs-var">hs0</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; (BufferOverrun -&gt; IO ()) -&gt; IO ()
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><span class="hs-operator hs-var">`E.catch`</span></span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">BufferOverrun
+</span><span class="hs-identifier hs-var">BufferOverrun</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-121"></span><span>    </span><span id="local-6989586621679112440"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679112440"><span class="hs-identifier hs-var">end</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef (Ptr Word8) -&gt; IO (Ptr Word8)
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (Ptr Word8)
+</span><a href="#local-6989586621679112434"><span class="hs-identifier hs-var">ref1</span></a></span><span>
+</span><span id="line-122"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679112442"><span class="annot"><span class="annottext">len :: Int
+</span><a href="#local-6989586621679112442"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679112440"><span class="hs-identifier hs-var">end</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int
+forall a b. Ptr a -&gt; Ptr b -&gt; Int
+</span><span class="hs-operator hs-var">`minusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679112400"><span class="hs-identifier hs-var">buf</span></a></span><span>
+</span><span id="line-123"></span><span>    </span><span id="local-6989586621679112443"><span class="annot"><span class="annottext">TokenHeaderList
+</span><a href="#local-6989586621679112443"><span class="hs-identifier hs-var">hs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef TokenHeaderList -&gt; IO TokenHeaderList
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef TokenHeaderList
+</span><a href="#local-6989586621679112437"><span class="hs-identifier hs-var">ref2</span></a></span><span>
+</span><span id="line-124"></span><span>    </span><span class="annot"><span class="annottext">(TokenHeaderList, Int) -&gt; IO (TokenHeaderList, Int)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TokenHeaderList
+</span><a href="#local-6989586621679112443"><span class="hs-identifier hs-var">hs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112442"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-126"></span><span>    </span><span id="local-6989586621679112438"><span class="annot"><span class="annottext">loop :: WriteBuffer
+-&gt; IORef (Ptr Word8)
+-&gt; IORef [(t, t)]
+-&gt; (t -&gt; t -&gt; IO a)
+-&gt; [(t, t)]
+-&gt; IO ()
+</span><a href="#local-6989586621679112438"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621679112444"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112444"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112445"><span class="annot"><span class="annottext">IORef (Ptr Word8)
+</span><a href="#local-6989586621679112445"><span class="hs-identifier hs-var">ref1</span></a></span></span><span> </span><span id="local-6989586621679112446"><span class="annot"><span class="annottext">IORef [(t, t)]
+</span><a href="#local-6989586621679112446"><span class="hs-identifier hs-var">ref2</span></a></span></span><span> </span><span id="local-6989586621679112447"><span class="annot"><span class="annottext">t -&gt; t -&gt; IO a
+</span><a href="#local-6989586621679112447"><span class="hs-identifier hs-var">step</span></a></span></span><span> </span><span id="local-6989586621679112448"><span class="annot"><span class="annottext">[(t, t)]
+</span><a href="#local-6989586621679112448"><span class="hs-identifier hs-var">hsx</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(t, t)] -&gt; IO ()
+</span><a href="#local-6989586621679112449"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[(t, t)]
+</span><a href="#local-6989586621679112448"><span class="hs-identifier hs-var">hsx</span></a></span><span>
+</span><span id="line-127"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-128"></span><span>        </span><span id="local-6989586621679112449"><span class="annot"><span class="annottext">go :: [(t, t)] -&gt; IO ()
+</span><a href="#local-6989586621679112449"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-129"></span><span>        </span><span class="annot"><a href="#local-6989586621679112449"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621679112455"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679112455"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679112456"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679112456"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621679112457"><span class="annot"><span class="annottext">[(t, t)]
+</span><a href="#local-6989586621679112457"><span class="hs-identifier hs-var">hs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-130"></span><span>            </span><span class="annot"><span class="annottext">a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">t -&gt; t -&gt; IO a
+</span><a href="#local-6989586621679112447"><span class="hs-identifier hs-var">step</span></a></span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679112455"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679112456"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-131"></span><span>            </span><span class="annot"><span class="annottext">WriteBuffer -&gt; IO (Ptr Word8)
+</span><span class="hs-identifier hs-var">currentOffset</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112444"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">IO (Ptr Word8) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">IORef (Ptr Word8) -&gt; Ptr Word8 -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (Ptr Word8)
+</span><a href="#local-6989586621679112445"><span class="hs-identifier hs-var">ref1</span></a></span><span>
+</span><span id="line-132"></span><span>            </span><span class="annot"><span class="annottext">IORef [(t, t)] -&gt; [(t, t)] -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef [(t, t)]
+</span><a href="#local-6989586621679112446"><span class="hs-identifier hs-var">ref2</span></a></span><span> </span><span class="annot"><span class="annottext">[(t, t)]
+</span><a href="#local-6989586621679112457"><span class="hs-identifier hs-var">hs</span></a></span><span>
+</span><span id="line-133"></span><span>            </span><span class="annot"><span class="annottext">[(t, t)] -&gt; IO ()
+</span><a href="#local-6989586621679112449"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[(t, t)]
+</span><a href="#local-6989586621679112457"><span class="hs-identifier hs-var">hs</span></a></span><span>
+</span><span id="line-134"></span><span>
+</span><span id="line-135"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-136"></span><span>
+</span><span id="line-137"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#naiveStep"><span class="hs-identifier hs-type">naiveStep</span></a></span><span>
+</span><span id="line-138"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HPACK.Types.html#HeaderName"><span class="hs-identifier hs-type">HeaderName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Token.html#Token"><span class="hs-identifier hs-type">Token</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span id="naiveStep"><span class="annot"><span class="annottext">naiveStep :: FE -&gt; Token -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#naiveStep"><span class="hs-identifier hs-var hs-var">naiveStep</span></a></span></span><span> </span><span id="local-6989586621679112461"><span class="annot"><span class="annottext">FE
+</span><a href="#local-6989586621679112461"><span class="hs-identifier hs-var">fe</span></a></span></span><span> </span><span id="local-6989586621679112462"><span class="annot"><span class="annottext">Token
+</span><a href="#local-6989586621679112462"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621679112463"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112463"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FE
+</span><a href="#local-6989586621679112461"><span class="hs-identifier hs-var">fe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Token -&gt; ByteString
+</span><a href="Network.HPACK.Token.html#tokenFoldedKey"><span class="hs-identifier hs-var">tokenFoldedKey</span></a></span><span> </span><span class="annot"><span class="annottext">Token
+</span><a href="#local-6989586621679112462"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112463"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-140"></span><span>
+</span><span id="line-141"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-142"></span><span>
+</span><span id="line-143"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#staticStep"><span class="hs-identifier hs-type">staticStep</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FA"><span class="hs-identifier hs-type">FA</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FD"><span class="hs-identifier hs-type">FD</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FE"><span class="hs-identifier hs-type">FE</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Token.html#Token"><span class="hs-identifier hs-type">Token</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span id="staticStep"><span class="annot"><span class="annottext">staticStep :: FA -&gt; FD -&gt; FE -&gt; Token -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#staticStep"><span class="hs-identifier hs-var hs-var">staticStep</span></a></span></span><span> </span><span id="local-6989586621679112465"><span class="annot"><span class="annottext">FA
+</span><a href="#local-6989586621679112465"><span class="hs-identifier hs-var">fa</span></a></span></span><span> </span><span id="local-6989586621679112466"><span class="annot"><span class="annottext">FD
+</span><a href="#local-6989586621679112466"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span id="local-6989586621679112467"><span class="annot"><span class="annottext">FE
+</span><a href="#local-6989586621679112467"><span class="hs-identifier hs-var">fe</span></a></span></span><span> </span><span id="local-6989586621679112468"><span class="annot"><span class="annottext">Token
+</span><a href="#local-6989586621679112468"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621679112469"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112469"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Token -&gt; ByteString -&gt; FA -&gt; FD -&gt; FE -&gt; IO ()
+</span><a href="Network.HPACK.Table.RevIndex.html#lookupRevIndex%27"><span class="hs-identifier hs-var">lookupRevIndex'</span></a></span><span> </span><span class="annot"><span class="annottext">Token
+</span><a href="#local-6989586621679112468"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112469"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">FA
+</span><a href="#local-6989586621679112465"><span class="hs-identifier hs-var">fa</span></a></span><span> </span><span class="annot"><span class="annottext">FD
+</span><a href="#local-6989586621679112466"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="annot"><span class="annottext">FE
+</span><a href="#local-6989586621679112467"><span class="hs-identifier hs-var">fe</span></a></span><span>
+</span><span id="line-145"></span><span>
+</span><span id="line-146"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#linearStep"><span class="hs-identifier hs-type">linearStep</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.Table.RevIndex.html#RevIndex"><span class="hs-identifier hs-type">RevIndex</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FA"><span class="hs-identifier hs-type">FA</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FB"><span class="hs-identifier hs-type">FB</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FC"><span class="hs-identifier hs-type">FC</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FD"><span class="hs-identifier hs-type">FD</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Token.html#Token"><span class="hs-identifier hs-type">Token</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-149"></span><span id="linearStep"><span class="annot"><span class="annottext">linearStep :: RevIndex -&gt; FA -&gt; FB -&gt; FC -&gt; FD -&gt; Token -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#linearStep"><span class="hs-identifier hs-var hs-var">linearStep</span></a></span></span><span> </span><span id="local-6989586621679112471"><span class="annot"><span class="annottext">RevIndex
+</span><a href="#local-6989586621679112471"><span class="hs-identifier hs-var">rev</span></a></span></span><span> </span><span id="local-6989586621679112472"><span class="annot"><span class="annottext">FA
+</span><a href="#local-6989586621679112472"><span class="hs-identifier hs-var">fa</span></a></span></span><span> </span><span id="local-6989586621679112473"><span class="annot"><span class="annottext">FB
+</span><a href="#local-6989586621679112473"><span class="hs-identifier hs-var">fb</span></a></span></span><span> </span><span id="local-6989586621679112474"><span class="annot"><span class="annottext">FC
+</span><a href="#local-6989586621679112474"><span class="hs-identifier hs-var">fc</span></a></span></span><span> </span><span id="local-6989586621679112475"><span class="annot"><span class="annottext">FD
+</span><a href="#local-6989586621679112475"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span id="local-6989586621679112476"><span class="annot"><span class="annottext">Token
+</span><a href="#local-6989586621679112476"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621679112477"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112477"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Token -&gt; ByteString -&gt; FA -&gt; FB -&gt; FC -&gt; FD -&gt; RevIndex -&gt; IO ()
+</span><a href="Network.HPACK.Table.RevIndex.html#lookupRevIndex"><span class="hs-identifier hs-var">lookupRevIndex</span></a></span><span> </span><span class="annot"><span class="annottext">Token
+</span><a href="#local-6989586621679112476"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112477"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">FA
+</span><a href="#local-6989586621679112472"><span class="hs-identifier hs-var">fa</span></a></span><span> </span><span class="annot"><span class="annottext">FB
+</span><a href="#local-6989586621679112473"><span class="hs-identifier hs-var">fb</span></a></span><span> </span><span class="annot"><span class="annottext">FC
+</span><a href="#local-6989586621679112474"><span class="hs-identifier hs-var">fc</span></a></span><span> </span><span class="annot"><span class="annottext">FD
+</span><a href="#local-6989586621679112475"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="annot"><span class="annottext">RevIndex
+</span><a href="#local-6989586621679112471"><span class="hs-identifier hs-var">rev</span></a></span><span>
+</span><span id="line-150"></span><span>
+</span><span id="line-151"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-152"></span><span>
+</span><span id="line-153"></span><span class="hs-keyword">type</span><span> </span><span id="FA"><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FA"><span class="hs-identifier hs-var">FA</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HIndex"><span class="hs-identifier hs-type">HIndex</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-154"></span><span class="hs-keyword">type</span><span> </span><span id="FB"><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FB"><span class="hs-identifier hs-var">FB</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Entry.html#Entry"><span class="hs-identifier hs-type">Entry</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HIndex"><span class="hs-identifier hs-type">HIndex</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-155"></span><span class="hs-keyword">type</span><span> </span><span id="FC"><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FC"><span class="hs-identifier hs-var">FC</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderName"><span class="hs-identifier hs-type">HeaderName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Entry.html#Entry"><span class="hs-identifier hs-type">Entry</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-156"></span><span class="hs-keyword">type</span><span> </span><span id="FD"><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FD"><span class="hs-identifier hs-var">FD</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HIndex"><span class="hs-identifier hs-type">HIndex</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-157"></span><span class="hs-keyword">type</span><span> </span><span id="FE"><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FE"><span class="hs-identifier hs-var">FE</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderName"><span class="hs-identifier hs-type">HeaderName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-158"></span><span>
+</span><span id="line-159"></span><span class="hs-comment">-- 6.1.  Indexed Header Field Representation</span><span>
+</span><span id="line-160"></span><span class="hs-comment">-- Indexed Header Field</span><span>
+</span><span id="line-161"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#indexedHeaderField"><span class="hs-identifier hs-type">indexedHeaderField</span></a></span><span>
+</span><span id="line-162"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#DynamicTable"><span class="hs-identifier hs-type">DynamicTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FA"><span class="hs-identifier hs-type">FA</span></a></span><span>
+</span><span id="line-163"></span><span id="indexedHeaderField"><span class="annot"><span class="annottext">indexedHeaderField :: DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FA
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#indexedHeaderField"><span class="hs-identifier hs-var hs-var">indexedHeaderField</span></a></span></span><span> </span><span id="local-6989586621679112479"><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112479"><span class="hs-identifier hs-var">dyntbl</span></a></span></span><span> </span><span id="local-6989586621679112480"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112480"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679112481"><span class="annot"><span class="annottext">HIndex
+</span><a href="#local-6989586621679112481"><span class="hs-identifier hs-var">hidx</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-164"></span><span>    </span><span class="annot"><span class="annottext">DynamicTable -&gt; HIndex -&gt; IO Int
+</span><a href="Network.HPACK.Table.Dynamic.html#fromHIndexToIndex"><span class="hs-identifier hs-var">fromHIndexToIndex</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112479"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">HIndex
+</span><a href="#local-6989586621679112481"><span class="hs-identifier hs-var">hidx</span></a></span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; (Int -&gt; IO ()) -&gt; IO ()
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#index"><span class="hs-identifier hs-var">index</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112480"><span class="hs-identifier hs-var">wbuf</span></a></span><span>
+</span><span id="line-165"></span><span>
+</span><span id="line-166"></span><span class="hs-comment">-- 6.2.1.  Literal Header Field with Incremental Indexing</span><span>
+</span><span id="line-167"></span><span class="hs-comment">-- Literal Header Field with Incremental Indexing -- Indexed Name</span><span>
+</span><span id="line-168"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithIncrementalIndexingIndexedName"><span class="hs-identifier hs-type">literalHeaderFieldWithIncrementalIndexingIndexedName</span></a></span><span>
+</span><span id="line-169"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#DynamicTable"><span class="hs-identifier hs-type">DynamicTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FB"><span class="hs-identifier hs-type">FB</span></a></span><span>
+</span><span id="line-170"></span><span id="literalHeaderFieldWithIncrementalIndexingIndexedName"><span class="annot"><span class="annottext">literalHeaderFieldWithIncrementalIndexingIndexedName :: DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FB
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithIncrementalIndexingIndexedName"><span class="hs-identifier hs-var hs-var">literalHeaderFieldWithIncrementalIndexingIndexedName</span></a></span></span><span> </span><span id="local-6989586621679112484"><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112484"><span class="hs-identifier hs-var">dyntbl</span></a></span></span><span> </span><span id="local-6989586621679112485"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112485"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112486"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112486"><span class="hs-identifier hs-var">huff</span></a></span></span><span> </span><span id="local-6989586621679112487"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112487"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621679112488"><span class="annot"><span class="annottext">Entry
+</span><a href="#local-6989586621679112488"><span class="hs-identifier hs-var">ent</span></a></span></span><span> </span><span id="local-6989586621679112489"><span class="annot"><span class="annottext">HIndex
+</span><a href="#local-6989586621679112489"><span class="hs-identifier hs-var">hidx</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-171"></span><span>    </span><span class="annot"><span class="annottext">DynamicTable -&gt; HIndex -&gt; IO Int
+</span><a href="Network.HPACK.Table.Dynamic.html#fromHIndexToIndex"><span class="hs-identifier hs-var">fromHIndexToIndex</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112484"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">HIndex
+</span><a href="#local-6989586621679112489"><span class="hs-identifier hs-var">hidx</span></a></span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; (Int -&gt; IO ()) -&gt; IO ()
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Bool -&gt; Int -&gt; Setter -&gt; ByteString -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#indexedName"><span class="hs-identifier hs-var">indexedName</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112485"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112486"><span class="hs-identifier hs-var">huff</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set01"><span class="hs-identifier hs-var">set01</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112487"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-172"></span><span>    </span><span class="annot"><span class="annottext">Entry -&gt; DynamicTable -&gt; IO ()
+</span><a href="Network.HPACK.Table.Dynamic.html#insertEntry"><span class="hs-identifier hs-var">insertEntry</span></a></span><span> </span><span class="annot"><span class="annottext">Entry
+</span><a href="#local-6989586621679112488"><span class="hs-identifier hs-var">ent</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112484"><span class="hs-identifier hs-var">dyntbl</span></a></span><span>
+</span><span id="line-173"></span><span>
+</span><span id="line-174"></span><span class="hs-comment">-- 6.2.1.  Literal Header Field with Incremental Indexing</span><span>
+</span><span id="line-175"></span><span class="hs-comment">-- Literal Header Field with Incremental Indexing -- New Name</span><span>
+</span><span id="line-176"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithIncrementalIndexingNewName"><span class="hs-identifier hs-type">literalHeaderFieldWithIncrementalIndexingNewName</span></a></span><span>
+</span><span id="line-177"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#DynamicTable"><span class="hs-identifier hs-type">DynamicTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FC"><span class="hs-identifier hs-type">FC</span></a></span><span>
+</span><span id="line-178"></span><span id="literalHeaderFieldWithIncrementalIndexingNewName"><span class="annot"><span class="annottext">literalHeaderFieldWithIncrementalIndexingNewName :: DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FC
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithIncrementalIndexingNewName"><span class="hs-identifier hs-var hs-var">literalHeaderFieldWithIncrementalIndexingNewName</span></a></span></span><span> </span><span id="local-6989586621679112493"><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112493"><span class="hs-identifier hs-var">dyntbl</span></a></span></span><span> </span><span id="local-6989586621679112494"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112494"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112495"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112495"><span class="hs-identifier hs-var">huff</span></a></span></span><span> </span><span id="local-6989586621679112496"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112496"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span id="local-6989586621679112497"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112497"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621679112498"><span class="annot"><span class="annottext">Entry
+</span><a href="#local-6989586621679112498"><span class="hs-identifier hs-var">ent</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-179"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Bool -&gt; Setter -&gt; FE
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#newName"><span class="hs-identifier hs-var">newName</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112494"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112495"><span class="hs-identifier hs-var">huff</span></a></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set01"><span class="hs-identifier hs-var">set01</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112496"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112497"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-180"></span><span>    </span><span class="annot"><span class="annottext">Entry -&gt; DynamicTable -&gt; IO ()
+</span><a href="Network.HPACK.Table.Dynamic.html#insertEntry"><span class="hs-identifier hs-var">insertEntry</span></a></span><span> </span><span class="annot"><span class="annottext">Entry
+</span><a href="#local-6989586621679112498"><span class="hs-identifier hs-var">ent</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112493"><span class="hs-identifier hs-var">dyntbl</span></a></span><span>
+</span><span id="line-181"></span><span>
+</span><span id="line-182"></span><span class="hs-comment">-- 6.2.2.  Literal Header Field without Indexing</span><span>
+</span><span id="line-183"></span><span class="hs-comment">-- Literal Header Field without Indexing -- Indexed Name</span><span>
+</span><span id="line-184"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithoutIndexingIndexedName"><span class="hs-identifier hs-type">literalHeaderFieldWithoutIndexingIndexedName</span></a></span><span>
+</span><span id="line-185"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#DynamicTable"><span class="hs-identifier hs-type">DynamicTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FD"><span class="hs-identifier hs-type">FD</span></a></span><span>
+</span><span id="line-186"></span><span id="literalHeaderFieldWithoutIndexingIndexedName"><span class="annot"><span class="annottext">literalHeaderFieldWithoutIndexingIndexedName :: DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FD
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithoutIndexingIndexedName"><span class="hs-identifier hs-var hs-var">literalHeaderFieldWithoutIndexingIndexedName</span></a></span></span><span> </span><span id="local-6989586621679112500"><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112500"><span class="hs-identifier hs-var">dyntbl</span></a></span></span><span> </span><span id="local-6989586621679112501"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112501"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112502"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112502"><span class="hs-identifier hs-var">huff</span></a></span></span><span> </span><span id="local-6989586621679112503"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112503"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621679112504"><span class="annot"><span class="annottext">HIndex
+</span><a href="#local-6989586621679112504"><span class="hs-identifier hs-var">hidx</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-187"></span><span>    </span><span class="annot"><span class="annottext">DynamicTable -&gt; HIndex -&gt; IO Int
+</span><a href="Network.HPACK.Table.Dynamic.html#fromHIndexToIndex"><span class="hs-identifier hs-var">fromHIndexToIndex</span></a></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><a href="#local-6989586621679112500"><span class="hs-identifier hs-var">dyntbl</span></a></span><span> </span><span class="annot"><span class="annottext">HIndex
+</span><a href="#local-6989586621679112504"><span class="hs-identifier hs-var">hidx</span></a></span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; (Int -&gt; IO ()) -&gt; IO ()
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Bool -&gt; Int -&gt; Setter -&gt; ByteString -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#indexedName"><span class="hs-identifier hs-var">indexedName</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112501"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112502"><span class="hs-identifier hs-var">huff</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set0000"><span class="hs-identifier hs-var">set0000</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112503"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-188"></span><span>
+</span><span id="line-189"></span><span class="hs-comment">-- 6.2.2.  Literal Header Field without Indexing</span><span>
+</span><span id="line-190"></span><span class="hs-comment">-- Literal Header Field without Indexing -- New Name</span><span>
+</span><span id="line-191"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithoutIndexingNewName"><span class="hs-identifier hs-type">literalHeaderFieldWithoutIndexingNewName</span></a></span><span>
+</span><span id="line-192"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#DynamicTable"><span class="hs-identifier hs-type">DynamicTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#FE"><span class="hs-identifier hs-type">FE</span></a></span><span>
+</span><span id="line-193"></span><span id="literalHeaderFieldWithoutIndexingNewName"><span class="annot"><span class="annottext">literalHeaderFieldWithoutIndexingNewName :: DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FE
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithoutIndexingNewName"><span class="hs-identifier hs-var hs-var">literalHeaderFieldWithoutIndexingNewName</span></a></span></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679112506"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112506"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112507"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112507"><span class="hs-identifier hs-var">huff</span></a></span></span><span> </span><span id="local-6989586621679112508"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112508"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span id="local-6989586621679112509"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112509"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-194"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Bool -&gt; Setter -&gt; FE
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#newName"><span class="hs-identifier hs-var">newName</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112506"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112507"><span class="hs-identifier hs-var">huff</span></a></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set0000"><span class="hs-identifier hs-var">set0000</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112508"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112509"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-195"></span><span>
+</span><span id="line-196"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithoutIndexingNewName%27"><span class="hs-identifier hs-type">literalHeaderFieldWithoutIndexingNewName'</span></a></span><span>
+</span><span id="line-197"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.Table.Dynamic.html#DynamicTable"><span class="hs-identifier hs-type">DynamicTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderName"><span class="hs-identifier hs-type">HeaderName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-198"></span><span id="literalHeaderFieldWithoutIndexingNewName%27"><span class="annot"><span class="annottext">literalHeaderFieldWithoutIndexingNewName' :: DynamicTable -&gt; WriteBuffer -&gt; Bool -&gt; FE
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#literalHeaderFieldWithoutIndexingNewName%27"><span class="hs-identifier hs-var hs-var">literalHeaderFieldWithoutIndexingNewName'</span></a></span></span><span> </span><span class="annot"><span class="annottext">DynamicTable
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679112510"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112510"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112511"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112511"><span class="hs-identifier hs-var">huff</span></a></span></span><span> </span><span id="local-6989586621679112512"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112512"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span id="local-6989586621679112513"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112513"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-199"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Bool -&gt; Setter -&gt; FE
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#newName"><span class="hs-identifier hs-var">newName</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112510"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112511"><span class="hs-identifier hs-var">huff</span></a></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set0000"><span class="hs-identifier hs-var">set0000</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112512"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112513"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-200"></span><span>
+</span><span id="line-201"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-202"></span><span>
+</span><span id="line-203"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#change"><span class="hs-pragma hs-type">change</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-204"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#change"><span class="hs-identifier hs-type">change</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-205"></span><span id="change"><span class="annot"><span class="annottext">change :: WriteBuffer -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#change"><span class="hs-identifier hs-var hs-var">change</span></a></span></span><span> </span><span id="local-6989586621679112514"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112514"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112515"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112515"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Setter -&gt; Int -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Integer.html#encodeI"><span class="hs-identifier hs-var">encodeI</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112514"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set001"><span class="hs-identifier hs-var">set001</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">5</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112515"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-206"></span><span>
+</span><span id="line-207"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#index"><span class="hs-pragma hs-type">index</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-208"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#index"><span class="hs-identifier hs-type">index</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-209"></span><span id="index"><span class="annot"><span class="annottext">index :: WriteBuffer -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#index"><span class="hs-identifier hs-var hs-var">index</span></a></span></span><span> </span><span id="local-6989586621679112518"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112518"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112519"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112519"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Setter -&gt; Int -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Integer.html#encodeI"><span class="hs-identifier hs-var">encodeI</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112518"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set1"><span class="hs-identifier hs-var">set1</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">7</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112519"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-210"></span><span>
+</span><span id="line-211"></span><span class="hs-comment">-- Using Huffman encoding</span><span>
+</span><span id="line-212"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#indexedName"><span class="hs-pragma hs-type">indexedName</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-213"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#indexedName"><span class="hs-identifier hs-type">indexedName</span></a></span><span>
+</span><span id="line-214"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#Setter"><span class="hs-identifier hs-type">Setter</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#Index"><span class="hs-identifier hs-type">Index</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-215"></span><span id="indexedName"><span class="annot"><span class="annottext">indexedName :: WriteBuffer -&gt; Bool -&gt; Int -&gt; Setter -&gt; ByteString -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#indexedName"><span class="hs-identifier hs-var hs-var">indexedName</span></a></span></span><span> </span><span id="local-6989586621679112522"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112522"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112523"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112523"><span class="hs-identifier hs-var">huff</span></a></span></span><span> </span><span id="local-6989586621679112524"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112524"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621679112525"><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112525"><span class="hs-identifier hs-var">set</span></a></span></span><span> </span><span id="local-6989586621679112526"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112526"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621679112527"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112527"><span class="hs-identifier hs-var">idx</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-216"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Setter -&gt; Int -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Integer.html#encodeI"><span class="hs-identifier hs-var">encodeI</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112522"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112525"><span class="hs-identifier hs-var">set</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112524"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112527"><span class="hs-identifier hs-var">idx</span></a></span><span>
+</span><span id="line-217"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Bool -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encStr"><span class="hs-identifier hs-var">encStr</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112522"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112523"><span class="hs-identifier hs-var">huff</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112526"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-218"></span><span>
+</span><span id="line-219"></span><span class="hs-comment">-- Using Huffman encoding</span><span>
+</span><span id="line-220"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#newName"><span class="hs-pragma hs-type">newName</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-221"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#newName"><span class="hs-identifier hs-type">newName</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#Setter"><span class="hs-identifier hs-type">Setter</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderName"><span class="hs-identifier hs-type">HeaderName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HPACK.Types.html#HeaderValue"><span class="hs-identifier hs-type">HeaderValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-222"></span><span id="newName"><span class="annot"><span class="annottext">newName :: WriteBuffer -&gt; Bool -&gt; Setter -&gt; FE
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#newName"><span class="hs-identifier hs-var hs-var">newName</span></a></span></span><span> </span><span id="local-6989586621679112529"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112529"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112530"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112530"><span class="hs-identifier hs-var">huff</span></a></span></span><span> </span><span id="local-6989586621679112531"><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112531"><span class="hs-identifier hs-var">set</span></a></span></span><span> </span><span id="local-6989586621679112532"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112532"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span id="local-6989586621679112533"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112533"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-223"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Word8 -&gt; IO ()
+</span><span class="hs-identifier hs-var">write8</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112529"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">(Word8 -&gt; IO ()) -&gt; Word8 -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112531"><span class="hs-identifier hs-var">set</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-224"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Bool -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encStr"><span class="hs-identifier hs-var">encStr</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112529"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112530"><span class="hs-identifier hs-var">huff</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112532"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-225"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Bool -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encStr"><span class="hs-identifier hs-var">encStr</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112529"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112530"><span class="hs-identifier hs-var">huff</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112533"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-226"></span><span>
+</span><span id="line-227"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-228"></span><span>
+</span><span id="line-229"></span><span class="hs-keyword">type</span><span> </span><span id="Setter"><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#Setter"><span class="hs-identifier hs-var">Setter</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>
+</span><span id="line-230"></span><span>
+</span><span id="line-231"></span><span class="hs-comment">-- Assuming MSBs are 0.</span><span>
+</span><span id="line-232"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#set1"><span class="hs-identifier hs-type">set1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#set01"><span class="hs-identifier hs-type">set01</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#set001"><span class="hs-identifier hs-type">set001</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#set0000"><span class="hs-identifier hs-type">set0000</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#Setter"><span class="hs-identifier hs-type">Setter</span></a></span><span>
+</span><span id="line-233"></span><span id="set1"><span class="annot"><span class="annottext">set1 :: Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set1"><span class="hs-identifier hs-var hs-var">set1</span></a></span></span><span> </span><span id="local-6989586621679112535"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679112535"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679112535"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int -&gt; Word8
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`setBit`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">7</span></span><span>
+</span><span id="line-234"></span><span id="set01"><span class="annot"><span class="annottext">set01 :: Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set01"><span class="hs-identifier hs-var hs-var">set01</span></a></span></span><span> </span><span id="local-6989586621679112537"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679112537"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679112537"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int -&gt; Word8
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`setBit`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span>
+</span><span id="line-235"></span><span id="set001"><span class="annot"><span class="annottext">set001 :: Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set001"><span class="hs-identifier hs-var hs-var">set001</span></a></span></span><span> </span><span id="local-6989586621679112538"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679112538"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679112538"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int -&gt; Word8
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`setBit`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">5</span></span><span>
+</span><span id="line-236"></span><span class="hs-comment">-- set0001 x = x `setBit` 4 -- Never indexing</span><span>
+</span><span id="line-237"></span><span id="set0000"><span class="annot"><span class="annottext">set0000 :: Setter
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#set0000"><span class="hs-identifier hs-var hs-var">set0000</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Setter
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span>
+</span><span id="line-238"></span><span>
+</span><span id="line-239"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-240"></span><span>
+</span><span id="line-241"></span><span class="hs-comment">-- | String encoding.</span><span>
+</span><span id="line-242"></span><span class="hs-comment">--   The algorithm based on copy avoidance and</span><span>
+</span><span id="line-243"></span><span class="hs-comment">--   selection of better result of huffman or raw.</span><span>
+</span><span id="line-244"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encodeS"><span class="hs-identifier hs-type">encodeS</span></a></span><span>
+</span><span id="line-245"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span>
+</span><span id="line-246"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-247"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Use Huffman if efficient</span></span><span>
+</span><span id="line-248"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-249"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Setting prefix</span></span><span>
+</span><span id="line-250"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-251"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Setting huffman flag</span></span><span>
+</span><span id="line-252"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-253"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ N+</span></span><span>
+</span><span id="line-254"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-255"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Target</span></span><span>
+</span><span id="line-256"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-257"></span><span id="encodeS"><span class="annot"><span class="annottext">encodeS :: WriteBuffer
+-&gt; Bool -&gt; Setter -&gt; Setter -&gt; Int -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encodeS"><span class="hs-identifier hs-var hs-var">encodeS</span></a></span></span><span> </span><span id="local-6989586621679112540"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112540"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span id="local-6989586621679112541"><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112541"><span class="hs-identifier hs-var">set</span></a></span></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679112542"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112542"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621679112543"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112543"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-258"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679112544"><span class="annot"><span class="annottext">len :: Int
+</span><a href="#local-6989586621679112544"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">BS.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112543"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-259"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Setter -&gt; Int -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Integer.html#encodeI"><span class="hs-identifier hs-var">encodeI</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112540"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112541"><span class="hs-identifier hs-var">set</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112542"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112544"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-260"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; ByteString -&gt; IO ()
+</span><span class="hs-identifier hs-var">copyByteString</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112540"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112543"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-261"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encodeS"><span class="hs-identifier hs-var">encodeS</span></a></span><span> </span><span id="local-6989586621679112547"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span> </span><span id="local-6989586621679112548"><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112548"><span class="hs-identifier hs-var">set</span></a></span></span><span> </span><span id="local-6989586621679112549"><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112549"><span class="hs-identifier hs-var">setH</span></a></span></span><span> </span><span id="local-6989586621679112550"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112550"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621679112551"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112551"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-262"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679112552"><span class="annot"><span class="annottext">origLen :: Int
+</span><a href="#local-6989586621679112552"><span class="hs-identifier hs-var hs-var">origLen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">BS.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112551"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-263"></span><span>        </span><span id="local-6989586621679112558"><span class="annot"><span class="annottext">expectedLen :: Int
+</span><a href="#local-6989586621679112558"><span class="hs-identifier hs-var hs-var">expectedLen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112552"><span class="hs-identifier hs-var">origLen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`div`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span> </span><span class="hs-comment">-- 80%: decided by examples</span><span>
+</span><span id="line-264"></span><span>        </span><span id="local-6989586621679112561"><span class="annot"><span class="annottext">expectedIntLen :: Int
+</span><a href="#local-6989586621679112561"><span class="hs-identifier hs-var hs-var">expectedIntLen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-var">integerLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112550"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112558"><span class="hs-identifier hs-var">expectedLen</span></a></span><span>
+</span><span id="line-265"></span><span>    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int -&gt; IO ()
+forall a. Readable a =&gt; a -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">ff</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112561"><span class="hs-identifier hs-var">expectedIntLen</span></a></span><span>
+</span><span id="line-266"></span><span>    </span><span id="local-6989586621679112564"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">WriteBuffer -&gt; ByteString -&gt; IO Int
+</span><a href="Network.HPACK.Huffman.Encode.html#encodeH"><span class="hs-identifier hs-var">encodeH</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112551"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-267"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679112566"><span class="annot"><span class="annottext">intLen :: Int
+</span><a href="#local-6989586621679112566"><span class="hs-identifier hs-var hs-var">intLen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-var">integerLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112550"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-268"></span><span>    </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112552"><span class="hs-identifier hs-var">origLen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-269"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-270"></span><span>            </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int -&gt; IO ()
+forall a. Readable a =&gt; a -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">ff</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">negate</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112561"><span class="hs-identifier hs-var">expectedIntLen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-271"></span><span>            </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Setter -&gt; Int -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Integer.html#encodeI"><span class="hs-identifier hs-var">encodeI</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112548"><span class="hs-identifier hs-var">set</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112550"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112552"><span class="hs-identifier hs-var">origLen</span></a></span><span>
+</span><span id="line-272"></span><span>            </span><span class="annot"><span class="annottext">WriteBuffer -&gt; ByteString -&gt; IO ()
+</span><span class="hs-identifier hs-var">copyByteString</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112551"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-273"></span><span>        </span><span class="hs-keyword">else</span><span>
+</span><span id="line-274"></span><span>            </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112566"><span class="hs-identifier hs-var">intLen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112561"><span class="hs-identifier hs-var">expectedIntLen</span></a></span><span>
+</span><span id="line-275"></span><span>                </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-276"></span><span>                    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int -&gt; IO ()
+forall a. Readable a =&gt; a -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">ff</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">negate</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112561"><span class="hs-identifier hs-var">expectedIntLen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-277"></span><span>                    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Setter -&gt; Int -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Integer.html#encodeI"><span class="hs-identifier hs-var">encodeI</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112548"><span class="hs-identifier hs-var">set</span></a></span><span> </span><span class="annot"><span class="annottext">Setter -&gt; Setter -&gt; Setter
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112549"><span class="hs-identifier hs-var">setH</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112550"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-278"></span><span>                    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int -&gt; IO ()
+forall a. Readable a =&gt; a -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">ff</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-279"></span><span>                </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-280"></span><span>                    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679112571"><span class="annot"><span class="annottext">gap :: Int
+</span><a href="#local-6989586621679112571"><span class="hs-identifier hs-var hs-var">gap</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112566"><span class="hs-identifier hs-var">intLen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112561"><span class="hs-identifier hs-var">expectedIntLen</span></a></span><span>
+</span><span id="line-281"></span><span>                    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">shiftLastN</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112571"><span class="hs-identifier hs-var">gap</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-282"></span><span>                    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int -&gt; IO ()
+forall a. Readable a =&gt; a -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">ff</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">negate</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112566"><span class="hs-identifier hs-var">intLen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-283"></span><span>                    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Setter -&gt; Int -&gt; Int -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Integer.html#encodeI"><span class="hs-identifier hs-var">encodeI</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112548"><span class="hs-identifier hs-var">set</span></a></span><span> </span><span class="annot"><span class="annottext">Setter -&gt; Setter -&gt; Setter
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Setter
+</span><a href="#local-6989586621679112549"><span class="hs-identifier hs-var">setH</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112550"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-284"></span><span>                    </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Int -&gt; IO ()
+forall a. Readable a =&gt; a -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">ff</span></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112547"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112564"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-285"></span><span>
+</span><span id="line-286"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encStr"><span class="hs-pragma hs-type">encStr</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-287"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encStr"><span class="hs-identifier hs-type">encStr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">WriteBuffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-288"></span><span id="encStr"><span class="annot"><span class="annottext">encStr :: WriteBuffer -&gt; Bool -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encStr"><span class="hs-identifier hs-var hs-var">encStr</span></a></span></span><span> </span><span id="local-6989586621679112573"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112573"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span id="local-6989586621679112574"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112574"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679112575"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112575"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+-&gt; Bool -&gt; Setter -&gt; Setter -&gt; Int -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encodeS"><span class="hs-identifier hs-var">encodeS</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112573"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112574"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Setter
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Int -&gt; Word8
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`setBit`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">7</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">7</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112575"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-289"></span><span>
+</span><span id="line-290"></span><span class="annot"><span class="hs-comment">-- | String encoding (7+) with a temporary buffer whose size is 4096.</span></span><span>
+</span><span id="line-291"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#encodeString"><span class="hs-identifier hs-type">encodeString</span></a></span><span>
+</span><span id="line-292"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-293"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Use Huffman if efficient</span></span><span>
+</span><span id="line-294"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-295"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Target</span></span><span>
+</span><span id="line-296"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-297"></span><span id="encodeString"><span class="annot"><span class="annottext">encodeString :: Bool -&gt; ByteString -&gt; IO ByteString
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encodeString"><span class="hs-identifier hs-var hs-var">encodeString</span></a></span></span><span> </span><span id="local-6989586621679112576"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112576"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679112577"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112577"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (WriteBuffer -&gt; IO ()) -&gt; IO ByteString
+</span><span class="hs-identifier hs-var">withWriteBuffer</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4096</span></span><span> </span><span class="annot"><span class="annottext">((WriteBuffer -&gt; IO ()) -&gt; IO ByteString)
+-&gt; (WriteBuffer -&gt; IO ()) -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679112579"><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112579"><span class="hs-identifier hs-var">wbuf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">WriteBuffer -&gt; Bool -&gt; ByteString -&gt; IO ()
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#encStr"><span class="hs-identifier hs-var">encStr</span></a></span><span> </span><span class="annot"><span class="annottext">WriteBuffer
+</span><a href="#local-6989586621679112579"><span class="hs-identifier hs-var">wbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679112576"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679112577"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-298"></span><span>
+</span><span id="line-299"></span><span class="hs-comment">{-
+N+   1   2     3 &lt;- bytes
+8  254 382 16638
+7  126 254 16510
+6   62 190 16446
+5   30 158 16414
+4   14 142 16398
+3    6 134 16390
+2    2 130 16386
+1    0 128 16384
+-}</span><span>
+</span><span id="line-310"></span><span>
+</span><span id="line-311"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-pragma hs-type">integerLength</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-312"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-type">integerLength</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-313"></span><span id="integerLength"><span class="annot"><span class="annottext">integerLength :: Int -&gt; Int -&gt; Int
+</span><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-var hs-var">integerLength</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span> </span><span id="local-6989586621679112580"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112580"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-314"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112580"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">254</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-315"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112580"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">382</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-316"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span>
+</span><span id="line-317"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-var">integerLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">7</span></span><span> </span><span id="local-6989586621679112582"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112582"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-318"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112582"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">126</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-319"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112582"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">254</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-320"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span>
+</span><span id="line-321"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-var">integerLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span> </span><span id="local-6989586621679112583"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112583"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-322"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112583"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">62</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-323"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112583"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">190</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-324"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span>
+</span><span id="line-325"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-var">integerLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">5</span></span><span> </span><span id="local-6989586621679112584"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112584"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-326"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112584"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">30</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-327"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112584"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">158</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-328"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span>
+</span><span id="line-329"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-var">integerLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span id="local-6989586621679112585"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112585"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-330"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112585"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">14</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-331"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112585"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">142</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-332"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span>
+</span><span id="line-333"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-var">integerLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span id="local-6989586621679112586"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112586"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-334"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112586"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-335"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112586"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">134</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-336"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span>
+</span><span id="line-337"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-var">integerLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span id="local-6989586621679112587"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112587"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-338"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112587"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-339"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112587"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">130</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-340"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span>
+</span><span id="line-341"></span><span class="annot"><a href="Network.HPACK.HeaderBlock.Encode.html#integerLength"><span class="hs-identifier hs-var">integerLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679112588"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112588"><span class="hs-identifier hs-var">l</span></a></span></span><span>
+</span><span id="line-342"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112588"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-343"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679112588"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">128</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-344"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span>
+</span><span id="line-345"></span></pre></body></html>

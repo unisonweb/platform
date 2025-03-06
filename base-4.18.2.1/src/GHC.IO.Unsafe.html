@@ -1,0 +1,263 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE Unsafe #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE NoImplicitPrelude
+           , MagicHash
+           , UnboxedTuples
+  #-}</span><span>
+</span><span id="line-6"></span><span class="hs-pragma">{-# OPTIONS_HADDOCK not-home #-}</span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- Module      :  GHC.IO.Unsafe</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- Copyright   :  (c) The University of Glasgow 1994-2002</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- License     :  see libraries/base/LICENSE</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- Maintainer  :  cvs-ghc@haskell.org</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- Stability   :  internal</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- Portability :  non-portable (GHC Extensions)</span><span>
+</span><span id="line-17"></span><span class="hs-comment">--</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- Unsafe IO operations</span><span>
+</span><span id="line-19"></span><span class="hs-comment">--</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.IO.Unsafe</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-23"></span><span>    </span><span class="annot"><a href="GHC.IO.Unsafe.html#unsafePerformIO"><span class="hs-identifier">unsafePerformIO</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.IO.Unsafe.html#unsafeInterleaveIO"><span class="hs-identifier">unsafeInterleaveIO</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-24"></span><span>    </span><span class="annot"><a href="GHC.IO.Unsafe.html#unsafeDupablePerformIO"><span class="hs-identifier">unsafeDupablePerformIO</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.IO.Unsafe.html#unsafeDupableInterleaveIO"><span class="hs-identifier">unsafeDupableInterleaveIO</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>    </span><span class="annot"><a href="GHC.IO.Unsafe.html#noDuplicate"><span class="hs-identifier">noDuplicate</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-26"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Base.html"><span class="hs-identifier">GHC.Base</span></a></span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="hs-comment">{-
+Note [unsafePerformIO and strictness]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Consider this sub-expression (from tests/lib/should_run/memo002)
+
+ unsafePerformIO (do { lockMemoTable
+                     ; let r = f x
+                     ; updateMemoTable x r
+                     ; unlockMemoTable
+                     ; return r })
+
+It's super-important that the `let r = f x` is lazy. If the demand
+analyser sees that `r` is sure to be demanded, it'll use call-by-value
+for (f x), that will try to lock the already-locked table =&gt; deadlock.
+See #19181 and #19413.
+
+Now `r` doesn't look strict, because it's wrapped in a `return`.
+But if we were to define unsafePerformIO like this
+  unsafePerformIO (IO m) = case runRW# m of (# _, r #) -&gt; r
+
+then we'll push that `case` inside the argument to runRW#, giving
+  runRW# (\s -&gt; case lockMemoTable s of s1 -&gt;
+                let r = f x in
+                case updateMemoTable s1 of s2 -&gt;
+                case unlockMemoTable s2 of _ -&gt;
+                r)
+
+And now that `let` really does look strict.  No good!
+
+Solution: wrap the result of the unsafePerformIO in 'lazy', to conceal
+it from the demand analyser:
+  unsafePerformIO (IO m) = case runRW# m of (# _, r #) -&gt; lazy r
+                                                 ------&gt;  ^^^^
+See also Note [lazyId magic] in GHC.Types.Id.Make
+-}</span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span class="annot"><span class="hs-comment">{-|
+This is the \&quot;back door\&quot; into the 'IO' monad, allowing
+'IO' computation to be performed at any time.  For
+this to be safe, the 'IO' computation should be
+free of side effects and independent of its environment.
+
+If the I\/O computation wrapped in 'unsafePerformIO' performs side
+effects, then the relative order in which those side effects take
+place (relative to the main I\/O trunk, or other calls to
+'unsafePerformIO') is indeterminate.  Furthermore, when using
+'unsafePerformIO' to cause side-effects, you should take the following
+precautions to ensure the side effects are performed as many times as
+you expect them to be.  Note that these precautions are necessary for
+GHC, but may not be sufficient, and other compilers may require
+different precautions:
+
+  * Use @{\-\# NOINLINE foo \#-\}@ as a pragma on any function @foo@
+        that calls 'unsafePerformIO'.  If the call is inlined,
+        the I\/O may be performed more than once.
+
+  * Use the compiler flag @-fno-cse@ to prevent common sub-expression
+        elimination being performed on the module, which might combine
+        two side effects that were meant to be separate.  A good example
+        is using multiple global variables (like @test@ in the example below).
+
+  * Make sure that the either you switch off let-floating (@-fno-full-laziness@), or that the
+        call to 'unsafePerformIO' cannot float outside a lambda.  For example,
+        if you say:
+        @
+           f x = unsafePerformIO (newIORef [])
+        @
+        you may get only one reference cell shared between all calls to @f@.
+        Better would be
+        @
+           f x = unsafePerformIO (newIORef [x])
+        @
+        because now it can't float outside the lambda.
+
+It is less well known that
+'unsafePerformIO' is not type safe.  For example:
+
+&gt;     test :: IORef [a]
+&gt;     test = unsafePerformIO $ newIORef []
+&gt;
+&gt;     main = do
+&gt;             writeIORef test [42]
+&gt;             bang &lt;- readIORef test
+&gt;             print (bang :: [Char])
+
+This program will core dump.  This problem with polymorphic references
+is well known in the ML community, and does not arise with normal
+monadic use of references.  There is no easy way to make it impossible
+once you use 'unsafePerformIO'.  Indeed, it is
+possible to write @coerce :: a -&gt; b@ with the
+help of 'unsafePerformIO'.  So be careful!
+
+WARNING: If you're looking for &quot;a way to get a 'String' from an 'IO String'&quot;,
+then 'unsafePerformIO' is not the way to go.  Learn about do-notation and the
+@&lt;-@ syntax element before you proceed.
+-}</span></span><span>
+</span><span id="line-126"></span><span id="local-6989586621679591745"><span class="annot"><a href="GHC.IO.Unsafe.html#unsafePerformIO"><span class="hs-identifier hs-type">unsafePerformIO</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679591745"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679591745"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-127"></span><span id="unsafePerformIO"><span class="annot"><span class="annottext">unsafePerformIO :: forall a. IO a -&gt; a
+</span><a href="GHC.IO.Unsafe.html#unsafePerformIO"><span class="hs-identifier hs-var hs-var">unsafePerformIO</span></a></span></span><span> </span><span id="local-6989586621679591769"><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679591769"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; a
+forall a. IO a -&gt; a
+</span><a href="GHC.IO.Unsafe.html#unsafeDupablePerformIO"><span class="hs-identifier hs-var">unsafeDupablePerformIO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IO ()
+</span><a href="GHC.IO.Unsafe.html#noDuplicate"><span class="hs-identifier hs-var">noDuplicate</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO a -&gt; IO a
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><a href="GHC.Base.html#%3E%3E"><span class="hs-operator hs-var">&gt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679591769"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-128"></span><span>
+</span><span id="line-129"></span><span class="annot"><span class="hs-comment">{-|
+This version of 'unsafePerformIO' is more efficient
+because it omits the check that the IO is only being performed by a
+single thread.  Hence, when you use 'unsafeDupablePerformIO',
+there is a possibility that the IO action may be performed multiple
+times (on a multiprocessor), and you should therefore ensure that
+it gives the same results each time. It may even happen that one
+of the duplicated IO actions is only run partially, and then interrupted
+in the middle without an exception being raised. Therefore, functions
+like 'Control.Exception.bracket' cannot be used safely within
+'unsafeDupablePerformIO'.
+
+@since 4.4.0.0
+-}</span></span><span>
+</span><span id="line-143"></span><span id="local-6989586621679591770"><span class="annot"><a href="GHC.IO.Unsafe.html#unsafeDupablePerformIO"><span class="hs-identifier hs-type">unsafeDupablePerformIO</span></a></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679591770"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679591770"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-144"></span><span class="hs-comment">-- See Note [unsafePerformIO and strictness]</span><span>
+</span><span id="line-145"></span><span id="unsafeDupablePerformIO"><span class="annot"><span class="annottext">unsafeDupablePerformIO :: forall a. IO a -&gt; a
+</span><a href="GHC.IO.Unsafe.html#unsafeDupablePerformIO"><span class="hs-identifier hs-var hs-var">unsafeDupablePerformIO</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span id="local-6989586621679591771"><span class="annot"><span class="annottext">State# RealWorld -&gt; (# State# RealWorld, a #)
+</span><a href="#local-6989586621679591771"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, a #))
+-&gt; (# State# RealWorld, a #)
+forall o. (State# RealWorld -&gt; o) -&gt; o
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Magic.html#runRW%23/GHC.Magic.html#runRW%23"><span class="hs-identifier hs-var">runRW#</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld -&gt; (# State# RealWorld, a #)
+</span><a href="#local-6989586621679591771"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679591772"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679591772"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a -&gt; a
+forall a. a -&gt; a
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Magic.html#lazy/GHC.Magic.html#lazy"><span class="hs-identifier hs-var">lazy</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679591772"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-146"></span><span>
+</span><span id="line-147"></span><span class="annot"><span class="hs-comment">{-|
+'unsafeInterleaveIO' allows an 'IO' computation to be deferred lazily.
+When passed a value of type @IO a@, the 'IO' will only be performed
+when the value of the @a@ is demanded.  This is used to implement lazy
+file reading, see 'System.IO.hGetContents'.
+-}</span></span><span>
+</span><span id="line-153"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="GHC.IO.Unsafe.html#unsafeInterleaveIO"><span class="hs-pragma hs-type">unsafeInterleaveIO</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-154"></span><span id="local-6989586621679591754"><span class="annot"><a href="GHC.IO.Unsafe.html#unsafeInterleaveIO"><span class="hs-identifier hs-type">unsafeInterleaveIO</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679591754"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679591754"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-155"></span><span id="unsafeInterleaveIO"><span class="annot"><span class="annottext">unsafeInterleaveIO :: forall a. IO a -&gt; IO a
+</span><a href="GHC.IO.Unsafe.html#unsafeInterleaveIO"><span class="hs-identifier hs-var hs-var">unsafeInterleaveIO</span></a></span></span><span> </span><span id="local-6989586621679591774"><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679591774"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; IO a
+forall a. IO a -&gt; IO a
+</span><a href="GHC.IO.Unsafe.html#unsafeDupableInterleaveIO"><span class="hs-identifier hs-var">unsafeDupableInterleaveIO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IO ()
+</span><a href="GHC.IO.Unsafe.html#noDuplicate"><span class="hs-identifier hs-var">noDuplicate</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO a -&gt; IO a
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><a href="GHC.Base.html#%3E%3E"><span class="hs-operator hs-var">&gt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679591774"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-156"></span><span>
+</span><span id="line-157"></span><span class="hs-comment">-- Note [unsafeDupableInterleaveIO should not be inlined]</span><span>
+</span><span id="line-158"></span><span class="hs-comment">-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</span><span>
+</span><span id="line-159"></span><span class="hs-comment">--</span><span>
+</span><span id="line-160"></span><span class="hs-comment">-- We used to believe that INLINE on unsafeInterleaveIO was safe,</span><span>
+</span><span id="line-161"></span><span class="hs-comment">-- because the state from this IO thread is passed explicitly to the</span><span>
+</span><span id="line-162"></span><span class="hs-comment">-- interleaved IO, so it cannot be floated out and shared.</span><span>
+</span><span id="line-163"></span><span class="hs-comment">--</span><span>
+</span><span id="line-164"></span><span class="hs-comment">-- HOWEVER, if the compiler figures out that r is used strictly here,</span><span>
+</span><span id="line-165"></span><span class="hs-comment">-- then it will eliminate the thunk and the side effects in m will no</span><span>
+</span><span id="line-166"></span><span class="hs-comment">-- longer be shared in the way the programmer was probably expecting,</span><span>
+</span><span id="line-167"></span><span class="hs-comment">-- but can be performed many times.  In #5943, this broke our</span><span>
+</span><span id="line-168"></span><span class="hs-comment">-- definition of fixIO, which contains</span><span>
+</span><span id="line-169"></span><span class="hs-comment">--</span><span>
+</span><span id="line-170"></span><span class="hs-comment">--    ans &lt;- unsafeInterleaveIO (takeMVar m)</span><span>
+</span><span id="line-171"></span><span class="hs-comment">--</span><span>
+</span><span id="line-172"></span><span class="hs-comment">-- after inlining, we lose the sharing of the takeMVar, so the second</span><span>
+</span><span id="line-173"></span><span class="hs-comment">-- time 'ans' was demanded we got a deadlock.  We could fix this with</span><span>
+</span><span id="line-174"></span><span class="hs-comment">-- a readMVar, but it seems wrong for unsafeInterleaveIO to sometimes</span><span>
+</span><span id="line-175"></span><span class="hs-comment">-- share and sometimes not (plus it probably breaks the noDuplicate).</span><span>
+</span><span id="line-176"></span><span class="hs-comment">-- So now, we do not inline unsafeDupableInterleaveIO.</span><span>
+</span><span id="line-177"></span><span>
+</span><span id="line-178"></span><span class="annot"><span class="hs-comment">{-|
+'unsafeDupableInterleaveIO' allows an 'IO' computation to be deferred lazily.
+When passed a value of type @IO a@, the 'IO' will only be performed
+when the value of the @a@ is demanded.
+
+The computation may be performed multiple times by different threads,
+possibly at the same time. To ensure that the computation is performed
+only once, use 'unsafeInterleaveIO' instead.
+-}</span></span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="GHC.IO.Unsafe.html#unsafeDupableInterleaveIO"><span class="hs-pragma hs-type">unsafeDupableInterleaveIO</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-189"></span><span class="hs-comment">-- See Note [unsafeDupableInterleaveIO should not be inlined]</span><span>
+</span><span id="line-190"></span><span id="local-6989586621679591775"><span class="annot"><a href="GHC.IO.Unsafe.html#unsafeDupableInterleaveIO"><span class="hs-identifier hs-type">unsafeDupableInterleaveIO</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679591775"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679591775"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-191"></span><span id="unsafeDupableInterleaveIO"><span class="annot"><span class="annottext">unsafeDupableInterleaveIO :: forall a. IO a -&gt; IO a
+</span><a href="GHC.IO.Unsafe.html#unsafeDupableInterleaveIO"><span class="hs-identifier hs-var hs-var">unsafeDupableInterleaveIO</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span id="local-6989586621679591776"><span class="annot"><span class="annottext">State# RealWorld -&gt; (# State# RealWorld, a #)
+</span><a href="#local-6989586621679591776"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-192"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-var">IO</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="hs-glyph">\</span><span> </span><span id="local-6989586621679591777"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679591777"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">let</span><span>
+</span><span id="line-193"></span><span>                   </span><span id="local-6989586621679591778"><span class="annot"><span class="annottext">r :: a
+</span><a href="#local-6989586621679591778"><span class="hs-identifier hs-var hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">State# RealWorld -&gt; (# State# RealWorld, a #)
+</span><a href="#local-6989586621679591776"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679591777"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679591779"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679591779"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679591779"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-194"></span><span>                </span><span class="hs-keyword">in</span><span>
+</span><span id="line-195"></span><span>                </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679591777"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679591778"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-special">#)</span><span class="hs-special">)</span><span>
+</span><span id="line-196"></span><span>
+</span><span id="line-197"></span><span class="annot"><span class="hs-comment">{-|
+Ensures that the suspensions under evaluation by the current thread
+are unique; that is, the current thread is not evaluating anything
+that is also under evaluation by another thread that has also executed
+'noDuplicate'.
+
+This operation is used in the definition of 'unsafePerformIO' to
+prevent the IO action from being executed multiple times, which is usually
+undesirable.
+-}</span></span><span>
+</span><span id="line-207"></span><span class="annot"><a href="GHC.IO.Unsafe.html#noDuplicate"><span class="hs-identifier hs-type">noDuplicate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-208"></span><span id="noDuplicate"><span class="annot"><span class="annottext">noDuplicate :: IO ()
+</span><a href="GHC.IO.Unsafe.html#noDuplicate"><span class="hs-identifier hs-var hs-var">noDuplicate</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ()
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-var">IO</span></a></span><span> </span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ())
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679591780"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679591780"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">State# RealWorld -&gt; State# RealWorld
+forall d. State# d -&gt; State# d
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#noDuplicate%23/GHC.Prim.html#noDuplicate%23"><span class="hs-identifier hs-var">noDuplicate#</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679591780"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span id="local-6989586621679591781"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679591781"><span class="hs-identifier hs-var">s'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679591781"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-209"></span></pre></body></html>

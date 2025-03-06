@@ -1,0 +1,1265 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE QuasiQuotes #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | There are many invariants we expect to hold in our sqlite database and on codebase</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- objects which we can't maintain using database checks. This module performs checks for some</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- of these invariants, which can be useful to run after performing potentially dangerous</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- operations like migrations.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Unison.Codebase.IntegrityCheck</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckFullCodebase"><span class="hs-identifier">integrityCheckFullCodebase</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllBranches"><span class="hs-identifier">integrityCheckAllBranches</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllCausals"><span class="hs-identifier">integrityCheckAllCausals</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#prettyPrintIntegrityErrors"><span class="hs-identifier">prettyPrintIntegrityErrors</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityResult"><span class="hs-identifier">IntegrityResult</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Lens</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List.NonEmpty</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">NEList</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Set</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set.NonEmpty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">NESet</span></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set.NonEmpty</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">NESet</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text.Lazy</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">TL</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text.Lazy.IO</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">TL</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Void</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Text.Pretty.Simple</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.HashTags</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">BranchHash</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Branch.Full</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">DBBranch</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.DbId</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">DB</span></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Operations</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Ops</span></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Queries</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Q</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Codebase.SqliteCodebase.Migrations.MigrateSchema1To2.DbHelpers.html"><span class="hs-identifier">Unison.Codebase.SqliteCodebase.Migrations.MigrateSchema1To2.DbHelpers</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Helpers</span></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Debug</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Debug</span></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Hash</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Hash</span></span><span class="hs-special">)</span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Hash</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Hash</span></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Prelude</span></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Sqlite</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Sqlite</span></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Util.Monoid</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">foldMapM</span></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Util.Pretty</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">P</span></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">log</span></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#debugLog"><span class="hs-identifier hs-type">debugLog</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">TL.Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span id="debugLog"><span class="annot"><span class="annottext">debugLog :: Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#debugLog"><span class="hs-identifier hs-var hs-var">debugLog</span></a></span></span><span> </span><span id="local-6989586621680495277"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621680495277"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DebugFlag -&gt; Transaction () -&gt; Transaction ()
+forall (m :: * -&gt; *). Monad m =&gt; DebugFlag -&gt; m () -&gt; m ()
+</span><span class="hs-identifier hs-var">Debug.whenDebug</span></span><span> </span><span class="annot"><span class="annottext">DebugFlag
+</span><span class="hs-identifier hs-var">Debug.Integrity</span></span><span> </span><span class="annot"><span class="annottext">(Transaction () -&gt; Transaction ())
+-&gt; Transaction () -&gt; Transaction ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#logInfo"><span class="hs-identifier hs-var">logInfo</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621680495277"><span class="hs-identifier hs-var">msg</span></a></span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#logInfo"><span class="hs-identifier hs-type">logInfo</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">TL.Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span id="logInfo"><span class="annot"><span class="annottext">logInfo :: Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#logInfo"><span class="hs-identifier hs-var hs-var">logInfo</span></a></span></span><span> </span><span id="local-6989586621680495281"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621680495281"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; Transaction ()
+forall a. HasCallStack =&gt; IO a -&gt; Transaction a
+</span><span class="hs-identifier hs-var">Sqlite.unsafeIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; Transaction ()) -&gt; IO () -&gt; Transaction ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">TL.putStrLn</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621680495281"><span class="hs-identifier hs-var">msg</span></a></span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#logError"><span class="hs-identifier hs-type">logError</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">TL.Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span id="logError"><span class="annot"><span class="annottext">logError :: Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#logError"><span class="hs-identifier hs-var hs-var">logError</span></a></span></span><span> </span><span id="local-6989586621680495285"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621680495285"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#logInfo"><span class="hs-identifier hs-var">logInfo</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Transaction ()) -&gt; Text -&gt; Transaction ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;  &#9888;&#65039;   &quot;</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621680495285"><span class="hs-identifier hs-var">msg</span></a></span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-keyword">data</span><span> </span><span id="IntegrityError"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityError"><span class="hs-identifier hs-var">IntegrityError</span></a></span></span><span>
+</span><span id="line-50"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="DetectedObjectsWithoutCorrespondingHashObjects"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#DetectedObjectsWithoutCorrespondingHashObjects"><span class="hs-identifier hs-var">DetectedObjectsWithoutCorrespondingHashObjects</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">NESet</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.ObjectId</span></span><span class="hs-special">)</span><span>
+</span><span id="line-51"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-comment">-- (causal hash, branch hash)</span><span>
+</span><span id="line-52"></span><span>    </span><span id="DetectedCausalsWithoutCorrespondingBranchObjects"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#DetectedCausalsWithoutCorrespondingBranchObjects"><span class="hs-identifier hs-var">DetectedCausalsWithoutCorrespondingBranchObjects</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">NESet</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="DetectedCausalsWithCausalHashAsBranchHash"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#DetectedCausalsWithCausalHashAsBranchHash"><span class="hs-identifier hs-var">DetectedCausalsWithCausalHashAsBranchHash</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">NESet</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span class="hs-special">)</span><span>
+</span><span id="line-54"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="DetectedBranchErrors"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#DetectedBranchErrors"><span class="hs-identifier hs-var">DetectedBranchErrors</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">BranchHash</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">NESet</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#BranchError"><span class="hs-identifier hs-type">BranchError</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-55"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="annot"><span class="hs-keyword">stock</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621680495291"><span id="local-6989586621680495306"><span id="local-6989586621680495310"><span class="annot"><span class="annottext">Int -&gt; IntegrityError -&gt; ShowS
+[IntegrityError] -&gt; ShowS
+IntegrityError -&gt; String
+(Int -&gt; IntegrityError -&gt; ShowS)
+-&gt; (IntegrityError -&gt; String)
+-&gt; ([IntegrityError] -&gt; ShowS)
+-&gt; Show IntegrityError
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; IntegrityError -&gt; ShowS
+showsPrec :: Int -&gt; IntegrityError -&gt; ShowS
+$cshow :: IntegrityError -&gt; String
+show :: IntegrityError -&gt; String
+$cshowList :: [IntegrityError] -&gt; ShowS
+showList :: [IntegrityError] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680495316"><span id="local-6989586621680495328"><span class="annot"><span class="annottext">IntegrityError -&gt; IntegrityError -&gt; Bool
+(IntegrityError -&gt; IntegrityError -&gt; Bool)
+-&gt; (IntegrityError -&gt; IntegrityError -&gt; Bool) -&gt; Eq IntegrityError
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: IntegrityError -&gt; IntegrityError -&gt; Bool
+== :: IntegrityError -&gt; IntegrityError -&gt; Bool
+$c/= :: IntegrityError -&gt; IntegrityError -&gt; Bool
+/= :: IntegrityError -&gt; IntegrityError -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680495340"><span id="local-6989586621680495349"><span id="local-6989586621680495353"><span id="local-6989586621680495356"><span id="local-6989586621680495359"><span id="local-6989586621680495362"><span id="local-6989586621680495365"><span class="annot"><span class="annottext">Eq IntegrityError
+Eq IntegrityError =&gt;
+(IntegrityError -&gt; IntegrityError -&gt; Ordering)
+-&gt; (IntegrityError -&gt; IntegrityError -&gt; Bool)
+-&gt; (IntegrityError -&gt; IntegrityError -&gt; Bool)
+-&gt; (IntegrityError -&gt; IntegrityError -&gt; Bool)
+-&gt; (IntegrityError -&gt; IntegrityError -&gt; Bool)
+-&gt; (IntegrityError -&gt; IntegrityError -&gt; IntegrityError)
+-&gt; (IntegrityError -&gt; IntegrityError -&gt; IntegrityError)
+-&gt; Ord IntegrityError
+IntegrityError -&gt; IntegrityError -&gt; Bool
+IntegrityError -&gt; IntegrityError -&gt; Ordering
+IntegrityError -&gt; IntegrityError -&gt; IntegrityError
+forall a.
+Eq a =&gt;
+(a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+$ccompare :: IntegrityError -&gt; IntegrityError -&gt; Ordering
+compare :: IntegrityError -&gt; IntegrityError -&gt; Ordering
+$c&lt; :: IntegrityError -&gt; IntegrityError -&gt; Bool
+&lt; :: IntegrityError -&gt; IntegrityError -&gt; Bool
+$c&lt;= :: IntegrityError -&gt; IntegrityError -&gt; Bool
+&lt;= :: IntegrityError -&gt; IntegrityError -&gt; Bool
+$c&gt; :: IntegrityError -&gt; IntegrityError -&gt; Bool
+&gt; :: IntegrityError -&gt; IntegrityError -&gt; Bool
+$c&gt;= :: IntegrityError -&gt; IntegrityError -&gt; Bool
+&gt;= :: IntegrityError -&gt; IntegrityError -&gt; Bool
+$cmax :: IntegrityError -&gt; IntegrityError -&gt; IntegrityError
+max :: IntegrityError -&gt; IntegrityError -&gt; IntegrityError
+$cmin :: IntegrityError -&gt; IntegrityError -&gt; IntegrityError
+min :: IntegrityError -&gt; IntegrityError -&gt; IntegrityError
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span>
+</span><span id="line-57"></span><span class="hs-keyword">data</span><span> </span><span id="BranchError"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#BranchError"><span class="hs-identifier hs-var">BranchError</span></a></span></span><span>
+</span><span id="line-58"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="IncorrectHashForBranch"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IncorrectHashForBranch"><span class="hs-identifier hs-var">IncorrectHashForBranch</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">BranchHash</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">BranchHash</span></span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="MismatchedObjectForChild"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#MismatchedObjectForChild"><span class="hs-identifier hs-var">MismatchedObjectForChild</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.BranchObjectId</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.BranchObjectId</span></span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="MissingObjectForChildCausal"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#MissingObjectForChildCausal"><span class="hs-identifier hs-var">MissingObjectForChildCausal</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span>
+</span><span id="line-61"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="MissingObject"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#MissingObject"><span class="hs-identifier hs-var">MissingObject</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.BranchObjectId</span></span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="MissingCausalForChild"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#MissingCausalForChild"><span class="hs-identifier hs-var">MissingCausalForChild</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span>
+</span><span id="line-63"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="ChildCausalHashObjectIdMismatch"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#ChildCausalHashObjectIdMismatch"><span class="hs-identifier hs-var">ChildCausalHashObjectIdMismatch</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.BranchObjectId</span></span><span>
+</span><span id="line-64"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="annot"><span class="hs-keyword">stock</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621680495375"><span id="local-6989586621680495393"><span id="local-6989586621680495396"><span class="annot"><span class="annottext">Int -&gt; BranchError -&gt; ShowS
+[BranchError] -&gt; ShowS
+BranchError -&gt; String
+(Int -&gt; BranchError -&gt; ShowS)
+-&gt; (BranchError -&gt; String)
+-&gt; ([BranchError] -&gt; ShowS)
+-&gt; Show BranchError
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; BranchError -&gt; ShowS
+showsPrec :: Int -&gt; BranchError -&gt; ShowS
+$cshow :: BranchError -&gt; String
+show :: BranchError -&gt; String
+$cshowList :: [BranchError] -&gt; ShowS
+showList :: [BranchError] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680495399"><span id="local-6989586621680495411"><span class="annot"><span class="annottext">BranchError -&gt; BranchError -&gt; Bool
+(BranchError -&gt; BranchError -&gt; Bool)
+-&gt; (BranchError -&gt; BranchError -&gt; Bool) -&gt; Eq BranchError
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: BranchError -&gt; BranchError -&gt; Bool
+== :: BranchError -&gt; BranchError -&gt; Bool
+$c/= :: BranchError -&gt; BranchError -&gt; Bool
+/= :: BranchError -&gt; BranchError -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680495416"><span id="local-6989586621680495429"><span id="local-6989586621680495432"><span id="local-6989586621680495435"><span id="local-6989586621680495438"><span id="local-6989586621680495441"><span id="local-6989586621680495444"><span class="annot"><span class="annottext">Eq BranchError
+Eq BranchError =&gt;
+(BranchError -&gt; BranchError -&gt; Ordering)
+-&gt; (BranchError -&gt; BranchError -&gt; Bool)
+-&gt; (BranchError -&gt; BranchError -&gt; Bool)
+-&gt; (BranchError -&gt; BranchError -&gt; Bool)
+-&gt; (BranchError -&gt; BranchError -&gt; Bool)
+-&gt; (BranchError -&gt; BranchError -&gt; BranchError)
+-&gt; (BranchError -&gt; BranchError -&gt; BranchError)
+-&gt; Ord BranchError
+BranchError -&gt; BranchError -&gt; Bool
+BranchError -&gt; BranchError -&gt; Ordering
+BranchError -&gt; BranchError -&gt; BranchError
+forall a.
+Eq a =&gt;
+(a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+$ccompare :: BranchError -&gt; BranchError -&gt; Ordering
+compare :: BranchError -&gt; BranchError -&gt; Ordering
+$c&lt; :: BranchError -&gt; BranchError -&gt; Bool
+&lt; :: BranchError -&gt; BranchError -&gt; Bool
+$c&lt;= :: BranchError -&gt; BranchError -&gt; Bool
+&lt;= :: BranchError -&gt; BranchError -&gt; Bool
+$c&gt; :: BranchError -&gt; BranchError -&gt; Bool
+&gt; :: BranchError -&gt; BranchError -&gt; Bool
+$c&gt;= :: BranchError -&gt; BranchError -&gt; Bool
+&gt;= :: BranchError -&gt; BranchError -&gt; Bool
+$cmax :: BranchError -&gt; BranchError -&gt; BranchError
+max :: BranchError -&gt; BranchError -&gt; BranchError
+$cmin :: BranchError -&gt; BranchError -&gt; BranchError
+min :: BranchError -&gt; BranchError -&gt; BranchError
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span class="hs-keyword">data</span><span> </span><span id="IntegrityResult"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityResult"><span class="hs-identifier hs-var">IntegrityResult</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="IntegrityErrorDetected"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-var">IntegrityErrorDetected</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">NESet</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityError"><span class="hs-identifier hs-type">IntegrityError</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span id="NoIntegrityErrors"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span></span><span>
+</span><span id="line-67"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="annot"><span class="hs-keyword">stock</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621680495449"><span id="local-6989586621680495454"><span id="local-6989586621680495458"><span class="annot"><span class="annottext">Int -&gt; IntegrityResult -&gt; ShowS
+[IntegrityResult] -&gt; ShowS
+IntegrityResult -&gt; String
+(Int -&gt; IntegrityResult -&gt; ShowS)
+-&gt; (IntegrityResult -&gt; String)
+-&gt; ([IntegrityResult] -&gt; ShowS)
+-&gt; Show IntegrityResult
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; IntegrityResult -&gt; ShowS
+showsPrec :: Int -&gt; IntegrityResult -&gt; ShowS
+$cshow :: IntegrityResult -&gt; String
+show :: IntegrityResult -&gt; String
+$cshowList :: [IntegrityResult] -&gt; ShowS
+showList :: [IntegrityResult] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680495461"><span id="local-6989586621680495465"><span class="annot"><span class="annottext">IntegrityResult -&gt; IntegrityResult -&gt; Bool
+(IntegrityResult -&gt; IntegrityResult -&gt; Bool)
+-&gt; (IntegrityResult -&gt; IntegrityResult -&gt; Bool)
+-&gt; Eq IntegrityResult
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+== :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+$c/= :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+/= :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680495471"><span id="local-6989586621680495475"><span id="local-6989586621680495479"><span id="local-6989586621680495483"><span id="local-6989586621680495486"><span id="local-6989586621680495489"><span id="local-6989586621680495492"><span class="annot"><span class="annottext">Eq IntegrityResult
+Eq IntegrityResult =&gt;
+(IntegrityResult -&gt; IntegrityResult -&gt; Ordering)
+-&gt; (IntegrityResult -&gt; IntegrityResult -&gt; Bool)
+-&gt; (IntegrityResult -&gt; IntegrityResult -&gt; Bool)
+-&gt; (IntegrityResult -&gt; IntegrityResult -&gt; Bool)
+-&gt; (IntegrityResult -&gt; IntegrityResult -&gt; Bool)
+-&gt; (IntegrityResult -&gt; IntegrityResult -&gt; IntegrityResult)
+-&gt; (IntegrityResult -&gt; IntegrityResult -&gt; IntegrityResult)
+-&gt; Ord IntegrityResult
+IntegrityResult -&gt; IntegrityResult -&gt; Bool
+IntegrityResult -&gt; IntegrityResult -&gt; Ordering
+IntegrityResult -&gt; IntegrityResult -&gt; IntegrityResult
+forall a.
+Eq a =&gt;
+(a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+$ccompare :: IntegrityResult -&gt; IntegrityResult -&gt; Ordering
+compare :: IntegrityResult -&gt; IntegrityResult -&gt; Ordering
+$c&lt; :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+&lt; :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+$c&lt;= :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+&lt;= :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+$c&gt; :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+&gt; :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+$c&gt;= :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+&gt;= :: IntegrityResult -&gt; IntegrityResult -&gt; Bool
+$cmax :: IntegrityResult -&gt; IntegrityResult -&gt; IntegrityResult
+max :: IntegrityResult -&gt; IntegrityResult -&gt; IntegrityResult
+$cmin :: IntegrityResult -&gt; IntegrityResult -&gt; IntegrityResult
+min :: IntegrityResult -&gt; IntegrityResult -&gt; IntegrityResult
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621680495496"><span id="local-6989586621680495499"><span class="annot"><span class="hs-identifier hs-type">Semigroup</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityResult"><span class="hs-identifier hs-type">IntegrityResult</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-70"></span><span>  </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-type">IntegrityErrorDetected</span></a></span><span> </span><span id="local-6989586621680495507"><span class="annot"><span class="annottext">NESet IntegrityError
+</span><a href="#local-6989586621680495507"><span class="hs-identifier hs-var">errA</span></a></span></span><span> </span><span id="local-6989586621680495508"><span class="annot"><span class="annottext">&lt;&gt; :: IntegrityResult -&gt; IntegrityResult -&gt; IntegrityResult
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;&gt;</span></span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-type">IntegrityErrorDetected</span></a></span><span> </span><span id="local-6989586621680495509"><span class="annot"><span class="annottext">NESet IntegrityError
+</span><a href="#local-6989586621680495509"><span class="hs-identifier hs-var">errB</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NESet IntegrityError -&gt; IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-var">IntegrityErrorDetected</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">NESet IntegrityError
+</span><a href="#local-6989586621680495507"><span class="hs-identifier hs-var">errA</span></a></span><span> </span><span class="annot"><span class="annottext">NESet IntegrityError
+-&gt; NESet IntegrityError -&gt; NESet IntegrityError
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">NESet IntegrityError
+</span><a href="#local-6989586621680495509"><span class="hs-identifier hs-var">errB</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-71"></span><span>  </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-type">IntegrityErrorDetected</span></a></span><span> </span><span id="local-6989586621680495510"><span class="annot"><span class="annottext">NESet IntegrityError
+</span><a href="#local-6989586621680495510"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NESet IntegrityError -&gt; IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-var">IntegrityErrorDetected</span></a></span><span> </span><span class="annot"><span class="annottext">NESet IntegrityError
+</span><a href="#local-6989586621680495510"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-72"></span><span>  </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-type">IntegrityErrorDetected</span></a></span><span> </span><span id="local-6989586621680495511"><span class="annot"><span class="annottext">NESet IntegrityError
+</span><a href="#local-6989586621680495511"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="annot"><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NESet IntegrityError -&gt; IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-var">IntegrityErrorDetected</span></a></span><span> </span><span class="annot"><span class="annottext">NESet IntegrityError
+</span><a href="#local-6989586621680495511"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-73"></span><span>  </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621680495516"><span id="local-6989586621680495519"><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityResult"><span class="hs-identifier hs-type">IntegrityResult</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-76"></span><span>  </span><span id="local-6989586621680495522"><span class="annot"><span class="annottext">mempty :: IntegrityResult
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">mempty</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllHashObjects"><span class="hs-identifier hs-type">integrityCheckAllHashObjects</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityResult"><span class="hs-identifier hs-type">IntegrityResult</span></a></span><span>
+</span><span id="line-79"></span><span id="integrityCheckAllHashObjects"><span class="annot"><span class="annottext">integrityCheckAllHashObjects :: Transaction IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllHashObjects"><span class="hs-identifier hs-var hs-var">integrityCheckAllHashObjects</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-80"></span><span>  </span><span class="annot"><span class="annottext">forall a. (FromField a, HasCallStack) =&gt; Sql -&gt; Transaction [a]
+</span><span class="hs-identifier hs-var">Sqlite.queryListCol</span></span><span> </span><span class="hs-glyph">@</span><span class="annot"><span class="hs-identifier hs-type">DB.ObjectId</span></span><span> </span><span class="annot"><span class="annottext">Sql
+</span><a href="#local-6989586621680495525"><span class="hs-identifier hs-var">objectsWithoutHashObjectsSQL</span></a></span><span> </span><span class="annot"><span class="annottext">Transaction [ObjectId]
+-&gt; ([ObjectId] -&gt; Transaction IntegrityResult)
+-&gt; Transaction IntegrityResult
+forall a b. Transaction a -&gt; (a -&gt; Transaction b) -&gt; Transaction b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-81"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621680495526"><span class="annot"><span class="annottext">ObjectId
+</span><a href="#local-6989586621680495526"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621680495527"><span class="annot"><span class="annottext">[ObjectId]
+</span><a href="#local-6989586621680495527"><span class="hs-identifier hs-var">os</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-82"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680495528"><span class="annot"><span class="annottext">badObjects :: NESet ObjectId
+</span><a href="#local-6989586621680495528"><span class="hs-identifier hs-var hs-var">badObjects</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NonEmpty ObjectId -&gt; NESet ObjectId
+forall a. Ord a =&gt; NonEmpty a -&gt; NESet a
+</span><span class="hs-identifier hs-var">NESet.fromList</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ObjectId
+</span><a href="#local-6989586621680495526"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">ObjectId -&gt; [ObjectId] -&gt; NonEmpty ObjectId
+forall a. a -&gt; [a] -&gt; NonEmpty a
+</span><span class="hs-operator hs-var">NEList.:|</span></span><span> </span><span class="annot"><span class="annottext">[ObjectId]
+</span><a href="#local-6989586621680495527"><span class="hs-identifier hs-var">os</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-83"></span><span>      </span><span class="annot"><span class="annottext">IntegrityResult -&gt; Transaction IntegrityResult
+forall a. a -&gt; Transaction a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(IntegrityResult -&gt; Transaction IntegrityResult)
+-&gt; IntegrityResult -&gt; Transaction IntegrityResult
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NESet IntegrityError -&gt; IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-var">IntegrityErrorDetected</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntegrityError -&gt; NESet IntegrityError
+forall a. a -&gt; NESet a
+</span><span class="hs-identifier hs-var">NESet.singleton</span></span><span> </span><span class="annot"><span class="annottext">(IntegrityError -&gt; NESet IntegrityError)
+-&gt; IntegrityError -&gt; NESet IntegrityError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NESet ObjectId -&gt; IntegrityError
+</span><a href="Unison.Codebase.IntegrityCheck.html#DetectedObjectsWithoutCorrespondingHashObjects"><span class="hs-identifier hs-var">DetectedObjectsWithoutCorrespondingHashObjects</span></a></span><span> </span><span class="annot"><span class="annottext">NESet ObjectId
+</span><a href="#local-6989586621680495528"><span class="hs-identifier hs-var">badObjects</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-84"></span><span>    </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-85"></span><span>      </span><span class="annot"><span class="annottext">IntegrityResult -&gt; Transaction IntegrityResult
+forall a. a -&gt; Transaction a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span><span>
+</span><span id="line-86"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-87"></span><span>    </span><span id="local-6989586621680495525"><span class="annot"><span class="annottext">objectsWithoutHashObjectsSQL :: Sql
+</span><a href="#local-6989586621680495525"><span class="hs-identifier hs-var hs-var">objectsWithoutHashObjectsSQL</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-88"></span><span>      </span><span class="annot"><span class="">[Sqlite.sql|
+        SELECT o.id
+        FROM object AS o
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM hash_object as ho
+          WHERE ho.object_id = o.id
+        )
+      |]</span></span><span>
+</span><span id="line-97"></span><span>
+</span><span id="line-98"></span><span class="annot"><span class="hs-comment">-- | Performs a bevy of checks on causals.</span></span><span>
+</span><span id="line-99"></span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllCausals"><span class="hs-identifier hs-type">integrityCheckAllCausals</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityResult"><span class="hs-identifier hs-type">IntegrityResult</span></a></span><span>
+</span><span id="line-100"></span><span id="integrityCheckAllCausals"><span class="annot"><span class="annottext">integrityCheckAllCausals :: Transaction IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllCausals"><span class="hs-identifier hs-var hs-var">integrityCheckAllCausals</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-101"></span><span>  </span><span id="local-6989586621680495537"><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="#local-6989586621680495537"><span class="hs-identifier hs-var">branchObjIntegrity</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-102"></span><span>    </span><span class="annot"><span class="annottext">forall a. (FromRow a, HasCallStack) =&gt; Sql -&gt; Transaction [a]
+</span><span class="hs-identifier hs-var">Sqlite.queryListRow</span></span><span> </span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">DB.CausalHashId</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.BranchHashId</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Sql
+</span><a href="#local-6989586621680495539"><span class="hs-identifier hs-var">causalsWithMissingBranchObjects</span></a></span><span> </span><span class="annot"><span class="annottext">Transaction [(CausalHashId, BranchHashId)]
+-&gt; ([(CausalHashId, BranchHashId)] -&gt; Transaction IntegrityResult)
+-&gt; Transaction IntegrityResult
+forall a b. Transaction a -&gt; (a -&gt; Transaction b) -&gt; Transaction b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-103"></span><span>      </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IntegrityResult -&gt; Transaction IntegrityResult
+forall a. a -&gt; Transaction a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span><span>
+</span><span id="line-104"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621680495540"><span class="annot"><span class="annottext">(CausalHashId, BranchHashId)
+</span><a href="#local-6989586621680495540"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621680495541"><span class="annot"><span class="annottext">[(CausalHashId, BranchHashId)]
+</span><a href="#local-6989586621680495541"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-105"></span><span>        </span><span id="local-6989586621680495542"><span class="annot"><span class="annottext">NonEmpty (Hash, Hash)
+</span><a href="#local-6989586621680495542"><span class="hs-identifier hs-var">badCausals</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">NonEmpty (CausalHashId, BranchHashId)
+-&gt; ((CausalHashId, BranchHashId) -&gt; Transaction (Hash, Hash))
+-&gt; Transaction (NonEmpty (Hash, Hash))
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+t a -&gt; (a -&gt; f b) -&gt; f (t b)
+</span><span class="hs-identifier hs-var">for</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(CausalHashId, BranchHashId)
+</span><a href="#local-6989586621680495540"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">(CausalHashId, BranchHashId)
+-&gt; [(CausalHashId, BranchHashId)]
+-&gt; NonEmpty (CausalHashId, BranchHashId)
+forall a. a -&gt; [a] -&gt; NonEmpty a
+</span><span class="hs-operator hs-var">NEList.:|</span></span><span> </span><span class="annot"><span class="annottext">[(CausalHashId, BranchHashId)]
+</span><a href="#local-6989586621680495541"><span class="hs-identifier hs-var">cs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(((CausalHashId, BranchHashId) -&gt; Transaction (Hash, Hash))
+ -&gt; Transaction (NonEmpty (Hash, Hash)))
+-&gt; ((CausalHashId, BranchHashId) -&gt; Transaction (Hash, Hash))
+-&gt; Transaction (NonEmpty (Hash, Hash))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621680495544"><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495544"><span class="hs-identifier hs-var">causalHashId</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680495545"><span class="annot"><span class="annottext">BranchHashId
+</span><a href="#local-6989586621680495545"><span class="hs-identifier hs-var">branchHashId</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-106"></span><span>          </span><span id="local-6989586621680495546"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495546"><span class="hs-identifier hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">HashId -&gt; Transaction Hash
+</span><span class="hs-identifier hs-var">Q.expectHash</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CausalHashId -&gt; HashId
+</span><span class="hs-identifier hs-var">DB.unCausalHashId</span></span><span> </span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495544"><span class="hs-identifier hs-var">causalHashId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>          </span><span id="local-6989586621680495549"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495549"><span class="hs-identifier hs-var">bh</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">HashId -&gt; Transaction Hash
+</span><span class="hs-identifier hs-var">Q.expectHash</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchHashId -&gt; HashId
+</span><span class="hs-identifier hs-var">DB.unBranchHashId</span></span><span> </span><span class="annot"><span class="annottext">BranchHashId
+</span><a href="#local-6989586621680495545"><span class="hs-identifier hs-var">branchHashId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-108"></span><span>          </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495546"><span class="hs-identifier hs-var">ch</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495549"><span class="hs-identifier hs-var">bh</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-109"></span><span>        </span><span class="annot"><span class="annottext">Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#logError"><span class="hs-identifier hs-var">logError</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Transaction ()) -&gt; Text -&gt; Transaction ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Detected &quot;</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Text
+forall a. Show a =&gt; a -&gt; Text
+</span><span class="hs-identifier hs-var">pShow</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">NonEmpty (Hash, Hash) -&gt; Int
+forall a. NonEmpty a -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">NonEmpty (Hash, Hash)
+</span><a href="#local-6989586621680495542"><span class="hs-identifier hs-var">badCausals</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot; causals with missing branch objects.&quot;</span></span><span>
+</span><span id="line-110"></span><span>        </span><span class="annot"><span class="annottext">Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#debugLog"><span class="hs-identifier hs-var">debugLog</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Transaction ())
+-&gt; (NonEmpty (Hash, Hash) -&gt; Text)
+-&gt; NonEmpty (Hash, Hash)
+-&gt; Transaction ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">NonEmpty (Hash, Hash) -&gt; Text
+forall a. Show a =&gt; a -&gt; Text
+</span><span class="hs-identifier hs-var">pShow</span></span><span> </span><span class="annot"><span class="annottext">(NonEmpty (Hash, Hash) -&gt; Transaction ())
+-&gt; NonEmpty (Hash, Hash) -&gt; Transaction ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NonEmpty (Hash, Hash)
+</span><a href="#local-6989586621680495542"><span class="hs-identifier hs-var">badCausals</span></a></span><span>
+</span><span id="line-111"></span><span>        </span><span class="hs-identifier">pure</span><span> </span><span class="hs-operator">$</span><span> </span><span class="annot"><span class="annottext">NESet IntegrityError -&gt; IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-var">IntegrityErrorDetected</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntegrityError -&gt; NESet IntegrityError
+forall a. a -&gt; NESet a
+</span><span class="hs-identifier hs-var">NESet.singleton</span></span><span> </span><span class="annot"><span class="annottext">(IntegrityError -&gt; NESet IntegrityError)
+-&gt; IntegrityError -&gt; NESet IntegrityError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NESet (Hash, Hash) -&gt; IntegrityError
+</span><a href="Unison.Codebase.IntegrityCheck.html#DetectedCausalsWithoutCorrespondingBranchObjects"><span class="hs-identifier hs-var">DetectedCausalsWithoutCorrespondingBranchObjects</span></a></span><span> </span><span class="annot"><span class="annottext">(NESet (Hash, Hash) -&gt; IntegrityError)
+-&gt; NESet (Hash, Hash) -&gt; IntegrityError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NonEmpty (Hash, Hash) -&gt; NESet (Hash, Hash)
+forall a. Ord a =&gt; NonEmpty a -&gt; NESet a
+</span><span class="hs-identifier hs-var">NESet.fromList</span></span><span> </span><span class="annot"><span class="annottext">NonEmpty (Hash, Hash)
+</span><a href="#local-6989586621680495542"><span class="hs-identifier hs-var">badCausals</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span>
+</span><span id="line-113"></span><span>  </span><span id="local-6989586621680495554"><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="#local-6989586621680495554"><span class="hs-identifier hs-var">differingBranchHashIntegrity</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-114"></span><span>    </span><span class="annot"><span class="annottext">forall a. (FromField a, HasCallStack) =&gt; Sql -&gt; Transaction [a]
+</span><span class="hs-identifier hs-var">Sqlite.queryListCol</span></span><span> </span><span class="hs-glyph">@</span><span class="annot"><span class="hs-identifier hs-type">DB.HashId</span></span><span> </span><span class="annot"><span class="annottext">Sql
+</span><a href="#local-6989586621680495555"><span class="hs-identifier hs-var">causalsWithMatchingValueHashAndSelfHash</span></a></span><span> </span><span class="annot"><span class="annottext">Transaction [HashId]
+-&gt; ([HashId] -&gt; Transaction IntegrityResult)
+-&gt; Transaction IntegrityResult
+forall a b. Transaction a -&gt; (a -&gt; Transaction b) -&gt; Transaction b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-115"></span><span>      </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IntegrityResult -&gt; Transaction IntegrityResult
+forall a. a -&gt; Transaction a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span><span>
+</span><span id="line-116"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621680495556"><span class="annot"><span class="annottext">HashId
+</span><a href="#local-6989586621680495556"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621680495557"><span class="annot"><span class="annottext">[HashId]
+</span><a href="#local-6989586621680495557"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-117"></span><span>        </span><span id="local-6989586621680495558"><span class="annot"><span class="annottext">NonEmpty Hash
+</span><a href="#local-6989586621680495558"><span class="hs-identifier hs-var">badCausalHashes</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">NonEmpty HashId
+-&gt; (HashId -&gt; Transaction Hash) -&gt; Transaction (NonEmpty Hash)
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+t a -&gt; (a -&gt; f b) -&gt; f (t b)
+</span><span class="hs-identifier hs-var">for</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HashId
+</span><a href="#local-6989586621680495556"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">HashId -&gt; [HashId] -&gt; NonEmpty HashId
+forall a. a -&gt; [a] -&gt; NonEmpty a
+</span><span class="hs-operator hs-var">NEList.:|</span></span><span> </span><span class="annot"><span class="annottext">[HashId]
+</span><a href="#local-6989586621680495557"><span class="hs-identifier hs-var">cs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">HashId -&gt; Transaction Hash
+</span><span class="hs-identifier hs-var">Q.expectHash</span></span><span>
+</span><span id="line-118"></span><span>        </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">NESet IntegrityError -&gt; IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-var">IntegrityErrorDetected</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntegrityError -&gt; NESet IntegrityError
+forall a. a -&gt; NESet a
+</span><span class="hs-identifier hs-var">NESet.singleton</span></span><span> </span><span class="annot"><span class="annottext">(IntegrityError -&gt; NESet IntegrityError)
+-&gt; IntegrityError -&gt; NESet IntegrityError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NESet Hash -&gt; IntegrityError
+</span><a href="Unison.Codebase.IntegrityCheck.html#DetectedCausalsWithCausalHashAsBranchHash"><span class="hs-identifier hs-var">DetectedCausalsWithCausalHashAsBranchHash</span></a></span><span> </span><span class="annot"><span class="annottext">(NESet Hash -&gt; IntegrityError) -&gt; NESet Hash -&gt; IntegrityError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NonEmpty Hash -&gt; NESet Hash
+forall a. Ord a =&gt; NonEmpty a -&gt; NESet a
+</span><span class="hs-identifier hs-var">NESet.fromList</span></span><span> </span><span class="annot"><span class="annottext">NonEmpty Hash
+</span><a href="#local-6989586621680495558"><span class="hs-identifier hs-var">badCausalHashes</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-119"></span><span>  </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="#local-6989586621680495537"><span class="hs-identifier hs-var">branchObjIntegrity</span></a></span><span> </span><span class="annot"><span class="annottext">IntegrityResult -&gt; IntegrityResult -&gt; IntegrityResult
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="#local-6989586621680495554"><span class="hs-identifier hs-var">differingBranchHashIntegrity</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-120"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-121"></span><span>    </span><span class="annot"><a href="#local-6989586621680495539"><span class="hs-identifier hs-type">causalsWithMissingBranchObjects</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Sql</span></span><span>
+</span><span id="line-122"></span><span>    </span><span id="local-6989586621680495539"><span class="annot"><span class="annottext">causalsWithMissingBranchObjects :: Sql
+</span><a href="#local-6989586621680495539"><span class="hs-identifier hs-var hs-var">causalsWithMissingBranchObjects</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-123"></span><span>      </span><span class="annot"><span class="">[Sqlite.sql|
+        SELECT c.self_hash_id, c.value_hash_id
+          FROM causal c
+          WHERE NOT EXISTS (SELECT 1 from object o WHERE o.primary_hash_id = c.value_hash_id);
+      |]</span></span><span>
+</span><span id="line-128"></span><span>    </span><span class="annot"><a href="#local-6989586621680495555"><span class="hs-identifier hs-type">causalsWithMatchingValueHashAndSelfHash</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Sql</span></span><span>
+</span><span id="line-129"></span><span>    </span><span id="local-6989586621680495555"><span class="annot"><span class="annottext">causalsWithMatchingValueHashAndSelfHash :: Sql
+</span><a href="#local-6989586621680495555"><span class="hs-identifier hs-var hs-var">causalsWithMatchingValueHashAndSelfHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-130"></span><span>      </span><span class="annot"><span class="">[Sqlite.sql|
+        SELECT self_hash_id
+          FROM causal
+          WHERE self_hash_id = value_hash_id
+      |]</span></span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span class="annot"><span class="hs-comment">-- | Performs a bevy of checks on branch objects and their relation to causals.</span></span><span>
+</span><span id="line-137"></span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllBranches"><span class="hs-identifier hs-type">integrityCheckAllBranches</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityResult"><span class="hs-identifier hs-type">IntegrityResult</span></a></span><span>
+</span><span id="line-138"></span><span id="integrityCheckAllBranches"><span class="annot"><span class="annottext">integrityCheckAllBranches :: Transaction IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllBranches"><span class="hs-identifier hs-var hs-var">integrityCheckAllBranches</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-139"></span><span>  </span><span id="local-6989586621680495559"><span class="annot"><span class="annottext">[BranchObjectId]
+</span><a href="#local-6989586621680495559"><span class="hs-identifier hs-var">branchObjIds</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Sql -&gt; Transaction [BranchObjectId]
+forall a. (FromField a, HasCallStack) =&gt; Sql -&gt; Transaction [a]
+</span><span class="hs-identifier hs-var">Sqlite.queryListCol</span></span><span> </span><span class="annot"><span class="annottext">Sql
+</span><a href="#local-6989586621680495560"><span class="hs-identifier hs-var">allBranchObjectIdsSql</span></a></span><span>
+</span><span id="line-140"></span><span>  </span><span class="annot"><span class="annottext">((BranchObjectId -&gt; Transaction IntegrityResult)
+ -&gt; [BranchObjectId] -&gt; Transaction IntegrityResult)
+-&gt; [BranchObjectId]
+-&gt; (BranchObjectId -&gt; Transaction IntegrityResult)
+-&gt; Transaction IntegrityResult
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">(BranchObjectId -&gt; Transaction IntegrityResult)
+-&gt; [BranchObjectId] -&gt; Transaction IntegrityResult
+forall (m :: * -&gt; *) (f :: * -&gt; *) b a.
+(Monad m, Foldable f, Monoid b) =&gt;
+(a -&gt; m b) -&gt; f a -&gt; m b
+</span><span class="hs-identifier hs-var">foldMapM</span></span><span> </span><span class="annot"><span class="annottext">[BranchObjectId]
+</span><a href="#local-6989586621680495559"><span class="hs-identifier hs-var">branchObjIds</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; Transaction IntegrityResult
+</span><a href="#local-6989586621680495562"><span class="hs-identifier hs-var">integrityCheckBranch</span></a></span><span>
+</span><span id="line-141"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-142"></span><span>    </span><span class="annot"><a href="#local-6989586621680495560"><span class="hs-identifier hs-type">allBranchObjectIdsSql</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Sql</span></span><span>
+</span><span id="line-143"></span><span>    </span><span id="local-6989586621680495560"><span class="annot"><span class="annottext">allBranchObjectIdsSql :: Sql
+</span><a href="#local-6989586621680495560"><span class="hs-identifier hs-var hs-var">allBranchObjectIdsSql</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-144"></span><span>      </span><span class="annot"><span class="">[Sqlite.sql|
+        SELECT id FROM object WHERE type_id = 2;
+      |]</span></span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span>    </span><span class="annot"><a href="#local-6989586621680495563"><span class="hs-identifier hs-type">doesCausalExistForCausalHashId</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.CausalHashId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-149"></span><span>    </span><span id="local-6989586621680495563"><span class="annot"><span class="annottext">doesCausalExistForCausalHashId :: CausalHashId -&gt; Transaction Bool
+</span><a href="#local-6989586621680495563"><span class="hs-identifier hs-var hs-var">doesCausalExistForCausalHashId</span></a></span></span><span> </span><span id="local-6989586621680495564"><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495564"><span class="hs-identifier hs-var">hashId</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-150"></span><span>      </span><span class="annot"><span class="annottext">Sql -&gt; Transaction Bool
+forall a. (FromField a, HasCallStack) =&gt; Sql -&gt; Transaction a
+</span><span class="hs-identifier hs-var">Sqlite.queryOneCol</span></span><span>
+</span><span id="line-151"></span><span>        </span><span class="annot"><span class="">[Sqlite.sql|
+          SELECT EXISTS (SELECT 1 FROM causal WHERE self_hash_id = :hashId)
+        |]</span></span><span>
+</span><span id="line-154"></span><span>
+</span><span id="line-155"></span><span>    </span><span class="annot"><a href="#local-6989586621680495562"><span class="hs-identifier hs-type">integrityCheckBranch</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.BranchObjectId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityResult"><span class="hs-identifier hs-type">IntegrityResult</span></a></span><span>
+</span><span id="line-156"></span><span>    </span><span id="local-6989586621680495562"><span class="annot"><span class="annottext">integrityCheckBranch :: BranchObjectId -&gt; Transaction IntegrityResult
+</span><a href="#local-6989586621680495562"><span class="hs-identifier hs-var hs-var">integrityCheckBranch</span></a></span></span><span> </span><span id="local-6989586621680495567"><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495567"><span class="hs-identifier hs-var">objId</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-157"></span><span>      </span><span id="local-6989586621680495568"><span class="annot"><span class="annottext">DbBranch
+</span><a href="#local-6989586621680495568"><span class="hs-identifier hs-var">dbBranch</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; Transaction DbBranch
+</span><span class="hs-identifier hs-var">Ops.expectDbBranch</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495567"><span class="hs-identifier hs-var">objId</span></a></span><span>
+</span><span id="line-158"></span><span>      </span><span id="local-6989586621680495570"><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495570"><span class="hs-identifier hs-var">expectedBranchHash</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">DbBranch -&gt; Transaction BranchHash
+</span><a href="Unison.Codebase.SqliteCodebase.Migrations.MigrateSchema1To2.DbHelpers.html#dbBranchHash"><span class="hs-identifier hs-var">Helpers.dbBranchHash</span></a></span><span> </span><span class="annot"><span class="annottext">DbBranch
+</span><a href="#local-6989586621680495568"><span class="hs-identifier hs-var">dbBranch</span></a></span><span>
+</span><span id="line-159"></span><span>      </span><span id="local-6989586621680495572"><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495572"><span class="hs-identifier hs-var">actualBranchHash</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Hash -&gt; BranchHash
+</span><span class="hs-identifier hs-var">BranchHash</span></span><span> </span><span class="annot"><span class="annottext">(Hash -&gt; BranchHash) -&gt; Transaction Hash -&gt; Transaction BranchHash
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">ObjectId -&gt; Transaction Hash
+</span><span class="hs-identifier hs-var">Q.expectPrimaryHashByObjectId</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchObjectId -&gt; ObjectId
+</span><span class="hs-identifier hs-var">DB.unBranchObjectId</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495567"><span class="hs-identifier hs-var">objId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-160"></span><span>      </span><span id="local-6989586621680495577"><span class="annot"><span class="annottext">Set BranchError
+</span><a href="#local-6989586621680495577"><span class="hs-identifier hs-var">branchHashCheck</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BranchHash -&gt; BranchHash -&gt; Transaction (Set BranchError)
+</span><a href="#local-6989586621680495578"><span class="hs-identifier hs-var">assertExpectedBranchHash</span></a></span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495570"><span class="hs-identifier hs-var">expectedBranchHash</span></a></span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495572"><span class="hs-identifier hs-var">actualBranchHash</span></a></span><span>
+</span><span id="line-161"></span><span>      </span><span id="local-6989586621680495579"><span class="annot"><span class="annottext">Set BranchError
+</span><a href="#local-6989586621680495579"><span class="hs-identifier hs-var">branchChildChecks</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(((BranchObjectId, CausalHashId) -&gt; Transaction (Set BranchError))
+ -&gt; [(BranchObjectId, CausalHashId)]
+ -&gt; Transaction (Set BranchError))
+-&gt; [(BranchObjectId, CausalHashId)]
+-&gt; ((BranchObjectId, CausalHashId)
+    -&gt; Transaction (Set BranchError))
+-&gt; Transaction (Set BranchError)
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">((BranchObjectId, CausalHashId) -&gt; Transaction (Set BranchError))
+-&gt; [(BranchObjectId, CausalHashId)]
+-&gt; Transaction (Set BranchError)
+forall (m :: * -&gt; *) (f :: * -&gt; *) b a.
+(Monad m, Foldable f, Monoid b) =&gt;
+(a -&gt; m b) -&gt; f a -&gt; m b
+</span><span class="hs-identifier hs-var">foldMapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Getting
+  (Endo [(BranchObjectId, CausalHashId)])
+  DbBranch
+  (BranchObjectId, CausalHashId)
+-&gt; DbBranch -&gt; [(BranchObjectId, CausalHashId)]
+forall a s. Getting (Endo [a]) s a -&gt; s -&gt; [a]
+</span><span class="hs-identifier hs-var">toListOf</span></span><span> </span><span class="annot"><span class="annottext">Getting
+  (Endo [(BranchObjectId, CausalHashId)])
+  DbBranch
+  (BranchObjectId, CausalHashId)
+forall t h p c c' (f :: * -&gt; *).
+Applicative f =&gt;
+(c -&gt; f c') -&gt; Branch' t h p c -&gt; f (Branch' t h p c')
+</span><span class="hs-identifier hs-var">DBBranch.childrenHashes_</span></span><span> </span><span class="annot"><span class="annottext">DbBranch
+</span><a href="#local-6989586621680495568"><span class="hs-identifier hs-var">dbBranch</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(((BranchObjectId, CausalHashId) -&gt; Transaction (Set BranchError))
+ -&gt; Transaction (Set BranchError))
+-&gt; ((BranchObjectId, CausalHashId)
+    -&gt; Transaction (Set BranchError))
+-&gt; Transaction (Set BranchError)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621680495582"><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495582"><span class="hs-identifier hs-var">childObjId</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680495583"><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495583"><span class="hs-identifier hs-var">childCausalHashId</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-162"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680495584"><span class="annot"><span class="annottext">checks :: [Transaction (Set BranchError)]
+</span><a href="#local-6989586621680495584"><span class="hs-identifier hs-var hs-var">checks</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-163"></span><span>              </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; Transaction (Set BranchError)
+</span><a href="#local-6989586621680495585"><span class="hs-identifier hs-var">assertBranchObjExists</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495582"><span class="hs-identifier hs-var">childObjId</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-164"></span><span>                </span><span class="annot"><span class="annottext">CausalHashId -&gt; Transaction (Set BranchError)
+</span><a href="#local-6989586621680495586"><span class="hs-identifier hs-var">assertCausalExists</span></a></span><span> </span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495583"><span class="hs-identifier hs-var">childCausalHashId</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-165"></span><span>                </span><span class="annot"><span class="annottext">CausalHashId -&gt; BranchObjectId -&gt; Transaction (Set BranchError)
+</span><a href="#local-6989586621680495587"><span class="hs-identifier hs-var">assertCausalValueMatchesObject</span></a></span><span> </span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495583"><span class="hs-identifier hs-var">childCausalHashId</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495582"><span class="hs-identifier hs-var">childObjId</span></a></span><span>
+</span><span id="line-166"></span><span>              </span><span class="hs-special">]</span><span>
+</span><span id="line-167"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Set BranchError] -&gt; Set BranchError
+forall a. Monoid a =&gt; [a] -&gt; a
+forall (t :: * -&gt; *) m. (Foldable t, Monoid m) =&gt; t m -&gt; m
+</span><span class="hs-identifier hs-var">fold</span></span><span> </span><span class="annot"><span class="annottext">([Set BranchError] -&gt; Set BranchError)
+-&gt; Transaction [Set BranchError] -&gt; Transaction (Set BranchError)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">[Transaction (Set BranchError)] -&gt; Transaction [Set BranchError]
+forall (t :: * -&gt; *) (f :: * -&gt; *) a.
+(Traversable t, Applicative f) =&gt;
+t (f a) -&gt; f (t a)
+forall (f :: * -&gt; *) a. Applicative f =&gt; [f a] -&gt; f [a]
+</span><span class="hs-identifier hs-var">sequenceA</span></span><span> </span><span class="annot"><span class="annottext">[Transaction (Set BranchError)]
+</span><a href="#local-6989586621680495584"><span class="hs-identifier hs-var">checks</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-168"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Set BranchError -&gt; Maybe (NESet BranchError)
+forall a. Set a -&gt; Maybe (NESet a)
+</span><span class="hs-identifier hs-var">NESet.nonEmptySet</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set BranchError
+</span><a href="#local-6989586621680495577"><span class="hs-identifier hs-var">branchHashCheck</span></a></span><span> </span><span class="annot"><span class="annottext">Set BranchError -&gt; Set BranchError -&gt; Set BranchError
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Set BranchError
+</span><a href="#local-6989586621680495579"><span class="hs-identifier hs-var">branchChildChecks</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-169"></span><span>        </span><span class="annot"><span class="annottext">Maybe (NESet BranchError)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IntegrityResult -&gt; Transaction IntegrityResult
+forall a. a -&gt; Transaction a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#NoIntegrityErrors"><span class="hs-identifier hs-var">NoIntegrityErrors</span></a></span><span>
+</span><span id="line-170"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621680495591"><span class="annot"><span class="annottext">NESet BranchError
+</span><a href="#local-6989586621680495591"><span class="hs-identifier hs-var">errs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IntegrityResult -&gt; Transaction IntegrityResult
+forall a. a -&gt; Transaction a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(IntegrityResult -&gt; Transaction IntegrityResult)
+-&gt; (IntegrityError -&gt; IntegrityResult)
+-&gt; IntegrityError
+-&gt; Transaction IntegrityResult
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">NESet IntegrityError -&gt; IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#IntegrityErrorDetected"><span class="hs-identifier hs-var">IntegrityErrorDetected</span></a></span><span> </span><span class="annot"><span class="annottext">(NESet IntegrityError -&gt; IntegrityResult)
+-&gt; (IntegrityError -&gt; NESet IntegrityError)
+-&gt; IntegrityError
+-&gt; IntegrityResult
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">IntegrityError -&gt; NESet IntegrityError
+forall a. a -&gt; NESet a
+</span><span class="hs-identifier hs-var">NESet.singleton</span></span><span> </span><span class="annot"><span class="annottext">(IntegrityError -&gt; Transaction IntegrityResult)
+-&gt; IntegrityError -&gt; Transaction IntegrityResult
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BranchHash -&gt; NESet BranchError -&gt; IntegrityError
+</span><a href="Unison.Codebase.IntegrityCheck.html#DetectedBranchErrors"><span class="hs-identifier hs-var">DetectedBranchErrors</span></a></span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495572"><span class="hs-identifier hs-var">actualBranchHash</span></a></span><span> </span><span class="annot"><span class="annottext">NESet BranchError
+</span><a href="#local-6989586621680495591"><span class="hs-identifier hs-var">errs</span></a></span><span>
+</span><span id="line-171"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-172"></span><span>        </span><span class="annot"><a href="#local-6989586621680495578"><span class="hs-identifier hs-type">assertExpectedBranchHash</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BranchHash</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BranchHash</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Set</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#BranchError"><span class="hs-identifier hs-type">BranchError</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-173"></span><span>        </span><span id="local-6989586621680495578"><span class="annot"><span class="annottext">assertExpectedBranchHash :: BranchHash -&gt; BranchHash -&gt; Transaction (Set BranchError)
+</span><a href="#local-6989586621680495578"><span class="hs-identifier hs-var hs-var">assertExpectedBranchHash</span></a></span></span><span> </span><span id="local-6989586621680495592"><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495592"><span class="hs-identifier hs-var">expectedBranchHash</span></a></span></span><span> </span><span id="local-6989586621680495593"><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495593"><span class="hs-identifier hs-var">actualBranchHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-174"></span><span>          </span><span class="hs-keyword">if</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495592"><span class="hs-identifier hs-var">expectedBranchHash</span></a></span><span> </span><span class="annot"><span class="annottext">BranchHash -&gt; BranchHash -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495593"><span class="hs-identifier hs-var">actualBranchHash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-175"></span><span>            </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-176"></span><span>              </span><span class="annot"><span class="annottext">Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#logError"><span class="hs-identifier hs-var">logError</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Transaction ()) -&gt; Text -&gt; Transaction ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Expected hash for namespace doesn't match actual hash for namespace: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(BranchHash, BranchHash) -&gt; Text
+forall a. Show a =&gt; a -&gt; Text
+</span><span class="hs-identifier hs-var">pShow</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495592"><span class="hs-identifier hs-var">expectedBranchHash</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495593"><span class="hs-identifier hs-var">actualBranchHash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-177"></span><span>              </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchError -&gt; Set BranchError
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">Set.singleton</span></span><span> </span><span class="annot"><span class="annottext">(BranchError -&gt; Set BranchError) -&gt; BranchError -&gt; Set BranchError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BranchHash -&gt; BranchHash -&gt; BranchError
+</span><a href="Unison.Codebase.IntegrityCheck.html#IncorrectHashForBranch"><span class="hs-identifier hs-var">IncorrectHashForBranch</span></a></span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495592"><span class="hs-identifier hs-var">expectedBranchHash</span></a></span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495593"><span class="hs-identifier hs-var">actualBranchHash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-178"></span><span>            </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-179"></span><span>              </span><span class="annot"><span class="annottext">Set BranchError -&gt; Transaction (Set BranchError)
+forall a. a -&gt; Transaction a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Set BranchError
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-180"></span><span>
+</span><span id="line-181"></span><span>        </span><span class="annot"><a href="#local-6989586621680495585"><span class="hs-identifier hs-type">assertBranchObjExists</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.BranchObjectId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Set</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#BranchError"><span class="hs-identifier hs-type">BranchError</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-182"></span><span>        </span><span id="local-6989586621680495585"><span class="annot"><span class="annottext">assertBranchObjExists :: BranchObjectId -&gt; Transaction (Set BranchError)
+</span><a href="#local-6989586621680495585"><span class="hs-identifier hs-var hs-var">assertBranchObjExists</span></a></span></span><span> </span><span id="local-6989586621680495596"><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495596"><span class="hs-identifier hs-var">branchObjId</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-183"></span><span>          </span><span class="annot"><span class="annottext">forall e a.
+SqliteExceptionReason e =&gt;
+ObjectId -&gt; (ByteString -&gt; Either e a) -&gt; Transaction (Maybe a)
+</span><span class="hs-identifier hs-var">Q.loadNamespaceObject</span></span><span> </span><span class="hs-glyph">@</span><span class="annot"><span class="hs-identifier hs-type">Void</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchObjectId -&gt; ObjectId
+</span><span class="hs-identifier hs-var">DB.unBranchObjectId</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495596"><span class="hs-identifier hs-var">branchObjId</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Either Void () -&gt; ByteString -&gt; Either Void ()
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">(Either Void () -&gt; ByteString -&gt; Either Void ())
+-&gt; Either Void () -&gt; ByteString -&gt; Either Void ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">() -&gt; Either Void ()
+forall a b. b -&gt; Either a b
+</span><span class="hs-identifier hs-var">Right</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Transaction (Maybe ())
+-&gt; (Maybe () -&gt; Transaction (Set BranchError))
+-&gt; Transaction (Set BranchError)
+forall a b. Transaction a -&gt; (a -&gt; Transaction b) -&gt; Transaction b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-184"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Set BranchError -&gt; Transaction (Set BranchError)
+forall a. a -&gt; Transaction a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Set BranchError
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-185"></span><span>            </span><span class="annot"><span class="annottext">Maybe ()
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-186"></span><span>              </span><span class="annot"><span class="annottext">Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#logError"><span class="hs-identifier hs-var">logError</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Transaction ()) -&gt; Text -&gt; Transaction ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Expected namespace object for object ID: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; Text
+forall a. Show a =&gt; a -&gt; Text
+</span><span class="hs-identifier hs-var">pShow</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495596"><span class="hs-identifier hs-var">branchObjId</span></a></span><span>
+</span><span id="line-187"></span><span>              </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchError -&gt; Set BranchError
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">Set.singleton</span></span><span> </span><span class="annot"><span class="annottext">(BranchError -&gt; Set BranchError) -&gt; BranchError -&gt; Set BranchError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; BranchError
+</span><a href="Unison.Codebase.IntegrityCheck.html#MissingObject"><span class="hs-identifier hs-var">MissingObject</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495596"><span class="hs-identifier hs-var">branchObjId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-188"></span><span>        </span><span class="annot"><a href="#local-6989586621680495586"><span class="hs-identifier hs-type">assertCausalExists</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.CausalHashId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Set</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#BranchError"><span class="hs-identifier hs-type">BranchError</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-189"></span><span>        </span><span id="local-6989586621680495586"><span class="annot"><span class="annottext">assertCausalExists :: CausalHashId -&gt; Transaction (Set BranchError)
+</span><a href="#local-6989586621680495586"><span class="hs-identifier hs-var hs-var">assertCausalExists</span></a></span></span><span> </span><span id="local-6989586621680495599"><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495599"><span class="hs-identifier hs-var">causalHashId</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-190"></span><span>          </span><span class="annot"><span class="annottext">CausalHashId -&gt; Transaction Bool
+</span><a href="#local-6989586621680495563"><span class="hs-identifier hs-var">doesCausalExistForCausalHashId</span></a></span><span> </span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495599"><span class="hs-identifier hs-var">causalHashId</span></a></span><span> </span><span class="annot"><span class="annottext">Transaction Bool
+-&gt; (Bool -&gt; Transaction (Set BranchError))
+-&gt; Transaction (Set BranchError)
+forall a b. Transaction a -&gt; (a -&gt; Transaction b) -&gt; Transaction b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-191"></span><span>            </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Set BranchError -&gt; Transaction (Set BranchError)
+forall a. a -&gt; Transaction a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Set BranchError
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-192"></span><span>            </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-193"></span><span>              </span><span id="local-6989586621680495600"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495600"><span class="hs-identifier hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">HashId -&gt; Transaction Hash
+</span><span class="hs-identifier hs-var">Q.expectHash</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CausalHashId -&gt; HashId
+</span><span class="hs-identifier hs-var">DB.unCausalHashId</span></span><span> </span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495599"><span class="hs-identifier hs-var">causalHashId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-194"></span><span>              </span><span class="annot"><span class="annottext">Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#logError"><span class="hs-identifier hs-var">logError</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Transaction ()) -&gt; Text -&gt; Transaction ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Expected causal for causal hash ID, but none was found: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">CausalHashId -&gt; Text
+forall a. Show a =&gt; a -&gt; Text
+</span><span class="hs-identifier hs-var">pShow</span></span><span> </span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495599"><span class="hs-identifier hs-var">causalHashId</span></a></span><span>
+</span><span id="line-195"></span><span>              </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchError -&gt; Set BranchError
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">Set.singleton</span></span><span> </span><span class="annot"><span class="annottext">(BranchError -&gt; Set BranchError) -&gt; BranchError -&gt; Set BranchError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; BranchError
+</span><a href="Unison.Codebase.IntegrityCheck.html#MissingCausalForChild"><span class="hs-identifier hs-var">MissingCausalForChild</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495600"><span class="hs-identifier hs-var">ch</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-196"></span><span>        </span><span class="annot"><a href="#local-6989586621680495587"><span class="hs-identifier hs-type">assertCausalValueMatchesObject</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-197"></span><span>          </span><span class="annot"><span class="hs-identifier hs-type">DB.CausalHashId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-198"></span><span>          </span><span class="annot"><span class="hs-identifier hs-type">DB.BranchObjectId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-199"></span><span>          </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Set</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#BranchError"><span class="hs-identifier hs-type">BranchError</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-200"></span><span>        </span><span id="local-6989586621680495587"><span class="annot"><span class="annottext">assertCausalValueMatchesObject :: CausalHashId -&gt; BranchObjectId -&gt; Transaction (Set BranchError)
+</span><a href="#local-6989586621680495587"><span class="hs-identifier hs-var hs-var">assertCausalValueMatchesObject</span></a></span></span><span> </span><span id="local-6989586621680495601"><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495601"><span class="hs-identifier hs-var">causalHashId</span></a></span></span><span> </span><span id="local-6989586621680495602"><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495602"><span class="hs-identifier hs-var">branchObjId</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-201"></span><span>          </span><span class="hs-comment">-- Assert the object for the causal hash ID matches the given object Id.</span><span>
+</span><span id="line-202"></span><span>          </span><span class="annot"><span class="annottext">CausalHashId -&gt; Transaction (Maybe BranchObjectId)
+</span><span class="hs-identifier hs-var">Q.loadBranchObjectIdByCausalHashId</span></span><span> </span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495601"><span class="hs-identifier hs-var">causalHashId</span></a></span><span> </span><span class="annot"><span class="annottext">Transaction (Maybe BranchObjectId)
+-&gt; (Maybe BranchObjectId -&gt; Transaction (Set BranchError))
+-&gt; Transaction (Set BranchError)
+forall a b. Transaction a -&gt; (a -&gt; Transaction b) -&gt; Transaction b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-203"></span><span>            </span><span class="annot"><span class="annottext">Maybe BranchObjectId
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-204"></span><span>              </span><span id="local-6989586621680495604"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495604"><span class="hs-identifier hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">HashId -&gt; Transaction Hash
+</span><span class="hs-identifier hs-var">Q.expectHash</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CausalHashId -&gt; HashId
+</span><span class="hs-identifier hs-var">DB.unCausalHashId</span></span><span> </span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495601"><span class="hs-identifier hs-var">causalHashId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-205"></span><span>              </span><span class="annot"><span class="annottext">Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#logError"><span class="hs-identifier hs-var">logError</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Transaction ()) -&gt; Text -&gt; Transaction ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Expected branch object for causal hash ID: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">CausalHashId -&gt; Text
+forall a. Show a =&gt; a -&gt; Text
+</span><span class="hs-identifier hs-var">pShow</span></span><span> </span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495601"><span class="hs-identifier hs-var">causalHashId</span></a></span><span>
+</span><span id="line-206"></span><span>              </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchError -&gt; Set BranchError
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">Set.singleton</span></span><span> </span><span class="annot"><span class="annottext">(BranchError -&gt; Set BranchError) -&gt; BranchError -&gt; Set BranchError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; BranchError
+</span><a href="Unison.Codebase.IntegrityCheck.html#MissingObjectForChildCausal"><span class="hs-identifier hs-var">MissingObjectForChildCausal</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495604"><span class="hs-identifier hs-var">ch</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-207"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621680495605"><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495605"><span class="hs-identifier hs-var">foundBranchId</span></a></span></span><span>
+</span><span id="line-208"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495605"><span class="hs-identifier hs-var">foundBranchId</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; BranchObjectId -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495602"><span class="hs-identifier hs-var">branchObjId</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-209"></span><span>                  </span><span class="annot"><span class="annottext">Text -&gt; Transaction ()
+</span><a href="Unison.Codebase.IntegrityCheck.html#logError"><span class="hs-identifier hs-var">logError</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Transaction ()) -&gt; Text -&gt; Transaction ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Expected child branch object to match canonical object ID for causal hash's namespace: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(CausalHashId, BranchObjectId, BranchObjectId) -&gt; Text
+forall a. Show a =&gt; a -&gt; Text
+</span><span class="hs-identifier hs-var">pShow</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495601"><span class="hs-identifier hs-var">causalHashId</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495605"><span class="hs-identifier hs-var">foundBranchId</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495602"><span class="hs-identifier hs-var">branchObjId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-210"></span><span>                  </span><span id="local-6989586621680495606"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495606"><span class="hs-identifier hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">HashId -&gt; Transaction Hash
+</span><span class="hs-identifier hs-var">Q.expectHash</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CausalHashId -&gt; HashId
+</span><span class="hs-identifier hs-var">DB.unCausalHashId</span></span><span> </span><span class="annot"><span class="annottext">CausalHashId
+</span><a href="#local-6989586621680495601"><span class="hs-identifier hs-var">causalHashId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-211"></span><span>                  </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchError -&gt; Set BranchError
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">Set.singleton</span></span><span> </span><span class="annot"><span class="annottext">(BranchError -&gt; Set BranchError) -&gt; BranchError -&gt; Set BranchError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; BranchObjectId -&gt; BranchObjectId -&gt; BranchError
+</span><a href="Unison.Codebase.IntegrityCheck.html#MismatchedObjectForChild"><span class="hs-identifier hs-var">MismatchedObjectForChild</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495606"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495602"><span class="hs-identifier hs-var">branchObjId</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495605"><span class="hs-identifier hs-var">foundBranchId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-212"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Set BranchError -&gt; Transaction (Set BranchError)
+forall a. a -&gt; Transaction a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Set BranchError
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-213"></span><span>
+</span><span id="line-214"></span><span id="local-6989586621680495052"><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#prettyPrintIntegrityErrors"><span class="hs-identifier hs-type">prettyPrintIntegrityErrors</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Foldable</span></span><span> </span><span class="annot"><a href="#local-6989586621680495052"><span class="hs-identifier hs-type">f</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621680495052"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityError"><span class="hs-identifier hs-type">IntegrityError</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">P.Pretty</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">P.ColorText</span></span></span><span>
+</span><span id="line-215"></span><span id="prettyPrintIntegrityErrors"><span class="annot"><span class="annottext">prettyPrintIntegrityErrors :: forall (f :: * -&gt; *).
+Foldable f =&gt;
+f IntegrityError -&gt; Pretty ColorText
+</span><a href="Unison.Codebase.IntegrityCheck.html#prettyPrintIntegrityErrors"><span class="hs-identifier hs-var hs-var">prettyPrintIntegrityErrors</span></a></span></span><span> </span><span id="local-6989586621680495696"><span class="annot"><span class="annottext">f IntegrityError
+</span><a href="#local-6989586621680495696"><span class="hs-identifier hs-var">xs</span></a></span></span><span>
+</span><span id="line-216"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">f IntegrityError -&gt; Bool
+forall a. f a -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">null</span></span><span> </span><span class="annot"><span class="annottext">f IntegrityError
+</span><a href="#local-6989586621680495696"><span class="hs-identifier hs-var">xs</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-217"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-218"></span><span>      </span><span class="annot"><span class="annottext">f IntegrityError
+</span><a href="#local-6989586621680495696"><span class="hs-identifier hs-var">xs</span></a></span><span>
+</span><span id="line-219"></span><span>        </span><span class="annot"><span class="annottext">f IntegrityError
+-&gt; (f IntegrityError -&gt; [IntegrityError]) -&gt; [IntegrityError]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">f IntegrityError -&gt; [IntegrityError]
+forall a. f a -&gt; [a]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; [a]
+</span><span class="hs-identifier hs-var">toList</span></span><span>
+</span><span id="line-220"></span><span>        </span><span class="annot"><span class="annottext">[IntegrityError]
+-&gt; ([IntegrityError] -&gt; [Pretty ColorText]) -&gt; [Pretty ColorText]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">(IntegrityError -&gt; Pretty ColorText)
+-&gt; [IntegrityError] -&gt; [Pretty ColorText]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span>
+</span><span id="line-221"></span><span>          </span><span class="hs-special">(</span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-222"></span><span>              </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#DetectedObjectsWithoutCorrespondingHashObjects"><span class="hs-identifier hs-type">DetectedObjectsWithoutCorrespondingHashObjects</span></a></span><span> </span><span id="local-6989586621680495700"><span class="annot"><span class="annottext">NESet ObjectId
+</span><a href="#local-6989586621680495700"><span class="hs-identifier hs-var">objs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-223"></span><span>                </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall s.
+(ListLike s Char, IsString s) =&gt;
+Pretty s -&gt; Pretty s -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.hang</span></span><span>
+</span><span id="line-224"></span><span>                  </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;Detected objects without any corresponding hash_object. Object IDs:&quot;</span></span><span>
+</span><span id="line-225"></span><span>                  </span><span class="hs-special">(</span><span class="annot"><span class="annottext">NonEmpty (Pretty ColorText) -&gt; Pretty ColorText
+forall (f :: * -&gt; *) s.
+(Foldable f, IsString s) =&gt;
+f (Pretty s) -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.commas</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ObjectId -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495703"><span class="hs-identifier hs-var">prettyObjectId</span></a></span><span> </span><span class="annot"><span class="annottext">(ObjectId -&gt; Pretty ColorText)
+-&gt; NonEmpty ObjectId -&gt; NonEmpty (Pretty ColorText)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">NESet ObjectId -&gt; NonEmpty ObjectId
+forall a. NESet a -&gt; NonEmpty a
+</span><span class="hs-identifier hs-var">NESet.toList</span></span><span> </span><span class="annot"><span class="annottext">NESet ObjectId
+</span><a href="#local-6989586621680495700"><span class="hs-identifier hs-var">objs</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-226"></span><span>              </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#DetectedCausalsWithoutCorrespondingBranchObjects"><span class="hs-identifier hs-type">DetectedCausalsWithoutCorrespondingBranchObjects</span></a></span><span> </span><span id="local-6989586621680495705"><span class="annot"><span class="annottext">NESet (Hash, Hash)
+</span><a href="#local-6989586621680495705"><span class="hs-identifier hs-var">hashes</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-227"></span><span>                </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall s.
+(ListLike s Char, IsString s) =&gt;
+Pretty s -&gt; Pretty s -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.hang</span></span><span>
+</span><span id="line-228"></span><span>                  </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;Detected causals without a corresponding branch object:\n&quot;</span></span><span>
+</span><span id="line-229"></span><span>                  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+-&gt; Pretty ColorText
+-&gt; [(Pretty ColorText, Pretty ColorText)]
+-&gt; Pretty ColorText
+</span><span class="hs-identifier hs-var">P.column2Header</span></span><span>
+</span><span id="line-230"></span><span>                      </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;Causal Hash&quot;</span></span><span>
+</span><span id="line-231"></span><span>                      </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;Branch Hash&quot;</span></span><span>
+</span><span id="line-232"></span><span>                      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">NESet (Hash, Hash) -&gt; [(Hash, Hash)]
+forall a. NESet a -&gt; [a]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; [a]
+</span><span class="hs-identifier hs-var">toList</span></span><span> </span><span class="annot"><span class="annottext">NESet (Hash, Hash)
+</span><a href="#local-6989586621680495705"><span class="hs-identifier hs-var">hashes</span></a></span><span> </span><span class="annot"><span class="annottext">[(Hash, Hash)]
+-&gt; ((Hash, Hash) -&gt; (Pretty ColorText, Pretty ColorText))
+-&gt; [(Pretty ColorText, Pretty ColorText)]
+forall (f :: * -&gt; *) a b. Functor f =&gt; f a -&gt; (a -&gt; b) -&gt; f b
+</span><span class="hs-operator hs-var">&lt;&amp;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Hash -&gt; Pretty ColorText)
+-&gt; (Hash -&gt; Pretty ColorText)
+-&gt; (Hash, Hash)
+-&gt; (Pretty ColorText, Pretty ColorText)
+forall a b c d. (a -&gt; b) -&gt; (c -&gt; d) -&gt; (a, c) -&gt; (b, d)
+forall (p :: * -&gt; * -&gt; *) a b c d.
+Bifunctor p =&gt;
+(a -&gt; b) -&gt; (c -&gt; d) -&gt; p a c -&gt; p b d
+</span><span class="hs-identifier hs-var">bimap</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var">prettyHash</span></a></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var">prettyHash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-233"></span><span>                  </span><span class="hs-special">)</span><span>
+</span><span id="line-234"></span><span>              </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#DetectedCausalsWithCausalHashAsBranchHash"><span class="hs-identifier hs-type">DetectedCausalsWithCausalHashAsBranchHash</span></a></span><span> </span><span id="local-6989586621680495710"><span class="annot"><span class="annottext">NESet Hash
+</span><a href="#local-6989586621680495710"><span class="hs-identifier hs-var">ns</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-235"></span><span>                </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall s.
+(ListLike s Char, IsString s) =&gt;
+Pretty s -&gt; Pretty s -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.hang</span></span><span>
+</span><span id="line-236"></span><span>                  </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;Detected causals with the same causal hash as branch hash:&quot;</span></span><span>
+</span><span id="line-237"></span><span>                  </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Pretty ColorText] -&gt; Pretty ColorText
+forall (f :: * -&gt; *) s.
+(Foldable f, IsString s) =&gt;
+f (Pretty s) -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.commas</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var">prettyHash</span></a></span><span> </span><span class="annot"><span class="annottext">(Hash -&gt; Pretty ColorText) -&gt; [Hash] -&gt; [Pretty ColorText]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">NESet Hash -&gt; [Hash]
+forall a. NESet a -&gt; [a]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; [a]
+</span><span class="hs-identifier hs-var">toList</span></span><span> </span><span class="annot"><span class="annottext">NESet Hash
+</span><a href="#local-6989586621680495710"><span class="hs-identifier hs-var">ns</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-238"></span><span>              </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#DetectedBranchErrors"><span class="hs-identifier hs-type">DetectedBranchErrors</span></a></span><span> </span><span id="local-6989586621680495711"><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495711"><span class="hs-identifier hs-var">bh</span></a></span></span><span> </span><span id="local-6989586621680495712"><span class="annot"><span class="annottext">NESet BranchError
+</span><a href="#local-6989586621680495712"><span class="hs-identifier hs-var">errs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-239"></span><span>                </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall s.
+(ListLike s Char, IsString s) =&gt;
+Pretty s -&gt; Pretty s -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.hang</span></span><span>
+</span><span id="line-240"></span><span>                  </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;Detected errors in branch: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var">prettyHash</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchHash -&gt; Hash
+</span><span class="hs-identifier hs-var">unBranchHash</span></span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495711"><span class="hs-identifier hs-var">bh</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-241"></span><span>                  </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Pretty ColorText] -&gt; Pretty ColorText
+forall (f :: * -&gt; *) s.
+(Foldable f, IsString s) =&gt;
+f (Pretty s) -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.lines</span></span><span> </span><span class="annot"><span class="annottext">([Pretty ColorText] -&gt; Pretty ColorText)
+-&gt; (NESet BranchError -&gt; [Pretty ColorText])
+-&gt; NESet BranchError
+-&gt; Pretty ColorText
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Pretty ColorText -&gt; Pretty ColorText)
+-&gt; [Pretty ColorText] -&gt; [Pretty ColorText]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;\n&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Pretty ColorText] -&gt; [Pretty ColorText])
+-&gt; (NESet BranchError -&gt; [Pretty ColorText])
+-&gt; NESet BranchError
+-&gt; [Pretty ColorText]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(BranchError -&gt; Pretty ColorText)
+-&gt; [BranchError] -&gt; [Pretty ColorText]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">BranchError -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495715"><span class="hs-identifier hs-var">prettyBranchError</span></a></span><span> </span><span class="annot"><span class="annottext">([BranchError] -&gt; [Pretty ColorText])
+-&gt; (NESet BranchError -&gt; [BranchError])
+-&gt; NESet BranchError
+-&gt; [Pretty ColorText]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">NESet BranchError -&gt; [BranchError]
+forall a. NESet a -&gt; [a]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; [a]
+</span><span class="hs-identifier hs-var">toList</span></span><span> </span><span class="annot"><span class="annottext">(NESet BranchError -&gt; Pretty ColorText)
+-&gt; NESet BranchError -&gt; Pretty ColorText
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NESet BranchError
+</span><a href="#local-6989586621680495712"><span class="hs-identifier hs-var">errs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-242"></span><span>          </span><span class="hs-special">)</span><span>
+</span><span id="line-243"></span><span>        </span><span class="annot"><span class="annottext">[Pretty ColorText]
+-&gt; ([Pretty ColorText] -&gt; [Pretty ColorText]) -&gt; [Pretty ColorText]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">(Pretty ColorText -&gt; Pretty ColorText)
+-&gt; [Pretty ColorText] -&gt; [Pretty ColorText]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;\n&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-244"></span><span>        </span><span class="annot"><span class="annottext">[Pretty ColorText]
+-&gt; ([Pretty ColorText] -&gt; Pretty ColorText) -&gt; Pretty ColorText
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">[Pretty ColorText] -&gt; Pretty ColorText
+forall (f :: * -&gt; *) s.
+(Foldable f, IsString s) =&gt;
+f (Pretty s) -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.lines</span></span><span>
+</span><span id="line-245"></span><span>        </span><span class="annot"><span class="annottext">Pretty ColorText
+-&gt; (Pretty ColorText -&gt; Pretty ColorText) -&gt; Pretty ColorText
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText
+forall s. (ListLike s Char, IsString s) =&gt; Pretty s -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.warnCallout</span></span><span>
+</span><span id="line-246"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-247"></span><span>    </span><span class="annot"><a href="#local-6989586621680495709"><span class="hs-identifier hs-type">prettyHash</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">P.Pretty</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">P.ColorText</span></span><span>
+</span><span id="line-248"></span><span>    </span><span id="local-6989586621680495709"><span class="annot"><span class="annottext">prettyHash :: Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var hs-var">prettyHash</span></a></span></span><span> </span><span id="local-6989586621680495717"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495717"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText
+</span><span class="hs-identifier hs-var">P.blue</span></span><span> </span><span class="annot"><span class="annottext">(Pretty ColorText -&gt; Pretty ColorText)
+-&gt; (Text -&gt; Pretty ColorText) -&gt; Text -&gt; Pretty ColorText
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Pretty ColorText
+forall s. IsString s =&gt; Text -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.text</span></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Pretty ColorText) -&gt; Text -&gt; Pretty ColorText
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;#&quot;</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Text
+</span><span class="hs-identifier hs-var">Hash.toBase32HexText</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495717"><span class="hs-identifier hs-var">h</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-249"></span><span>    </span><span class="annot"><a href="#local-6989586621680495721"><span class="hs-identifier hs-type">prettyBranchObjectId</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.BranchObjectId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">P.Pretty</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">P.ColorText</span></span><span>
+</span><span id="line-250"></span><span>    </span><span id="local-6989586621680495721"><span class="annot"><span class="annottext">prettyBranchObjectId :: BranchObjectId -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495721"><span class="hs-identifier hs-var hs-var">prettyBranchObjectId</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ObjectId -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495703"><span class="hs-identifier hs-var">prettyObjectId</span></a></span><span> </span><span class="annot"><span class="annottext">(ObjectId -&gt; Pretty ColorText)
+-&gt; (BranchObjectId -&gt; ObjectId)
+-&gt; BranchObjectId
+-&gt; Pretty ColorText
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; ObjectId
+</span><span class="hs-identifier hs-var">DB.unBranchObjectId</span></span><span>
+</span><span id="line-251"></span><span>    </span><span class="annot"><a href="#local-6989586621680495703"><span class="hs-identifier hs-type">prettyObjectId</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">DB.ObjectId</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">P.Pretty</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">P.ColorText</span></span><span>
+</span><span id="line-252"></span><span>    </span><span id="local-6989586621680495703"><span class="annot"><span class="annottext">prettyObjectId :: ObjectId -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495703"><span class="hs-identifier hs-var hs-var">prettyObjectId</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">DB.ObjectId</span></span><span> </span><span id="local-6989586621680495723"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621680495723"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText
+</span><span class="hs-identifier hs-var">P.green</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64 -&gt; Pretty ColorText
+forall a s. (Show a, IsString s) =&gt; a -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.shown</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621680495723"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-253"></span><span>    </span><span class="annot"><a href="#local-6989586621680495715"><span class="hs-identifier hs-type">prettyBranchError</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#BranchError"><span class="hs-identifier hs-type">BranchError</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">P.Pretty</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">P.ColorText</span></span><span>
+</span><span id="line-254"></span><span>    </span><span id="local-6989586621680495715"><span class="annot"><span class="annottext">prettyBranchError :: BranchError -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495715"><span class="hs-identifier hs-var hs-var">prettyBranchError</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-255"></span><span>      </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText
+forall s. (ListLike s Char, IsString s) =&gt; Pretty s -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.wrap</span></span><span> </span><span class="annot"><span class="annottext">(Pretty ColorText -&gt; Pretty ColorText)
+-&gt; (BranchError -&gt; Pretty ColorText)
+-&gt; BranchError
+-&gt; Pretty ColorText
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-256"></span><span>        </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IncorrectHashForBranch"><span class="hs-identifier hs-type">IncorrectHashForBranch</span></a></span><span> </span><span id="local-6989586621680495727"><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495727"><span class="hs-identifier hs-var">expected</span></a></span></span><span> </span><span id="local-6989586621680495728"><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495728"><span class="hs-identifier hs-var">actual</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;The Branch hash for this branch is incorrect. Expected Hash: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var">prettyHash</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchHash -&gt; Hash
+</span><span class="hs-identifier hs-var">unBranchHash</span></span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495727"><span class="hs-identifier hs-var">expected</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;, Actual Hash: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var">prettyHash</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchHash -&gt; Hash
+</span><span class="hs-identifier hs-var">unBranchHash</span></span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680495728"><span class="hs-identifier hs-var">actual</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-257"></span><span>        </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#MismatchedObjectForChild"><span class="hs-identifier hs-type">MismatchedObjectForChild</span></a></span><span> </span><span id="local-6989586621680495729"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495729"><span class="hs-identifier hs-var">ha</span></a></span></span><span> </span><span id="local-6989586621680495730"><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495730"><span class="hs-identifier hs-var">obj1</span></a></span></span><span> </span><span id="local-6989586621680495731"><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495731"><span class="hs-identifier hs-var">obj2</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-258"></span><span>          </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;The child with causal hash: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var">prettyHash</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495729"><span class="hs-identifier hs-var">ha</span></a></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot; is mapped to object ID &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495721"><span class="hs-identifier hs-var">prettyBranchObjectId</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495730"><span class="hs-identifier hs-var">obj1</span></a></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot; but should map to &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495721"><span class="hs-identifier hs-var">prettyBranchObjectId</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495731"><span class="hs-identifier hs-var">obj2</span></a></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;.&quot;</span></span><span>
+</span><span id="line-259"></span><span>        </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#MissingObjectForChildCausal"><span class="hs-identifier hs-type">MissingObjectForChildCausal</span></a></span><span> </span><span id="local-6989586621680495732"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495732"><span class="hs-identifier hs-var">ha</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-260"></span><span>          </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;There's no corresponding branch object for the causal hash: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var">prettyHash</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495732"><span class="hs-identifier hs-var">ha</span></a></span><span>
+</span><span id="line-261"></span><span>        </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#MissingObject"><span class="hs-identifier hs-type">MissingObject</span></a></span><span> </span><span id="local-6989586621680495733"><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495733"><span class="hs-identifier hs-var">objId</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;Expected an object for the child reference to object id: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495721"><span class="hs-identifier hs-var">prettyBranchObjectId</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495733"><span class="hs-identifier hs-var">objId</span></a></span><span>
+</span><span id="line-262"></span><span>        </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#MissingCausalForChild"><span class="hs-identifier hs-type">MissingCausalForChild</span></a></span><span> </span><span id="local-6989586621680495734"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495734"><span class="hs-identifier hs-var">ch</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;Expected a causal to exist for hash: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var">prettyHash</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495734"><span class="hs-identifier hs-var">ch</span></a></span><span>
+</span><span id="line-263"></span><span>        </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#ChildCausalHashObjectIdMismatch"><span class="hs-identifier hs-type">ChildCausalHashObjectIdMismatch</span></a></span><span> </span><span id="local-6989586621680495735"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495735"><span class="hs-identifier hs-var">ch</span></a></span></span><span> </span><span id="local-6989586621680495736"><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495736"><span class="hs-identifier hs-var">objId</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-264"></span><span>          </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;Expected the object ID reference &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495709"><span class="hs-identifier hs-var">prettyHash</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680495735"><span class="hs-identifier hs-var">ch</span></a></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot; to match the provided object ID: &quot;</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">BranchObjectId -&gt; Pretty ColorText
+</span><a href="#local-6989586621680495721"><span class="hs-identifier hs-var">prettyBranchObjectId</span></a></span><span> </span><span class="annot"><span class="annottext">BranchObjectId
+</span><a href="#local-6989586621680495736"><span class="hs-identifier hs-var">objId</span></a></span><span>
+</span><span id="line-265"></span><span>
+</span><span id="line-266"></span><span class="annot"><span class="hs-comment">-- | Performs all available integrity checks.</span></span><span>
+</span><span id="line-267"></span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckFullCodebase"><span class="hs-identifier hs-type">integrityCheckFullCodebase</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Sqlite.Transaction</span></span><span> </span><span class="annot"><a href="Unison.Codebase.IntegrityCheck.html#IntegrityResult"><span class="hs-identifier hs-type">IntegrityResult</span></a></span><span>
+</span><span id="line-268"></span><span id="integrityCheckFullCodebase"><span class="annot"><span class="annottext">integrityCheckFullCodebase :: Transaction IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckFullCodebase"><span class="hs-identifier hs-var hs-var">integrityCheckFullCodebase</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-269"></span><span>  </span><span class="annot"><span class="annottext">([IntegrityResult] -&gt; IntegrityResult)
+-&gt; Transaction [IntegrityResult] -&gt; Transaction IntegrityResult
+forall a b. (a -&gt; b) -&gt; Transaction a -&gt; Transaction b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">[IntegrityResult] -&gt; IntegrityResult
+forall a. Monoid a =&gt; [a] -&gt; a
+forall (t :: * -&gt; *) m. (Foldable t, Monoid m) =&gt; t m -&gt; m
+</span><span class="hs-identifier hs-var">fold</span></span><span> </span><span class="annot"><span class="annottext">(Transaction [IntegrityResult] -&gt; Transaction IntegrityResult)
+-&gt; ([Transaction IntegrityResult] -&gt; Transaction [IntegrityResult])
+-&gt; [Transaction IntegrityResult]
+-&gt; Transaction IntegrityResult
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[Transaction IntegrityResult] -&gt; Transaction [IntegrityResult]
+forall (t :: * -&gt; *) (f :: * -&gt; *) a.
+(Traversable t, Applicative f) =&gt;
+t (f a) -&gt; f (t a)
+forall (f :: * -&gt; *) a. Applicative f =&gt; [f a] -&gt; f [a]
+</span><span class="hs-identifier hs-var">sequenceA</span></span><span> </span><span class="annot"><span class="annottext">([Transaction IntegrityResult] -&gt; Transaction IntegrityResult)
+-&gt; [Transaction IntegrityResult] -&gt; Transaction IntegrityResult
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-270"></span><span>    </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Transaction IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllHashObjects"><span class="hs-identifier hs-var">integrityCheckAllHashObjects</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-271"></span><span>      </span><span class="annot"><span class="annottext">Transaction IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllBranches"><span class="hs-identifier hs-var">integrityCheckAllBranches</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-272"></span><span>      </span><span class="annot"><span class="annottext">Transaction IntegrityResult
+</span><a href="Unison.Codebase.IntegrityCheck.html#integrityCheckAllCausals"><span class="hs-identifier hs-var">integrityCheckAllCausals</span></a></span><span>
+</span><span id="line-273"></span><span>    </span><span class="hs-special">]</span><span>
+</span><span id="line-274"></span></pre></body></html>

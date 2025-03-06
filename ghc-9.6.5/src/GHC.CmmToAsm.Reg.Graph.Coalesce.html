@@ -1,0 +1,288 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="annot"><span class="hs-comment">-- | Register coalescing.</span></span><span>
+</span><span id="line-2"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.CmmToAsm.Reg.Graph.Coalesce</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-3"></span><span>        </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#regCoalesce"><span class="hs-identifier">regCoalesce</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-4"></span><span>        </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#slurpJoinMovs"><span class="hs-identifier">slurpJoinMovs</span></a></span><span>
+</span><span id="line-5"></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-6"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html"><span class="hs-identifier">GHC.CmmToAsm.Reg.Liveness</span></a></span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html"><span class="hs-identifier">GHC.CmmToAsm.Instr</span></a></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html"><span class="hs-identifier">GHC.Platform.Reg</span></a></span><span>
+</span><span id="line-11"></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.html"><span class="hs-identifier">GHC.Cmm</span></a></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Data.Bag.html"><span class="hs-identifier">GHC.Data.Bag</span></a></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Data.Graph.Directed.html"><span class="hs-identifier">GHC.Data.Graph.Directed</span></a></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html"><span class="hs-identifier">GHC.Types.Unique.FM</span></a></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Set.html"><span class="hs-identifier">GHC.Types.Unique.Set</span></a></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Supply.html"><span class="hs-identifier">GHC.Types.Unique.Supply</span></a></span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- | Do register coalescing on this top level thing</span><span>
+</span><span id="line-21"></span><span class="hs-comment">--</span><span>
+</span><span id="line-22"></span><span class="hs-comment">--   For Reg -&gt; Reg moves, if the first reg dies at the same time the</span><span>
+</span><span id="line-23"></span><span class="hs-comment">--   second reg is born then the mov only serves to join live ranges.</span><span>
+</span><span id="line-24"></span><span class="hs-comment">--   The two regs can be renamed to be the same and the move instruction</span><span>
+</span><span id="line-25"></span><span class="hs-comment">--   safely erased.</span><span>
+</span><span id="line-26"></span><span id="local-6989586621681813090"><span id="local-6989586621681813092"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#regCoalesce"><span class="hs-identifier hs-type">regCoalesce</span></a></span><span>
+</span><span id="line-27"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813090"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-28"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveCmmDecl"><span class="hs-identifier hs-type">LiveCmmDecl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813092"><span class="hs-identifier hs-type">statics</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813090"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-29"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Supply.html#UniqSM"><span class="hs-identifier hs-type">UniqSM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveCmmDecl"><span class="hs-identifier hs-type">LiveCmmDecl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813092"><span class="hs-identifier hs-type">statics</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813090"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">]</span></span></span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span id="regCoalesce"><span class="annot"><span class="annottext">regCoalesce :: forall instr statics.
+Instruction instr =&gt;
+[LiveCmmDecl statics instr] -&gt; UniqSM [LiveCmmDecl statics instr]
+</span><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#regCoalesce"><span class="hs-identifier hs-var hs-var">regCoalesce</span></a></span></span><span> </span><span id="local-6989586621681813161"><span class="annot"><span class="annottext">[LiveCmmDecl statics instr]
+</span><a href="#local-6989586621681813161"><span class="hs-identifier hs-var">code</span></a></span></span><span>
+</span><span id="line-32"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-33"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681813162"><span class="annot"><span class="annottext">joins :: Bag (Reg, Reg)
+</span><a href="#local-6989586621681813162"><span class="hs-identifier hs-var hs-var">joins</span></a></span></span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Bag (Reg, Reg) -&gt; Bag (Reg, Reg) -&gt; Bag (Reg, Reg))
+-&gt; Bag (Reg, Reg) -&gt; [Bag (Reg, Reg)] -&gt; Bag (Reg, Reg)
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; [a] -&gt; b
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#foldl%27/Data.Foldable.html#foldl%27"><span class="hs-identifier hs-var">foldl'</span></a></span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg) -&gt; Bag (Reg, Reg) -&gt; Bag (Reg, Reg)
+forall a. Bag a -&gt; Bag a -&gt; Bag a
+</span><a href="GHC.Data.Bag.html#unionBags"><span class="hs-identifier hs-var">unionBags</span></a></span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg)
+forall a. Bag a
+</span><a href="GHC.Data.Bag.html#emptyBag"><span class="hs-identifier hs-var">emptyBag</span></a></span><span>
+</span><span id="line-34"></span><span>                        </span><span class="annot"><span class="annottext">([Bag (Reg, Reg)] -&gt; Bag (Reg, Reg))
+-&gt; [Bag (Reg, Reg)] -&gt; Bag (Reg, Reg)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">(LiveCmmDecl statics instr -&gt; Bag (Reg, Reg))
+-&gt; [LiveCmmDecl statics instr] -&gt; [Bag (Reg, Reg)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">LiveCmmDecl statics instr -&gt; Bag (Reg, Reg)
+forall instr statics.
+Instruction instr =&gt;
+LiveCmmDecl statics instr -&gt; Bag (Reg, Reg)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#slurpJoinMovs"><span class="hs-identifier hs-var">slurpJoinMovs</span></a></span><span> </span><span class="annot"><span class="annottext">[LiveCmmDecl statics instr]
+</span><a href="#local-6989586621681813161"><span class="hs-identifier hs-var">code</span></a></span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681813166"><span class="annot"><span class="annottext">alloc :: UniqFM Reg Reg
+</span><a href="#local-6989586621681813166"><span class="hs-identifier hs-var hs-var">alloc</span></a></span></span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(UniqFM Reg Reg -&gt; (Reg, Reg) -&gt; UniqFM Reg Reg)
+-&gt; UniqFM Reg Reg -&gt; [(Reg, Reg)] -&gt; UniqFM Reg Reg
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; [a] -&gt; b
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#foldl%27/Data.Foldable.html#foldl%27"><span class="hs-identifier hs-var">foldl'</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Reg -&gt; (Reg, Reg) -&gt; UniqFM Reg Reg
+</span><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#buildAlloc"><span class="hs-identifier hs-var">buildAlloc</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Reg
+forall key elt. UniqFM key elt
+</span><a href="GHC.Types.Unique.FM.html#emptyUFM"><span class="hs-identifier hs-var">emptyUFM</span></a></span><span>
+</span><span id="line-37"></span><span>                        </span><span class="annot"><span class="annottext">([(Reg, Reg)] -&gt; UniqFM Reg Reg) -&gt; [(Reg, Reg)] -&gt; UniqFM Reg Reg
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg) -&gt; [(Reg, Reg)]
+forall a. Bag a -&gt; [a]
+</span><a href="GHC.Data.Bag.html#bagToList"><span class="hs-identifier hs-var">bagToList</span></a></span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813162"><span class="hs-identifier hs-var">joins</span></a></span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681813170"><span class="annot"><span class="annottext">patched :: [LiveCmmDecl statics instr]
+</span><a href="#local-6989586621681813170"><span class="hs-identifier hs-var hs-var">patched</span></a></span></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(LiveCmmDecl statics instr -&gt; LiveCmmDecl statics instr)
+-&gt; [LiveCmmDecl statics instr] -&gt; [LiveCmmDecl statics instr]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Reg -&gt; Reg)
+-&gt; LiveCmmDecl statics instr -&gt; LiveCmmDecl statics instr
+forall instr statics.
+Instruction instr =&gt;
+(Reg -&gt; Reg)
+-&gt; LiveCmmDecl statics instr -&gt; LiveCmmDecl statics instr
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#patchEraseLive"><span class="hs-identifier hs-var">patchEraseLive</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UniqFM Reg Reg -&gt; Reg -&gt; Reg
+</span><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#sinkReg"><span class="hs-identifier hs-var">sinkReg</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Reg
+</span><a href="#local-6989586621681813166"><span class="hs-identifier hs-var">alloc</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[LiveCmmDecl statics instr]
+</span><a href="#local-6989586621681813161"><span class="hs-identifier hs-var">code</span></a></span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span>        </span><span class="annot"><span class="annottext">[LiveCmmDecl statics instr] -&gt; UniqSM [LiveCmmDecl statics instr]
+forall a. a -&gt; UniqSM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">[LiveCmmDecl statics instr]
+</span><a href="#local-6989586621681813170"><span class="hs-identifier hs-var">patched</span></a></span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- | Add a v1 = v2 register renaming to the map.</span><span>
+</span><span id="line-45"></span><span class="hs-comment">--   The register with the lowest lexical name is set as the</span><span>
+</span><span id="line-46"></span><span class="hs-comment">--   canonical version.</span><span>
+</span><span id="line-47"></span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#buildAlloc"><span class="hs-identifier hs-type">buildAlloc</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span>
+</span><span id="line-48"></span><span id="buildAlloc"><span class="annot"><span class="annottext">buildAlloc :: UniqFM Reg Reg -&gt; (Reg, Reg) -&gt; UniqFM Reg Reg
+</span><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#buildAlloc"><span class="hs-identifier hs-var hs-var">buildAlloc</span></a></span></span><span> </span><span id="local-6989586621681813173"><span class="annot"><span class="annottext">UniqFM Reg Reg
+</span><a href="#local-6989586621681813173"><span class="hs-identifier hs-var">fm</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681813174"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813174"><span class="hs-identifier hs-var">r1</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681813175"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813175"><span class="hs-identifier hs-var">r2</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span>  </span><span id="local-6989586621681813176"><span class="annot"><span class="annottext">rmin :: Reg
+</span><a href="#local-6989586621681813176"><span class="hs-identifier hs-var hs-var">rmin</span></a></span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; Reg -&gt; Reg
+forall a. Ord a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">min</span></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813174"><span class="hs-identifier hs-var">r1</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813175"><span class="hs-identifier hs-var">r2</span></a></span><span>
+</span><span id="line-50"></span><span>        </span><span id="local-6989586621681813178"><span class="annot"><span class="annottext">rmax :: Reg
+</span><a href="#local-6989586621681813178"><span class="hs-identifier hs-var hs-var">rmax</span></a></span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; Reg -&gt; Reg
+forall a. Ord a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">max</span></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813174"><span class="hs-identifier hs-var">r1</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813175"><span class="hs-identifier hs-var">r2</span></a></span><span>
+</span><span id="line-51"></span><span>   </span><span class="hs-keyword">in</span><span>   </span><span class="annot"><span class="annottext">UniqFM Reg Reg -&gt; Reg -&gt; Reg -&gt; UniqFM Reg Reg
+forall key elt.
+Uniquable key =&gt;
+UniqFM key elt -&gt; key -&gt; elt -&gt; UniqFM key elt
+</span><a href="GHC.Types.Unique.FM.html#addToUFM"><span class="hs-identifier hs-var">addToUFM</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Reg
+</span><a href="#local-6989586621681813173"><span class="hs-identifier hs-var">fm</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813178"><span class="hs-identifier hs-var">rmax</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813176"><span class="hs-identifier hs-var">rmin</span></a></span><span>
+</span><span id="line-52"></span><span>
+</span><span id="line-53"></span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- | Determine the canonical name for a register by following</span><span>
+</span><span id="line-55"></span><span class="hs-comment">--   v1 = v2 renamings in this map.</span><span>
+</span><span id="line-56"></span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#sinkReg"><span class="hs-identifier hs-type">sinkReg</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span>
+</span><span id="line-57"></span><span id="sinkReg"><span class="annot"><span class="annottext">sinkReg :: UniqFM Reg Reg -&gt; Reg -&gt; Reg
+</span><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#sinkReg"><span class="hs-identifier hs-var hs-var">sinkReg</span></a></span></span><span> </span><span id="local-6989586621681813181"><span class="annot"><span class="annottext">UniqFM Reg Reg
+</span><a href="#local-6989586621681813181"><span class="hs-identifier hs-var">fm</span></a></span></span><span> </span><span id="local-6989586621681813182"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813182"><span class="hs-identifier hs-var">r</span></a></span></span><span>
+</span><span id="line-58"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Reg -&gt; Reg -&gt; Maybe Reg
+forall key elt. Uniquable key =&gt; UniqFM key elt -&gt; key -&gt; Maybe elt
+</span><a href="GHC.Types.Unique.FM.html#lookupUFM"><span class="hs-identifier hs-var">lookupUFM</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Reg
+</span><a href="#local-6989586621681813181"><span class="hs-identifier hs-var">fm</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813182"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-59"></span><span>        </span><span class="annot"><span class="annottext">Maybe Reg
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813182"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-60"></span><span>        </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681813184"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813184"><span class="hs-identifier hs-var">r'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Reg -&gt; Reg -&gt; Reg
+</span><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#sinkReg"><span class="hs-identifier hs-var">sinkReg</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Reg
+</span><a href="#local-6989586621681813181"><span class="hs-identifier hs-var">fm</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813184"><span class="hs-identifier hs-var">r'</span></a></span><span>
+</span><span id="line-61"></span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- | Slurp out mov instructions that only serve to join live ranges.</span><span>
+</span><span id="line-64"></span><span class="hs-comment">--</span><span>
+</span><span id="line-65"></span><span class="hs-comment">--   During a mov, if the source reg dies and the destination reg is</span><span>
+</span><span id="line-66"></span><span class="hs-comment">--   born then we can rename the two regs to the same thing and</span><span>
+</span><span id="line-67"></span><span class="hs-comment">--   eliminate the move.</span><span>
+</span><span id="line-68"></span><span id="local-6989586621681813108"><span id="local-6989586621681813109"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#slurpJoinMovs"><span class="hs-identifier hs-type">slurpJoinMovs</span></a></span><span>
+</span><span id="line-69"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813108"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-70"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveCmmDecl"><span class="hs-identifier hs-type">LiveCmmDecl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813109"><span class="hs-identifier hs-type">statics</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813108"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-71"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Data.Bag.html#Bag"><span class="hs-identifier hs-type">Bag</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-72"></span><span>
+</span><span id="line-73"></span><span id="slurpJoinMovs"><span class="annot"><span class="annottext">slurpJoinMovs :: forall instr statics.
+Instruction instr =&gt;
+LiveCmmDecl statics instr -&gt; Bag (Reg, Reg)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Coalesce.html#slurpJoinMovs"><span class="hs-identifier hs-var hs-var">slurpJoinMovs</span></a></span></span><span> </span><span id="local-6989586621681813187"><span class="annot"><span class="annottext">LiveCmmDecl statics instr
+</span><a href="#local-6989586621681813187"><span class="hs-identifier hs-var">live</span></a></span></span><span>
+</span><span id="line-74"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg) -&gt; LiveCmmDecl statics instr -&gt; Bag (Reg, Reg)
+forall {instr} {d} {h}.
+Instruction instr =&gt;
+Bag (Reg, Reg)
+-&gt; GenCmmDecl d h [SCC (GenBasicBlock (LiveInstr instr))]
+-&gt; Bag (Reg, Reg)
+</span><a href="#local-6989586621681813188"><span class="hs-identifier hs-var">slurpCmm</span></a></span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg)
+forall a. Bag a
+</span><a href="GHC.Data.Bag.html#emptyBag"><span class="hs-identifier hs-var">emptyBag</span></a></span><span> </span><span class="annot"><span class="annottext">LiveCmmDecl statics instr
+</span><a href="#local-6989586621681813187"><span class="hs-identifier hs-var">live</span></a></span><span>
+</span><span id="line-75"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-76"></span><span>        </span><span id="local-6989586621681813188"><span class="annot"><span class="annottext">slurpCmm :: Bag (Reg, Reg)
+-&gt; GenCmmDecl d h [SCC (GenBasicBlock (LiveInstr instr))]
+-&gt; Bag (Reg, Reg)
+</span><a href="#local-6989586621681813188"><span class="hs-identifier hs-var hs-var">slurpCmm</span></a></span></span><span>   </span><span id="local-6989586621681813192"><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813192"><span class="hs-identifier hs-var">rs</span></a></span></span><span>  </span><span class="annot"><a href="GHC.Cmm.html#CmmData"><span class="hs-identifier hs-type">CmmData</span></a></span><span class="hs-special">{</span><span class="hs-special">}</span><span>
+</span><span id="line-77"></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813192"><span class="hs-identifier hs-var">rs</span></a></span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span>        </span><span class="annot"><a href="#local-6989586621681813188"><span class="hs-identifier hs-var">slurpCmm</span></a></span><span>   </span><span id="local-6989586621681813194"><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813194"><span class="hs-identifier hs-var">rs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.html#CmmProc"><span class="hs-identifier hs-type">CmmProc</span></a></span><span> </span><span class="annot"><span class="annottext">h
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">CLabel
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[GlobalReg]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681813196"><span class="annot"><span class="annottext">[SCC (GenBasicBlock (LiveInstr instr))]
+</span><a href="#local-6989586621681813196"><span class="hs-identifier hs-var">sccs</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-80"></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Bag (Reg, Reg)
+ -&gt; GenBasicBlock (LiveInstr instr) -&gt; Bag (Reg, Reg))
+-&gt; Bag (Reg, Reg)
+-&gt; [GenBasicBlock (LiveInstr instr)]
+-&gt; Bag (Reg, Reg)
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; [a] -&gt; b
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#foldl%27/Data.Foldable.html#foldl%27"><span class="hs-identifier hs-var">foldl'</span></a></span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg) -&gt; GenBasicBlock (LiveInstr instr) -&gt; Bag (Reg, Reg)
+forall {instr}.
+Instruction instr =&gt;
+Bag (Reg, Reg) -&gt; GenBasicBlock (LiveInstr instr) -&gt; Bag (Reg, Reg)
+</span><a href="#local-6989586621681813197"><span class="hs-identifier hs-var">slurpBlock</span></a></span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813194"><span class="hs-identifier hs-var">rs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SCC (GenBasicBlock (LiveInstr instr))]
+-&gt; [GenBasicBlock (LiveInstr instr)]
+forall a. [SCC a] -&gt; [a]
+</span><a href="../../containers-0.6.7/src/Data.Graph.html#flattenSCCs/Data.Graph.html#flattenSCCs"><span class="hs-identifier hs-var">flattenSCCs</span></a></span><span> </span><span class="annot"><span class="annottext">[SCC (GenBasicBlock (LiveInstr instr))]
+</span><a href="#local-6989586621681813196"><span class="hs-identifier hs-var">sccs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-81"></span><span>
+</span><span id="line-82"></span><span>        </span><span id="local-6989586621681813197"><span class="annot"><span class="annottext">slurpBlock :: Bag (Reg, Reg) -&gt; GenBasicBlock (LiveInstr instr) -&gt; Bag (Reg, Reg)
+</span><a href="#local-6989586621681813197"><span class="hs-identifier hs-var hs-var">slurpBlock</span></a></span></span><span> </span><span id="local-6989586621681813202"><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813202"><span class="hs-identifier hs-var">rs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.html#BasicBlock"><span class="hs-identifier hs-type">BasicBlock</span></a></span><span> </span><span class="annot"><span class="annottext">BlockId
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681813204"><span class="annot"><span class="annottext">[LiveInstr instr]
+</span><a href="#local-6989586621681813204"><span class="hs-identifier hs-var">instrs</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-83"></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Bag (Reg, Reg) -&gt; LiveInstr instr -&gt; Bag (Reg, Reg))
+-&gt; Bag (Reg, Reg) -&gt; [LiveInstr instr] -&gt; Bag (Reg, Reg)
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; [a] -&gt; b
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#foldl%27/Data.Foldable.html#foldl%27"><span class="hs-identifier hs-var">foldl'</span></a></span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg) -&gt; LiveInstr instr -&gt; Bag (Reg, Reg)
+forall {instr}.
+Instruction instr =&gt;
+Bag (Reg, Reg) -&gt; LiveInstr instr -&gt; Bag (Reg, Reg)
+</span><a href="#local-6989586621681813205"><span class="hs-identifier hs-var">slurpLI</span></a></span><span>    </span><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813202"><span class="hs-identifier hs-var">rs</span></a></span><span> </span><span class="annot"><span class="annottext">[LiveInstr instr]
+</span><a href="#local-6989586621681813204"><span class="hs-identifier hs-var">instrs</span></a></span><span>
+</span><span id="line-84"></span><span>
+</span><span id="line-85"></span><span>        </span><span id="local-6989586621681813205"><span class="annot"><span class="annottext">slurpLI :: Bag (Reg, Reg) -&gt; LiveInstr instr -&gt; Bag (Reg, Reg)
+</span><a href="#local-6989586621681813205"><span class="hs-identifier hs-var hs-var">slurpLI</span></a></span></span><span>    </span><span id="local-6989586621681813212"><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813212"><span class="hs-identifier hs-var">rs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span class="annot"><span class="annottext">InstrSR instr
+</span><span class="hs-identifier">_</span></span><span>      </span><span class="annot"><span class="annottext">Maybe Liveness
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span class="hs-special">)</span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813212"><span class="hs-identifier hs-var">rs</span></a></span><span>
+</span><span id="line-86"></span><span>        </span><span class="annot"><a href="#local-6989586621681813205"><span class="hs-identifier hs-var">slurpLI</span></a></span><span>    </span><span id="local-6989586621681813214"><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813214"><span class="hs-identifier hs-var">rs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span id="local-6989586621681813215"><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681813215"><span class="hs-identifier hs-var">instr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681813216"><span class="annot"><span class="annottext">Liveness
+</span><a href="#local-6989586621681813216"><span class="hs-identifier hs-var">live</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-87"></span><span>                </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681813217"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813217"><span class="hs-identifier hs-var">r1</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681813218"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813218"><span class="hs-identifier hs-var">r2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">InstrSR instr -&gt; Maybe (Reg, Reg)
+forall instr. Instruction instr =&gt; instr -&gt; Maybe (Reg, Reg)
+</span><a href="GHC.CmmToAsm.Instr.html#takeRegRegMoveInstr"><span class="hs-identifier hs-var">takeRegRegMoveInstr</span></a></span><span> </span><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681813215"><span class="hs-identifier hs-var">instr</span></a></span><span>
+</span><span id="line-88"></span><span>                </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; UniqSet Reg -&gt; Bool
+forall a. Uniquable a =&gt; a -&gt; UniqSet a -&gt; Bool
+</span><a href="GHC.Types.Unique.Set.html#elementOfUniqSet"><span class="hs-identifier hs-var">elementOfUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813217"><span class="hs-identifier hs-var">r1</span></a></span><span> </span><span class="annot"><span class="annottext">(UniqSet Reg -&gt; Bool) -&gt; UniqSet Reg -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Liveness -&gt; UniqSet Reg
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#liveDieRead"><span class="hs-identifier hs-var">liveDieRead</span></a></span><span> </span><span class="annot"><span class="annottext">Liveness
+</span><a href="#local-6989586621681813216"><span class="hs-identifier hs-var">live</span></a></span><span>
+</span><span id="line-89"></span><span>                </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; UniqSet Reg -&gt; Bool
+forall a. Uniquable a =&gt; a -&gt; UniqSet a -&gt; Bool
+</span><a href="GHC.Types.Unique.Set.html#elementOfUniqSet"><span class="hs-identifier hs-var">elementOfUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813218"><span class="hs-identifier hs-var">r2</span></a></span><span> </span><span class="annot"><span class="annottext">(UniqSet Reg -&gt; Bool) -&gt; UniqSet Reg -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Liveness -&gt; UniqSet Reg
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#liveBorn"><span class="hs-identifier hs-var">liveBorn</span></a></span><span> </span><span class="annot"><span class="annottext">Liveness
+</span><a href="#local-6989586621681813216"><span class="hs-identifier hs-var">live</span></a></span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span>                </span><span class="hs-comment">-- only coalesce movs between two virtuals for now,</span><span>
+</span><span id="line-92"></span><span>                </span><span class="hs-comment">-- else we end up with allocatable regs in the live</span><span>
+</span><span id="line-93"></span><span>                </span><span class="hs-comment">-- regs list..</span><span>
+</span><span id="line-94"></span><span>                </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; Bool
+</span><a href="GHC.Platform.Reg.html#isVirtualReg"><span class="hs-identifier hs-var">isVirtualReg</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813217"><span class="hs-identifier hs-var">r1</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Reg -&gt; Bool
+</span><a href="GHC.Platform.Reg.html#isVirtualReg"><span class="hs-identifier hs-var">isVirtualReg</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813218"><span class="hs-identifier hs-var">r2</span></a></span><span>
+</span><span id="line-95"></span><span>                </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Reg, Reg) -&gt; Bag (Reg, Reg) -&gt; Bag (Reg, Reg)
+forall a. a -&gt; Bag a -&gt; Bag a
+</span><a href="GHC.Data.Bag.html#consBag"><span class="hs-identifier hs-var">consBag</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813217"><span class="hs-identifier hs-var">r1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813218"><span class="hs-identifier hs-var">r2</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813214"><span class="hs-identifier hs-var">rs</span></a></span><span>
+</span><span id="line-96"></span><span>
+</span><span id="line-97"></span><span>                </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-98"></span><span>                </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bag (Reg, Reg)
+</span><a href="#local-6989586621681813214"><span class="hs-identifier hs-var">rs</span></a></span><span>
+</span><span id="line-99"></span><span>
+</span><span id="line-100"></span></pre></body></html>

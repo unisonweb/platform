@@ -1,0 +1,469 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE ForeignFunctionInterface #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE MagicHash #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE TypeApplications #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE UnboxedTuples #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE UnliftedFFITypes#-}</span><span>
+</span><span id="line-6"></span><span class="hs-pragma">{-# LANGUAGE GHCForeignImportPrim #-}</span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- This module exposes an interface for capturing the state of a thread's</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- execution stack for diagnostics purposes: 'cloneMyStack',</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- 'cloneThreadStack'.</span><span>
+</span><span id="line-12"></span><span class="hs-comment">--</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- Such a &quot;cloned&quot; stack can be decoded with 'decode' to a stack trace, given</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- that the @-finfo-table-map@ is enabled.</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- @since 4.17.0.0</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Stack.CloneStack</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-18"></span><span>  </span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackSnapshot"><span class="hs-identifier">StackSnapshot</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>  </span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackEntry"><span class="hs-identifier">StackEntry</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>  </span><span class="annot"><a href="GHC.Stack.CloneStack.html#cloneMyStack"><span class="hs-identifier">cloneMyStack</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>  </span><span class="annot"><a href="GHC.Stack.CloneStack.html#cloneThreadStack"><span class="hs-identifier">cloneThreadStack</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>  </span><span class="annot"><a href="GHC.Stack.CloneStack.html#decode"><span class="hs-identifier">decode</span></a></span><span>
+</span><span id="line-23"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Concurrent.MVar.html"><span class="hs-identifier">Control.Concurrent.MVar</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Maybe.html"><span class="hs-identifier">Data.Maybe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Maybe.html#catMaybes"><span class="hs-identifier">catMaybes</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.html"><span class="hs-identifier">Foreign</span></a></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Conc.Sync.html"><span class="hs-identifier">GHC.Conc.Sync</span></a></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Exts.html"><span class="hs-identifier">GHC.Exts</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier">Int</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#I%23/GHC.Types.html#I%23"><span class="hs-identifier">I#</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#RealWorld/GHC.Prim.html#RealWorld"><span class="hs-identifier">RealWorld</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#StackSnapshot%23/GHC.Prim.html#StackSnapshot%23"><span class="hs-identifier">StackSnapshot#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#ThreadId%23/GHC.Prim.html#ThreadId%23"><span class="hs-identifier">ThreadId#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#Array%23/GHC.Prim.html#Array%23"><span class="hs-identifier">Array#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#sizeofArray%23/GHC.Prim.html#sizeofArray%23"><span class="hs-identifier">sizeofArray#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#indexArray%23/GHC.Prim.html#indexArray%23"><span class="hs-identifier">indexArray#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#State%23/GHC.Prim.html#State%23"><span class="hs-identifier">State#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#StablePtr%23/GHC.Prim.html#StablePtr%23"><span class="hs-identifier">StablePtr#</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.IO.html"><span class="hs-identifier">GHC.IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.InfoProv.html"><span class="hs-identifier">GHC.InfoProv</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.InfoProv.html#InfoProv"><span class="hs-identifier">InfoProv</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.InfoProv.html#InfoProvEnt"><span class="hs-identifier">InfoProvEnt</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.InfoProv.html#ipLoc"><span class="hs-identifier">ipLoc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.InfoProv.html#ipeProv"><span class="hs-identifier">ipeProv</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.InfoProv.html#peekInfoProv"><span class="hs-identifier">peekInfoProv</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Stable.html"><span class="hs-identifier">GHC.Stable</span></a></span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- | A frozen snapshot of the state of an execution stack.</span><span>
+</span><span id="line-35"></span><span class="hs-comment">--</span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- @since 4.17.0.0</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">data</span><span> </span><span id="StackSnapshot"><span class="annot"><a href="GHC.Stack.CloneStack.html#StackSnapshot"><span class="hs-identifier hs-var">StackSnapshot</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="StackSnapshot"><span class="annot"><a href="GHC.Stack.CloneStack.html#StackSnapshot"><span class="hs-identifier hs-var">StackSnapshot</span></a></span></span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#StackSnapshot%23/GHC.Prim.html#StackSnapshot%23"><span class="hs-identifier hs-type">StackSnapshot#</span></a></span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">prim</span></span><span> </span><span class="annot"><span class="hs-string">&quot;stg_decodeStackzh&quot;</span></span><span> </span><span id="decodeStack%23"><span class="annot"><a href="GHC.Stack.CloneStack.html#decodeStack%23"><span class="hs-identifier hs-var">decodeStack#</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#StackSnapshot%23/GHC.Prim.html#StackSnapshot%23"><span class="hs-identifier hs-type">StackSnapshot#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#State%23/GHC.Prim.html#State%23"><span class="hs-identifier hs-type">State#</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#RealWorld/GHC.Prim.html#RealWorld"><span class="hs-identifier hs-type">RealWorld</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#State%23/GHC.Prim.html#State%23"><span class="hs-identifier hs-type">State#</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#RealWorld/GHC.Prim.html#RealWorld"><span class="hs-identifier hs-type">RealWorld</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#Array%23/GHC.Prim.html#Array%23"><span class="hs-identifier hs-type">Array#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Ptr.html#Ptr"><span class="hs-identifier hs-type">Ptr</span></a></span><span> </span><span class="annot"><a href="GHC.InfoProv.html#InfoProvEnt"><span class="hs-identifier hs-type">InfoProvEnt</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">prim</span></span><span> </span><span class="annot"><span class="hs-string">&quot;stg_cloneMyStackzh&quot;</span></span><span> </span><span id="cloneMyStack%23"><span class="annot"><a href="GHC.Stack.CloneStack.html#cloneMyStack%23"><span class="hs-identifier hs-var">cloneMyStack#</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#State%23/GHC.Prim.html#State%23"><span class="hs-identifier hs-type">State#</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#RealWorld/GHC.Prim.html#RealWorld"><span class="hs-identifier hs-type">RealWorld</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#State%23/GHC.Prim.html#State%23"><span class="hs-identifier hs-type">State#</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#RealWorld/GHC.Prim.html#RealWorld"><span class="hs-identifier hs-type">RealWorld</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#StackSnapshot%23/GHC.Prim.html#StackSnapshot%23"><span class="hs-identifier hs-type">StackSnapshot#</span></a></span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">prim</span></span><span> </span><span class="annot"><span class="hs-string">&quot;stg_sendCloneStackMessagezh&quot;</span></span><span> </span><span id="sendCloneStackMessage%23"><span class="annot"><a href="GHC.Stack.CloneStack.html#sendCloneStackMessage%23"><span class="hs-identifier hs-var">sendCloneStackMessage#</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#ThreadId%23/GHC.Prim.html#ThreadId%23"><span class="hs-identifier hs-type">ThreadId#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#StablePtr%23/GHC.Prim.html#StablePtr%23"><span class="hs-identifier hs-type">StablePtr#</span></a></span><span> </span><span class="annot"><a href="GHC.Conc.Sync.html#PrimMVar"><span class="hs-identifier hs-type">PrimMVar</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#State%23/GHC.Prim.html#State%23"><span class="hs-identifier hs-type">State#</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#RealWorld/GHC.Prim.html#RealWorld"><span class="hs-identifier hs-type">RealWorld</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#State%23/GHC.Prim.html#State%23"><span class="hs-identifier hs-type">State#</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#RealWorld/GHC.Prim.html#RealWorld"><span class="hs-identifier hs-type">RealWorld</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(#</span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="hs-comment">{-
+Note [Stack Cloning]
+~~~~~~~~~~~~~~~~~~~~
+&quot;Cloning&quot; a stack means that it's `StgStack` closure is copied including the
+stack memory (`stack[]`). Closures referenced by stack closures are not copied,
+i.e. pointer payloads are still referred to by the same pointer.
+In other words: Only those parts that are affected by stack evaluation are
+&quot;cloned&quot;.
+
+The stack pointer (sp) of the clone is adjusted to be valid, i.e. to point into
+the cloned stack.
+
+The clone is &quot;offline&quot;/&quot;cold&quot;, i.e. it won't be evaluated any further. This is
+useful for further analyses like stack unwinding or traversal because all
+pointers stay valid.
+
+StackSnapshot#
+--------------
+A cloned stack is represented in Haskell by `StackSnapshot !StackSnapshot#`.
+`StackSnapshot#` is a primitive type, it's value is a pointer to the stack in
+RTS (`StgStack*`).
+
+To take advantage of the garbage collector, the representation cannot be `Ptr`
+or `StablePtr`:
+- Closures referenced by a `Ptr` may be garbage collected at any time (without
+  checking if it's still in use).
+- `StablePtr` has to be freed explictly, which would introduce nasty state
+   handling.
+
+By using a primitive type, the stack closure (and its transitive closures) is
+kept and managed by the garbage collector as long as it's in use and
+automatically freed later.
+As closures referred to by stack closures (e.g. payloads) may be used by other
+closures that are not related to stack cloning, the memory has to be managed by
+the garbage collector; i.e. one cannot simply call free() in the RTS C code
+because it's hard to figure out what to free while the garbage collector is
+built to do this job.
+
+RTS interface
+-------------
+There are two different ways to clone a stack:
+1. `cloneMyStack#` - A primop for cloning the active thread's stack.
+2. `sendCloneStackMessage#` - A primop for cloning another thread's stack.
+   Sends a RTS message (Messages.c) with a MVar to that thread. The cloned
+   stack is received by taking it out of this MVar.
+
+`cloneMyStack#` has to be a primop, because new primitive types
+(`StackSnapshot#`) cannot be marshalled by FFI. Using a `Ptr StackSnapshot` as
+FFI return type would not save the snapshot from being garbage collected, as
+discussed in the section above.
+
+C API
+-------------
+`cloneStack` is the function that really clones a given stack and returns
+the clone:
+`StgStack* cloneStack(Capability* capability, const StgStack* stack)`
+
+It's called directly by `stg_cloneMyStackzh` (`PrimOps.cmm`), the
+`cloneMyStack#` primop.
+
+To clone another thread's stack, there's a message passing mechanism such that
+the receiver's capability clones its. So, there's no need to stop/pause the
+other thread as it's capability will fulfill the cloning request when it's
+ready to do so.
+
+The message is defined in `Closures.h`:
+
+```
+typedef struct MessageCloneStack_ {
+    StgHeader header;
+    Message   *link;
+    StgMVar   *result;
+    StgTSO    *tso;
+} MessageCloneStack;
+```
+
+The fields are:
+- `header`: It's a closure and thus subject to garbage collection (no manual
+   memory management needed)
+- `link`: Messages form a singly linked list in `Capability`, referred to by
+  `capability-&gt;inbox`.
+- `result`: An `MVar`. When the message is sent it's empty, after cloning the
+  `StackSnapshot` is put into it.
+- `tso`: `tso-&gt;stackobj` is the stack to clone.
+
+The asynchronous flow can be split into sending this message and putting the
+cloned stack into the MVar (expecting the sender to get it from there).
+
+Sending:
+The public C function to send is
+`void sendCloneStackMessage(StgTSO *tso, HsStablePtr mvar)`.
+It prepares the message for the thread to clone (identified by it's `tso`) and
+sets the `result` MVar (pointed to by `mvar`). Then it sends the message by
+calling `sendMessage` which puts it into the Capabilities `inbox`.
+
+Receiving:
+Inbox processing is part of the big work finding loop in `schedule`. The
+function that dispatches messages is `executeMessage`. From there
+`void handleCloneStackMessage(MessageCloneStack *msg)` is called.
+
+`handleCloneStackMessage` clones the stack, lifts the result to `StackSnapshot`
+(MVar needs a lifted value, no primitive) and puts it into the MVar
+(`msg-&gt;mvar`).
+-}</span><span>
+</span><span id="line-149"></span><span>
+</span><span id="line-150"></span><span class="hs-comment">{-
+Note [Stack Decoding]
+~~~~~~~~~~~~~~~~~~~~~
+A cloned stack is decoded (unwound) by looking up the Info Table Provenance
+Entries (IPE) for every stack frame with `lookupIPE` in the RTS.
+
+The IPEs contain source locations and are pulled from the RTS/C world into
+Haskell.
+
+RTS interface
+-------------
+
+The primop decodeStack# returns an array of IPE pointers that are later
+unmarshalled with HSC. If there is no IPE for a return frame (which can easily
+happen when a library wasn't compiled with `-finfo-table-map`), it's
+represented by a null pointer.
+
+Caveats:
+- decodeStack# has to be a primop (not a simple C FFI function), because
+  there always has to be at least one active `TSO`. Otherwise, allocating
+  memory with the garbage collector for the returned value fails.
+- decodeStack# has to be defined outside of `primops.txt.pp` because its
+  return type `Array# (Ptr InfoProvEnt)` cannot be defined there:
+  `InfoProvEnt` and `Ptr` would have to be imported which seems to be too
+  specific for this file.
+
+Notes
+-----
+The relevant notes are:
+  - Note [Mapping Info Tables to Source Positions]
+  - Note [Stacktraces from Info Table Provenance Entries (IPE based stack unwinding)]
+-}</span><span>
+</span><span id="line-182"></span><span>
+</span><span id="line-183"></span><span class="hs-comment">-- | Clone the stack of the executing thread</span><span>
+</span><span id="line-184"></span><span class="hs-comment">--</span><span>
+</span><span id="line-185"></span><span class="hs-comment">-- @since 4.17.0.0</span><span>
+</span><span id="line-186"></span><span class="annot"><a href="GHC.Stack.CloneStack.html#cloneMyStack"><span class="hs-identifier hs-type">cloneMyStack</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackSnapshot"><span class="hs-identifier hs-type">StackSnapshot</span></a></span><span>
+</span><span id="line-187"></span><span id="cloneMyStack"><span class="annot"><span class="annottext">cloneMyStack :: IO StackSnapshot
+</span><a href="GHC.Stack.CloneStack.html#cloneMyStack"><span class="hs-identifier hs-var hs-var">cloneMyStack</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, StackSnapshot #))
+-&gt; IO StackSnapshot
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-var">IO</span></a></span><span> </span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, StackSnapshot #))
+ -&gt; IO StackSnapshot)
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, StackSnapshot #))
+-&gt; IO StackSnapshot
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679697265"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697265"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-188"></span><span>   </span><span class="hs-keyword">case</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">State# RealWorld -&gt; (# State# RealWorld, StackSnapshot# #)
+</span><a href="GHC.Stack.CloneStack.html#cloneMyStack%23"><span class="hs-identifier hs-var">cloneMyStack#</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697265"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span> </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679697266"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697266"><span class="hs-identifier hs-var">s1</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679697267"><span class="annot"><span class="annottext">StackSnapshot#
+</span><a href="#local-6989586621679697267"><span class="hs-identifier hs-var">stack</span></a></span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697266"><span class="hs-identifier hs-var">s1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">StackSnapshot# -&gt; StackSnapshot
+</span><a href="GHC.Stack.CloneStack.html#StackSnapshot"><span class="hs-identifier hs-var">StackSnapshot</span></a></span><span> </span><span class="annot"><span class="annottext">StackSnapshot#
+</span><a href="#local-6989586621679697267"><span class="hs-identifier hs-var">stack</span></a></span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-189"></span><span>
+</span><span id="line-190"></span><span class="hs-comment">-- | Clone the stack of a thread identified by its 'ThreadId'</span><span>
+</span><span id="line-191"></span><span class="hs-comment">--</span><span>
+</span><span id="line-192"></span><span class="hs-comment">-- @since 4.17.0.0</span><span>
+</span><span id="line-193"></span><span class="annot"><a href="GHC.Stack.CloneStack.html#cloneThreadStack"><span class="hs-identifier hs-type">cloneThreadStack</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Conc.Sync.html#ThreadId"><span class="hs-identifier hs-type">ThreadId</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackSnapshot"><span class="hs-identifier hs-type">StackSnapshot</span></a></span><span>
+</span><span id="line-194"></span><span id="cloneThreadStack"><span class="annot"><span class="annottext">cloneThreadStack :: ThreadId -&gt; IO StackSnapshot
+</span><a href="GHC.Stack.CloneStack.html#cloneThreadStack"><span class="hs-identifier hs-var hs-var">cloneThreadStack</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Conc.Sync.html#ThreadId"><span class="hs-identifier hs-type">ThreadId</span></a></span><span> </span><span id="local-6989586621679697269"><span class="annot"><span class="annottext">ThreadId#
+</span><a href="#local-6989586621679697269"><span class="hs-identifier hs-var">tid#</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-195"></span><span>  </span><span id="local-6989586621679697270"><span class="annot"><span class="annottext">MVar StackSnapshot
+</span><a href="#local-6989586621679697270"><span class="hs-identifier hs-var">resultVar</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">forall a. IO (MVar a)
+</span><a href="GHC.MVar.html#newEmptyMVar"><span class="hs-identifier hs-var">newEmptyMVar</span></a></span><span> </span><span class="hs-glyph">@</span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackSnapshot"><span class="hs-identifier hs-type">StackSnapshot</span></a></span><span>
+</span><span id="line-196"></span><span>  </span><span id="local-6989586621679697272"><span class="annot"><span class="annottext">boxedPtr :: StablePtr PrimMVar
+</span><a href="#local-6989586621679697272"><span class="hs-identifier hs-var">boxedPtr</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stable.html#StablePtr"><span class="hs-identifier hs-type">StablePtr</span></a></span><span> </span><span id="local-6989586621679697274"><span class="annot"><span class="annottext">StablePtr# PrimMVar
+</span><a href="#local-6989586621679697274"><span class="hs-identifier hs-var">ptr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MVar StackSnapshot -&gt; IO (StablePtr PrimMVar)
+forall a. MVar a -&gt; IO (StablePtr PrimMVar)
+</span><a href="GHC.Conc.Sync.html#newStablePtrPrimMVar"><span class="hs-identifier hs-var">newStablePtrPrimMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar StackSnapshot
+</span><a href="#local-6989586621679697270"><span class="hs-identifier hs-var">resultVar</span></a></span><span>
+</span><span id="line-197"></span><span>  </span><span class="hs-comment">-- Use the RTS's &quot;message&quot; mechanism to request that</span><span>
+</span><span id="line-198"></span><span>  </span><span class="hs-comment">-- the thread captures its stack, saving the result</span><span>
+</span><span id="line-199"></span><span>  </span><span class="hs-comment">-- into resultVar.</span><span>
+</span><span id="line-200"></span><span>  </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ()
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-var">IO</span></a></span><span> </span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ())
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679697276"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697276"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ThreadId#
+-&gt; StablePtr# PrimMVar
+-&gt; State# RealWorld
+-&gt; (# State# RealWorld, (# #) #)
+</span><a href="GHC.Stack.CloneStack.html#sendCloneStackMessage%23"><span class="hs-identifier hs-var">sendCloneStackMessage#</span></a></span><span> </span><span class="annot"><span class="annottext">ThreadId#
+</span><a href="#local-6989586621679697269"><span class="hs-identifier hs-var">tid#</span></a></span><span> </span><span class="annot"><span class="annottext">StablePtr# PrimMVar
+</span><a href="#local-6989586621679697274"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697276"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679697277"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697277"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(#</span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697277"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-201"></span><span>  </span><span class="annot"><span class="annottext">StablePtr PrimMVar -&gt; IO ()
+forall a. StablePtr a -&gt; IO ()
+</span><a href="GHC.Stable.html#freeStablePtr"><span class="hs-identifier hs-var">freeStablePtr</span></a></span><span> </span><span class="annot"><span class="annottext">StablePtr PrimMVar
+</span><a href="#local-6989586621679697272"><span class="hs-identifier hs-var">boxedPtr</span></a></span><span>
+</span><span id="line-202"></span><span>  </span><span class="annot"><span class="annottext">MVar StackSnapshot -&gt; IO StackSnapshot
+forall a. MVar a -&gt; IO a
+</span><a href="GHC.MVar.html#takeMVar"><span class="hs-identifier hs-var">takeMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar StackSnapshot
+</span><a href="#local-6989586621679697270"><span class="hs-identifier hs-var">resultVar</span></a></span><span>
+</span><span id="line-203"></span><span>
+</span><span id="line-204"></span><span class="hs-comment">-- | Representation for the source location where a return frame was pushed on the stack.</span><span>
+</span><span id="line-205"></span><span class="hs-comment">-- This happens every time when a @case ... of@ scrutinee is evaluated.</span><span>
+</span><span id="line-206"></span><span class="hs-keyword">data</span><span> </span><span id="StackEntry"><span class="annot"><a href="GHC.Stack.CloneStack.html#StackEntry"><span class="hs-identifier hs-var">StackEntry</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="StackEntry"><span class="annot"><a href="GHC.Stack.CloneStack.html#StackEntry"><span class="hs-identifier hs-var">StackEntry</span></a></span></span><span>
+</span><span id="line-207"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="functionName"><span class="annot"><span class="annottext">StackEntry -&gt; String
+</span><a href="GHC.Stack.CloneStack.html#functionName"><span class="hs-identifier hs-var hs-var">functionName</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-208"></span><span>    </span><span id="moduleName"><span class="annot"><span class="annottext">StackEntry -&gt; String
+</span><a href="GHC.Stack.CloneStack.html#moduleName"><span class="hs-identifier hs-var hs-var">moduleName</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-209"></span><span>    </span><span id="srcLoc"><span class="annot"><span class="annottext">StackEntry -&gt; String
+</span><a href="GHC.Stack.CloneStack.html#srcLoc"><span class="hs-identifier hs-var hs-var">srcLoc</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-210"></span><span>    </span><span id="closureType"><span class="annot"><span class="annottext">StackEntry -&gt; Word
+</span><a href="GHC.Stack.CloneStack.html#closureType"><span class="hs-identifier hs-var hs-var">closureType</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Word/GHC.Types.html#Word"><span class="hs-identifier hs-type">Word</span></a></span><span>
+</span><span id="line-211"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-212"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679697286"><span id="local-6989586621679697297"><span id="local-6989586621679697301"><span class="annot"><span class="annottext">Int -&gt; StackEntry -&gt; ShowS
+[StackEntry] -&gt; ShowS
+StackEntry -&gt; String
+(Int -&gt; StackEntry -&gt; ShowS)
+-&gt; (StackEntry -&gt; String)
+-&gt; ([StackEntry] -&gt; ShowS)
+-&gt; Show StackEntry
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; StackEntry -&gt; ShowS
+showsPrec :: Int -&gt; StackEntry -&gt; ShowS
+$cshow :: StackEntry -&gt; String
+show :: StackEntry -&gt; String
+$cshowList :: [StackEntry] -&gt; ShowS
+showList :: [StackEntry] -&gt; ShowS
+</span><a href="GHC.Show.html#Show"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></a></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679697306"><span id="local-6989586621679697315"><span class="annot"><span class="annottext">StackEntry -&gt; StackEntry -&gt; Bool
+(StackEntry -&gt; StackEntry -&gt; Bool)
+-&gt; (StackEntry -&gt; StackEntry -&gt; Bool) -&gt; Eq StackEntry
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: StackEntry -&gt; StackEntry -&gt; Bool
+== :: StackEntry -&gt; StackEntry -&gt; Bool
+$c/= :: StackEntry -&gt; StackEntry -&gt; Bool
+/= :: StackEntry -&gt; StackEntry -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#Eq/GHC.Classes.html#Eq"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></a></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-213"></span><span>
+</span><span id="line-214"></span><span class="hs-comment">-- | Decode a 'StackSnapshot' to a stacktrace (a list of 'StackEntry').</span><span>
+</span><span id="line-215"></span><span class="hs-comment">-- The stack trace is created from return frames with according 'InfoProvEnt'</span><span>
+</span><span id="line-216"></span><span class="hs-comment">-- entries. To generate them, use the GHC flag @-finfo-table-map@. If there are</span><span>
+</span><span id="line-217"></span><span class="hs-comment">-- no 'InfoProvEnt' entries, an empty list is returned.</span><span>
+</span><span id="line-218"></span><span class="hs-comment">--</span><span>
+</span><span id="line-219"></span><span class="hs-comment">-- Please note:</span><span>
+</span><span id="line-220"></span><span class="hs-comment">--</span><span>
+</span><span id="line-221"></span><span class="hs-comment">--   * To gather 'StackEntry' from libraries, these have to be</span><span>
+</span><span id="line-222"></span><span class="hs-comment">--     compiled with @-finfo-table-map@, too.</span><span>
+</span><span id="line-223"></span><span class="hs-comment">--   * Due to optimizations by GHC (e.g. inlining) the stacktrace may change</span><span>
+</span><span id="line-224"></span><span class="hs-comment">--     with different GHC parameters and versions.</span><span>
+</span><span id="line-225"></span><span class="hs-comment">--   * The stack trace is empty (by design) if there are no return frames on</span><span>
+</span><span id="line-226"></span><span class="hs-comment">--     the stack. (These are pushed every time when a @case ... of@ scrutinee</span><span>
+</span><span id="line-227"></span><span class="hs-comment">--     is evaluated.)</span><span>
+</span><span id="line-228"></span><span class="hs-comment">--</span><span>
+</span><span id="line-229"></span><span class="hs-comment">-- @since 4.17.0.0</span><span>
+</span><span id="line-230"></span><span class="annot"><a href="GHC.Stack.CloneStack.html#decode"><span class="hs-identifier hs-type">decode</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackSnapshot"><span class="hs-identifier hs-type">StackSnapshot</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackEntry"><span class="hs-identifier hs-type">StackEntry</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-231"></span><span id="decode"><span class="annot"><span class="annottext">decode :: StackSnapshot -&gt; IO [StackEntry]
+</span><a href="GHC.Stack.CloneStack.html#decode"><span class="hs-identifier hs-var hs-var">decode</span></a></span></span><span> </span><span id="local-6989586621679697320"><span class="annot"><span class="annottext">StackSnapshot
+</span><a href="#local-6989586621679697320"><span class="hs-identifier hs-var">stackSnapshot</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-232"></span><span>    </span><span id="local-6989586621679697321"><span class="annot"><span class="annottext">[Ptr InfoProvEnt]
+</span><a href="#local-6989586621679697321"><span class="hs-identifier hs-var">stackEntries</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">StackSnapshot -&gt; IO [Ptr InfoProvEnt]
+</span><a href="GHC.Stack.CloneStack.html#getDecodedStackArray"><span class="hs-identifier hs-var">getDecodedStackArray</span></a></span><span> </span><span class="annot"><span class="annottext">StackSnapshot
+</span><a href="#local-6989586621679697320"><span class="hs-identifier hs-var">stackSnapshot</span></a></span><span>
+</span><span id="line-233"></span><span>    </span><span id="local-6989586621679697323"><span class="annot"><span class="annottext">[Maybe StackEntry]
+</span><a href="#local-6989586621679697323"><span class="hs-identifier hs-var">ipes</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Ptr InfoProvEnt -&gt; IO (Maybe StackEntry))
+-&gt; [Ptr InfoProvEnt] -&gt; IO [Maybe StackEntry]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; [a] -&gt; m [b]
+</span><a href="Data.Traversable.html#mapM"><span class="hs-identifier hs-var">mapM</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr InfoProvEnt -&gt; IO (Maybe StackEntry)
+</span><a href="#local-6989586621679697325"><span class="hs-identifier hs-var">unmarshal</span></a></span><span> </span><span class="annot"><span class="annottext">[Ptr InfoProvEnt]
+</span><a href="#local-6989586621679697321"><span class="hs-identifier hs-var">stackEntries</span></a></span><span>
+</span><span id="line-234"></span><span>    </span><span class="annot"><span class="annottext">[StackEntry] -&gt; IO [StackEntry]
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">([StackEntry] -&gt; IO [StackEntry])
+-&gt; [StackEntry] -&gt; IO [StackEntry]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[Maybe StackEntry] -&gt; [StackEntry]
+forall a. [Maybe a] -&gt; [a]
+</span><a href="Data.Maybe.html#catMaybes"><span class="hs-identifier hs-var">catMaybes</span></a></span><span> </span><span class="annot"><span class="annottext">[Maybe StackEntry]
+</span><a href="#local-6989586621679697323"><span class="hs-identifier hs-var">ipes</span></a></span><span>
+</span><span id="line-235"></span><span>
+</span><span id="line-236"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-237"></span><span>      </span><span class="annot"><a href="#local-6989586621679697325"><span class="hs-identifier hs-type">unmarshal</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Ptr.html#Ptr"><span class="hs-identifier hs-type">Ptr</span></a></span><span> </span><span class="annot"><a href="GHC.InfoProv.html#InfoProvEnt"><span class="hs-identifier hs-type">InfoProvEnt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackEntry"><span class="hs-identifier hs-type">StackEntry</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-238"></span><span>      </span><span id="local-6989586621679697325"><span class="annot"><span class="annottext">unmarshal :: Ptr InfoProvEnt -&gt; IO (Maybe StackEntry)
+</span><a href="#local-6989586621679697325"><span class="hs-identifier hs-var hs-var">unmarshal</span></a></span></span><span> </span><span id="local-6989586621679697326"><span class="annot"><span class="annottext">Ptr InfoProvEnt
+</span><a href="#local-6989586621679697326"><span class="hs-identifier hs-var">ipe</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Ptr InfoProvEnt
+</span><a href="#local-6989586621679697326"><span class="hs-identifier hs-var">ipe</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr InfoProvEnt -&gt; Ptr InfoProvEnt -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr InfoProvEnt
+forall a. Ptr a
+</span><a href="GHC.Ptr.html#nullPtr"><span class="hs-identifier hs-var">nullPtr</span></a></span><span> </span><span class="hs-keyword">then</span><span>
+</span><span id="line-239"></span><span>                          </span><span class="annot"><span class="annottext">Maybe StackEntry -&gt; IO (Maybe StackEntry)
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe StackEntry
+forall a. Maybe a
+</span><a href="GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-240"></span><span>                       </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-241"></span><span>                          </span><span id="local-6989586621679697328"><span class="annot"><span class="annottext">InfoProv
+</span><a href="#local-6989586621679697328"><span class="hs-identifier hs-var">infoProv</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr InfoProv -&gt; IO InfoProv
+</span><a href="GHC.InfoProv.html#peekInfoProv"><span class="hs-identifier hs-var">peekInfoProv</span></a></span><span> </span><span class="annot"><span class="annottext">(Ptr InfoProv -&gt; IO InfoProv)
+-&gt; (Ptr InfoProvEnt -&gt; Ptr InfoProv)
+-&gt; Ptr InfoProvEnt
+-&gt; IO InfoProv
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr InfoProvEnt -&gt; Ptr InfoProv
+</span><a href="GHC.InfoProv.html#ipeProv"><span class="hs-identifier hs-var">ipeProv</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr InfoProvEnt
+</span><a href="#local-6989586621679697326"><span class="hs-identifier hs-var">ipe</span></a></span><span>
+</span><span id="line-242"></span><span>                          </span><span class="annot"><span class="annottext">Maybe StackEntry -&gt; IO (Maybe StackEntry)
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><a href="GHC.Base.html#pure"><span class="hs-identifier hs-var">pure</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe StackEntry -&gt; IO (Maybe StackEntry))
+-&gt; Maybe StackEntry -&gt; IO (Maybe StackEntry)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">StackEntry -&gt; Maybe StackEntry
+forall a. a -&gt; Maybe a
+</span><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InfoProv -&gt; StackEntry
+</span><a href="#local-6989586621679697330"><span class="hs-identifier hs-var">toStackEntry</span></a></span><span> </span><span class="annot"><span class="annottext">InfoProv
+</span><a href="#local-6989586621679697328"><span class="hs-identifier hs-var">infoProv</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-243"></span><span>      </span><span class="annot"><a href="#local-6989586621679697330"><span class="hs-identifier hs-type">toStackEntry</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.InfoProv.html#InfoProv"><span class="hs-identifier hs-type">InfoProv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackEntry"><span class="hs-identifier hs-type">StackEntry</span></a></span><span>
+</span><span id="line-244"></span><span>      </span><span id="local-6989586621679697330"><span class="annot"><span class="annottext">toStackEntry :: InfoProv -&gt; StackEntry
+</span><a href="#local-6989586621679697330"><span class="hs-identifier hs-var hs-var">toStackEntry</span></a></span></span><span> </span><span id="local-6989586621679697331"><span class="annot"><span class="annottext">InfoProv
+</span><a href="#local-6989586621679697331"><span class="hs-identifier hs-var">infoProv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-245"></span><span>        </span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackEntry"><span class="hs-identifier hs-type">StackEntry</span></a></span><span>
+</span><span id="line-246"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">functionName :: String
+</span><a href="GHC.Stack.CloneStack.html#functionName"><span class="hs-identifier hs-var">functionName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InfoProv -&gt; String
+</span><a href="GHC.InfoProv.html#ipLabel"><span class="hs-identifier hs-var">ipLabel</span></a></span><span> </span><span class="annot"><span class="annottext">InfoProv
+</span><a href="#local-6989586621679697331"><span class="hs-identifier hs-var">infoProv</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-247"></span><span>          </span><span class="annot"><span class="annottext">moduleName :: String
+</span><a href="GHC.Stack.CloneStack.html#moduleName"><span class="hs-identifier hs-var">moduleName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InfoProv -&gt; String
+</span><a href="GHC.InfoProv.html#ipMod"><span class="hs-identifier hs-var">ipMod</span></a></span><span> </span><span class="annot"><span class="annottext">InfoProv
+</span><a href="#local-6989586621679697331"><span class="hs-identifier hs-var">infoProv</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-248"></span><span>          </span><span class="annot"><span class="annottext">srcLoc :: String
+</span><a href="GHC.Stack.CloneStack.html#srcLoc"><span class="hs-identifier hs-var">srcLoc</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InfoProv -&gt; String
+</span><a href="GHC.InfoProv.html#ipLoc"><span class="hs-identifier hs-var">ipLoc</span></a></span><span> </span><span class="annot"><span class="annottext">InfoProv
+</span><a href="#local-6989586621679697331"><span class="hs-identifier hs-var">infoProv</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-249"></span><span>          </span><span class="hs-comment">-- read looks dangerous, be we can trust that the closure type is always there.</span><span>
+</span><span id="line-250"></span><span>          </span><span class="annot"><span class="annottext">closureType :: Word
+</span><a href="GHC.Stack.CloneStack.html#closureType"><span class="hs-identifier hs-var">closureType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Word
+forall a. Read a =&gt; String -&gt; a
+</span><a href="Text.Read.html#read"><span class="hs-identifier hs-var">read</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; Word) -&gt; (InfoProv -&gt; String) -&gt; InfoProv -&gt; Word
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">InfoProv -&gt; String
+</span><a href="GHC.InfoProv.html#ipDesc"><span class="hs-identifier hs-var">ipDesc</span></a></span><span> </span><span class="annot"><span class="annottext">(InfoProv -&gt; Word) -&gt; InfoProv -&gt; Word
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">InfoProv
+</span><a href="#local-6989586621679697331"><span class="hs-identifier hs-var">infoProv</span></a></span><span>
+</span><span id="line-251"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-252"></span><span>
+</span><span id="line-253"></span><span class="annot"><a href="GHC.Stack.CloneStack.html#getDecodedStackArray"><span class="hs-identifier hs-type">getDecodedStackArray</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackSnapshot"><span class="hs-identifier hs-type">StackSnapshot</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Ptr.html#Ptr"><span class="hs-identifier hs-type">Ptr</span></a></span><span> </span><span class="annot"><a href="GHC.InfoProv.html#InfoProvEnt"><span class="hs-identifier hs-type">InfoProvEnt</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-254"></span><span id="getDecodedStackArray"><span class="annot"><span class="annottext">getDecodedStackArray :: StackSnapshot -&gt; IO [Ptr InfoProvEnt]
+</span><a href="GHC.Stack.CloneStack.html#getDecodedStackArray"><span class="hs-identifier hs-var hs-var">getDecodedStackArray</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Stack.CloneStack.html#StackSnapshot"><span class="hs-identifier hs-type">StackSnapshot</span></a></span><span> </span><span id="local-6989586621679697336"><span class="annot"><span class="annottext">StackSnapshot#
+</span><a href="#local-6989586621679697336"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-255"></span><span>  </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, [Ptr InfoProvEnt] #))
+-&gt; IO [Ptr InfoProvEnt]
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-var">IO</span></a></span><span> </span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, [Ptr InfoProvEnt] #))
+ -&gt; IO [Ptr InfoProvEnt])
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, [Ptr InfoProvEnt] #))
+-&gt; IO [Ptr InfoProvEnt]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679697337"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697337"><span class="hs-identifier hs-var">s0</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">StackSnapshot#
+-&gt; State# RealWorld
+-&gt; (# State# RealWorld, Array# (Ptr InfoProvEnt) #)
+</span><a href="GHC.Stack.CloneStack.html#decodeStack%23"><span class="hs-identifier hs-var">decodeStack#</span></a></span><span> </span><span class="annot"><span class="annottext">StackSnapshot#
+</span><a href="#local-6989586621679697336"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697337"><span class="hs-identifier hs-var">s0</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-256"></span><span>    </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679697338"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697338"><span class="hs-identifier hs-var">s1</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679697339"><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt)
+</span><a href="#local-6989586621679697339"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679697338"><span class="hs-identifier hs-var">s1</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt) -&gt; Int -&gt; [Ptr InfoProvEnt]
+</span><a href="#local-6989586621679697340"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt)
+</span><a href="#local-6989586621679697339"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int# -&gt; Int
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#I%23/GHC.Types.html#I%23"><span class="hs-identifier hs-var">I#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt) -&gt; Int#
+forall a. Array# a -&gt; Int#
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#sizeofArray%23/GHC.Prim.html#sizeofArray%23"><span class="hs-identifier hs-var">sizeofArray#</span></a></span><span> </span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt)
+</span><a href="#local-6989586621679697339"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-257"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-258"></span><span>    </span><span class="annot"><a href="#local-6989586621679697340"><span class="hs-identifier hs-type">go</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#Array%23/GHC.Prim.html#Array%23"><span class="hs-identifier hs-type">Array#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Ptr.html#Ptr"><span class="hs-identifier hs-type">Ptr</span></a></span><span> </span><span class="annot"><a href="GHC.InfoProv.html#InfoProvEnt"><span class="hs-identifier hs-type">InfoProvEnt</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Ptr.html#Ptr"><span class="hs-identifier hs-type">Ptr</span></a></span><span> </span><span class="annot"><a href="GHC.InfoProv.html#InfoProvEnt"><span class="hs-identifier hs-type">InfoProvEnt</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-259"></span><span>    </span><span id="local-6989586621679697340"><span class="annot"><span class="annottext">go :: Array# (Ptr InfoProvEnt) -&gt; Int -&gt; [Ptr InfoProvEnt]
+</span><a href="#local-6989586621679697340"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679697341"><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt)
+</span><a href="#local-6989586621679697341"><span class="hs-identifier hs-var">stack</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt) -&gt; Int -&gt; Ptr InfoProvEnt
+</span><a href="#local-6989586621679697342"><span class="hs-identifier hs-var">stackEntryAt</span></a></span><span> </span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt)
+</span><a href="#local-6989586621679697341"><span class="hs-identifier hs-var">stack</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">]</span><span>
+</span><span id="line-260"></span><span>    </span><span class="annot"><a href="#local-6989586621679697340"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621679697343"><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt)
+</span><a href="#local-6989586621679697343"><span class="hs-identifier hs-var">stack</span></a></span></span><span> </span><span id="local-6989586621679697344"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679697344"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt) -&gt; Int -&gt; Ptr InfoProvEnt
+</span><a href="#local-6989586621679697342"><span class="hs-identifier hs-var">stackEntryAt</span></a></span><span> </span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt)
+</span><a href="#local-6989586621679697343"><span class="hs-identifier hs-var">stack</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679697344"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr InfoProvEnt -&gt; [Ptr InfoProvEnt] -&gt; [Ptr InfoProvEnt]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#%3A/GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span> </span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt) -&gt; Int -&gt; [Ptr InfoProvEnt]
+</span><a href="#local-6989586621679697340"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt)
+</span><a href="#local-6989586621679697343"><span class="hs-identifier hs-var">stack</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679697344"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-261"></span><span>
+</span><span id="line-262"></span><span>    </span><span class="annot"><a href="#local-6989586621679697342"><span class="hs-identifier hs-type">stackEntryAt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#Array%23/GHC.Prim.html#Array%23"><span class="hs-identifier hs-type">Array#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Ptr.html#Ptr"><span class="hs-identifier hs-type">Ptr</span></a></span><span> </span><span class="annot"><a href="GHC.InfoProv.html#InfoProvEnt"><span class="hs-identifier hs-type">InfoProvEnt</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Ptr.html#Ptr"><span class="hs-identifier hs-type">Ptr</span></a></span><span> </span><span class="annot"><a href="GHC.InfoProv.html#InfoProvEnt"><span class="hs-identifier hs-type">InfoProvEnt</span></a></span><span>
+</span><span id="line-263"></span><span>    </span><span id="local-6989586621679697342"><span class="annot"><span class="annottext">stackEntryAt :: Array# (Ptr InfoProvEnt) -&gt; Int -&gt; Ptr InfoProvEnt
+</span><a href="#local-6989586621679697342"><span class="hs-identifier hs-var hs-var">stackEntryAt</span></a></span></span><span> </span><span id="local-6989586621679697345"><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt)
+</span><a href="#local-6989586621679697345"><span class="hs-identifier hs-var">stack</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#I%23/GHC.Types.html#I%23"><span class="hs-identifier hs-type">I#</span></a></span><span> </span><span id="local-6989586621679697346"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679697346"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt) -&gt; Int# -&gt; (# Ptr InfoProvEnt #)
+forall a. Array# a -&gt; Int# -&gt; (# a #)
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#indexArray%23/GHC.Prim.html#indexArray%23"><span class="hs-identifier hs-var">indexArray#</span></a></span><span> </span><span class="annot"><span class="annottext">Array# (Ptr InfoProvEnt)
+</span><a href="#local-6989586621679697345"><span class="hs-identifier hs-var">stack</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679697346"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-264"></span><span>      </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679697347"><span class="annot"><span class="annottext">Ptr InfoProvEnt
+</span><a href="#local-6989586621679697347"><span class="hs-identifier hs-var">se</span></a></span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr InfoProvEnt
+</span><a href="#local-6989586621679697347"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-265"></span></pre></body></html>

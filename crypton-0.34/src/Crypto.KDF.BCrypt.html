@@ -1,0 +1,661 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span>
+</span><span id="line-2"></span><span class="hs-comment">-- | Password encoding and validation using bcrypt.</span><span>
+</span><span id="line-3"></span><span class="hs-comment">--</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Example usage:</span><span>
+</span><span id="line-5"></span><span class="hs-comment">--</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- &gt;&gt;&gt; import Crypto.KDF.BCrypt (hashPassword, validatePassword)</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- &gt;&gt;&gt; import qualified Data.ByteString.Char8 as B</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- &gt;&gt;&gt;</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- &gt;&gt;&gt; let bcryptHash = B.pack &quot;$2a$10$MJJifxfaqQmbx1Mhsq3oq.YmMmfNhkyW4s/MS3K5rIMVfB7w0Q/OW&quot;</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- &gt;&gt;&gt; let password = B.pack &quot;password&quot;</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- &gt;&gt;&gt; validatePassword password bcryptHash</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- &gt;&gt;&gt; True</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- &gt;&gt;&gt; let otherPassword = B.pack &quot;otherpassword&quot;</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- &gt;&gt;&gt; otherHash &lt;- hashPassword 12 otherPassword :: IO B.ByteString</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- &gt;&gt;&gt; validatePassword otherPassword otherHash</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- &gt;&gt;&gt; True</span><span>
+</span><span id="line-17"></span><span class="hs-comment">--</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- See &lt;https://www.usenix.org/conference/1999-usenix-annual-technical-conference/future-adaptable-password-scheme&gt;</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- for details of the original algorithm.</span><span>
+</span><span id="line-20"></span><span class="hs-comment">--</span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- The functions @hashPassword@ and @validatePassword@ should be all that</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- most users need.</span><span>
+</span><span id="line-23"></span><span class="hs-comment">--</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- Hashes are strings of the form</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- @$2a$10$MJJifxfaqQmbx1Mhsq3oq.YmMmfNhkyW4s/MS3K5rIMVfB7w0Q/OW@ which</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- encode a version number, an integer cost parameter and the concatenated</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- salt and hash bytes (each separately Base64 encoded. Incrementing the</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- cost parameter approximately doubles the time taken to calculate the hash.</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- The different version numbers evolved to account for bugs in the standard</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- C implementations. They don't represent different versions of the algorithm</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- itself and in most cases should produce identical results.</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- The most up to date version is @2b@ and this implementation uses the</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- @2b@ version prefix, but will also attempt to validate</span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- against hashes with versions @2a@ and @2y@. Version @2@ or @2x@ will be</span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- rejected. No attempt is made to differentiate between the different versions</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- when validating a password, but in practice this shouldn't cause any problems</span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- if passwords are UTF-8 encoded (which they should be) and less than 256</span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- characters long.</span><span>
+</span><span id="line-40"></span><span class="hs-comment">--</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- The cost parameter can be between 4 and 31 inclusive, but anything less than</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- 10 is probably not strong enough. High values may be prohibitively slow</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- depending on your hardware. Choose the highest value you can without having</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- an unacceptable impact on your users. The cost parameter can also be varied</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- depending on the account, since it is unique to an individual hash.</span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Crypto.KDF.BCrypt</span><span>
+</span><span id="line-48"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Crypto.KDF.BCrypt.html#hashPassword"><span class="hs-identifier">hashPassword</span></a></span><span>
+</span><span id="line-49"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.KDF.BCrypt.html#validatePassword"><span class="hs-identifier">validatePassword</span></a></span><span>
+</span><span id="line-50"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.KDF.BCrypt.html#validatePasswordEither"><span class="hs-identifier">validatePasswordEither</span></a></span><span>
+</span><span id="line-51"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.KDF.BCrypt.html#bcrypt"><span class="hs-identifier">bcrypt</span></a></span><span>
+</span><span id="line-52"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-53"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">forM_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">unless</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">when</span></span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Cipher.Blowfish.Primitive.html"><span class="hs-identifier">Crypto.Cipher.Blowfish.Primitive</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.Blowfish.Primitive.html#Context"><span class="hs-identifier">Context</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.Blowfish.Box.html#createKeySchedule"><span class="hs-identifier">createKeySchedule</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-57"></span><span>                                                   </span><span class="annot"><a href="Crypto.Cipher.Blowfish.Primitive.html#encrypt"><span class="hs-identifier">encrypt</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.Blowfish.Primitive.html#expandKey"><span class="hs-identifier">expandKey</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-58"></span><span>                                                   </span><span class="annot"><a href="Crypto.Cipher.Blowfish.Primitive.html#expandKeyWithSalt"><span class="hs-identifier">expandKeyWithSalt</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-59"></span><span>                                                   </span><span class="annot"><a href="Crypto.Cipher.Blowfish.Primitive.html#freezeKeySchedule"><span class="hs-identifier">freezeKeySchedule</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-60"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.Compat.html"><span class="hs-identifier">Crypto.Internal.Compat</span></a></span><span>
+</span><span id="line-61"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Random.html"><span class="hs-identifier">Crypto.Random</span></a></span><span>                    </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Random.Types.html#MonadRandom"><span class="hs-identifier">MonadRandom</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Random.Types.html#getRandomBytes"><span class="hs-identifier">getRandomBytes</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteArray</span></span><span>                   </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteArray</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ByteArrayAccess</span></span><span class="hs-special">,</span><span>
+</span><span id="line-63"></span><span>                                                   </span><span class="annot"><span class="hs-identifier">Bytes</span></span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteArray</span></span><span>                   </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-65"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteArray.Encoding</span></span><span>
+</span><span id="line-66"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Char</span></span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span class="hs-keyword">data</span><span> </span><span id="BCryptHash"><span class="annot"><a href="Crypto.KDF.BCrypt.html#BCryptHash"><span class="hs-identifier hs-var">BCryptHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="BCH"><span class="annot"><a href="Crypto.KDF.BCrypt.html#BCH"><span class="hs-identifier hs-var">BCH</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Char</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- | Create a bcrypt hash for a password with a provided cost value.</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- Typically used to create a hash when a new user account is registered</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- or when a user changes their password.</span><span>
+</span><span id="line-73"></span><span class="hs-comment">--</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- Each increment of the cost approximately doubles the time taken.</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- The 16 bytes of random salt will be generated internally.</span><span>
+</span><span id="line-76"></span><span id="local-6989586621679241809"><span id="local-6989586621679241811"><span id="local-6989586621679241813"><span class="annot"><a href="Crypto.KDF.BCrypt.html#hashPassword"><span class="hs-identifier hs-type">hashPassword</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Random.Types.html#MonadRandom"><span class="hs-identifier hs-type">MonadRandom</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679241809"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241811"><span class="hs-identifier hs-type">password</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241813"><span class="hs-identifier hs-type">hash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>             </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-78"></span><span>             </span><span class="hs-comment">-- ^ The cost parameter. Should be between 4 and 31 (inclusive).</span><span>
+</span><span id="line-79"></span><span>             </span><span class="hs-comment">-- Values which lie outside this range will be adjusted accordingly.</span><span>
+</span><span id="line-80"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241811"><span class="hs-identifier hs-type">password</span></a></span><span>
+</span><span id="line-81"></span><span>             </span><span class="annot"><span class="hs-comment">-- ^ The password. Should be the UTF-8 encoded bytes of the password text.</span></span><span>
+</span><span id="line-82"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241809"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679241813"><span class="hs-identifier hs-type">hash</span></a></span></span></span></span><span>
+</span><span id="line-83"></span><span>             </span><span class="annot"><span class="hs-comment">-- ^ The bcrypt hash in standard format.</span></span><span>
+</span><span id="line-84"></span><span id="hashPassword"><span class="annot"><span class="annottext">hashPassword :: forall (m :: * -&gt; *) password hash.
+(MonadRandom m, ByteArray password, ByteArray hash) =&gt;
+Int -&gt; password -&gt; m hash
+</span><a href="Crypto.KDF.BCrypt.html#hashPassword"><span class="hs-identifier hs-var hs-var">hashPassword</span></a></span></span><span> </span><span id="local-6989586621679241938"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679241938"><span class="hs-identifier hs-var">cost</span></a></span></span><span> </span><span id="local-6989586621679241939"><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679241939"><span class="hs-identifier hs-var">password</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-85"></span><span>    </span><span id="local-6989586621679241940"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679241940"><span class="hs-identifier hs-var">salt</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; m Bytes
+forall byteArray. ByteArray byteArray =&gt; Int -&gt; m byteArray
+forall (m :: * -&gt; *) byteArray.
+(MonadRandom m, ByteArray byteArray) =&gt;
+Int -&gt; m byteArray
+</span><a href="Crypto.Random.Types.html#getRandomBytes"><span class="hs-identifier hs-var">getRandomBytes</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span>
+</span><span id="line-86"></span><span>    </span><span class="annot"><span class="annottext">hash -&gt; m hash
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(hash -&gt; m hash) -&gt; hash -&gt; m hash
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Bytes -&gt; password -&gt; hash
+forall salt password output.
+(ByteArray salt, ByteArray password, ByteArray output) =&gt;
+Int -&gt; salt -&gt; password -&gt; output
+</span><a href="Crypto.KDF.BCrypt.html#bcrypt"><span class="hs-identifier hs-var">bcrypt</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679241938"><span class="hs-identifier hs-var">cost</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679241940"><span class="hs-identifier hs-var">salt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679241939"><span class="hs-identifier hs-var">password</span></a></span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- | Create a bcrypt hash for a password with a provided cost value and salt.</span><span>
+</span><span id="line-89"></span><span class="hs-comment">--</span><span>
+</span><span id="line-90"></span><span class="hs-comment">-- Cost value under 4 will be automatically adjusted back to 10 for safety reason.</span><span>
+</span><span id="line-91"></span><span id="local-6989586621679241825"><span id="local-6989586621679241826"><span id="local-6989586621679241827"><span class="annot"><a href="Crypto.KDF.BCrypt.html#bcrypt"><span class="hs-identifier hs-type">bcrypt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241825"><span class="hs-identifier hs-type">salt</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241826"><span class="hs-identifier hs-type">password</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241827"><span class="hs-identifier hs-type">output</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-92"></span><span>       </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-93"></span><span>       </span><span class="hs-comment">-- ^ The cost parameter. Should be between 4 and 31 (inclusive).</span><span>
+</span><span id="line-94"></span><span>       </span><span class="hs-comment">-- Values which lie outside this range will be adjusted accordingly.</span><span>
+</span><span id="line-95"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241825"><span class="hs-identifier hs-type">salt</span></a></span><span>
+</span><span id="line-96"></span><span>       </span><span class="annot"><span class="hs-comment">-- ^ The salt. Must be 16 bytes in length or an error will be raised.</span></span><span>
+</span><span id="line-97"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241826"><span class="hs-identifier hs-type">password</span></a></span><span>
+</span><span id="line-98"></span><span>       </span><span class="annot"><span class="hs-comment">-- ^ The password. Should be the UTF-8 encoded bytes of the password text.</span></span><span>
+</span><span id="line-99"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241827"><span class="hs-identifier hs-type">output</span></a></span></span></span></span><span>
+</span><span id="line-100"></span><span>       </span><span class="annot"><span class="hs-comment">-- ^ The bcrypt hash in standard format.</span></span><span>
+</span><span id="line-101"></span><span id="bcrypt"><span class="annot"><span class="annottext">bcrypt :: forall salt password output.
+(ByteArray salt, ByteArray password, ByteArray output) =&gt;
+Int -&gt; salt -&gt; password -&gt; output
+</span><a href="Crypto.KDF.BCrypt.html#bcrypt"><span class="hs-identifier hs-var hs-var">bcrypt</span></a></span></span><span> </span><span id="local-6989586621679241964"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679241964"><span class="hs-identifier hs-var">cost</span></a></span></span><span> </span><span id="local-6989586621679241965"><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679241965"><span class="hs-identifier hs-var">salt</span></a></span></span><span> </span><span id="local-6989586621679241966"><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679241966"><span class="hs-identifier hs-var">password</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[salt] -&gt; output
+forall bin bout.
+(ByteArrayAccess bin, ByteArray bout) =&gt;
+[bin] -&gt; bout
+</span><span class="hs-identifier hs-var">B.concat</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679241968"><span class="hs-identifier hs-var">header</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">salt -&gt; Word8 -&gt; salt
+forall a. ByteArray a =&gt; a -&gt; Word8 -&gt; a
+</span><span class="hs-identifier hs-var">B.snoc</span></span><span> </span><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679241970"><span class="hs-identifier hs-var">costBytes</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679241971"><span class="hs-identifier hs-var">dollar</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">salt -&gt; salt
+forall ba. ByteArray ba =&gt; ba -&gt; ba
+</span><a href="#local-6989586621679241972"><span class="hs-identifier hs-var">b64</span></a></span><span> </span><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679241965"><span class="hs-identifier hs-var">salt</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">salt -&gt; salt
+forall ba. ByteArray ba =&gt; ba -&gt; ba
+</span><a href="#local-6989586621679241972"><span class="hs-identifier hs-var">b64</span></a></span><span> </span><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679241973"><span class="hs-identifier hs-var">hash</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-102"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-103"></span><span>    </span><span id="local-6989586621679241973"><span class="annot"><span class="annottext">hash :: salt
+</span><a href="#local-6989586621679241973"><span class="hs-identifier hs-var hs-var">hash</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Int -&gt; salt -&gt; password -&gt; salt
+forall salt password output.
+(ByteArrayAccess salt, ByteArray password, ByteArray output) =&gt;
+Char -&gt; Int -&gt; salt -&gt; password -&gt; output
+</span><a href="Crypto.KDF.BCrypt.html#rawHash"><span class="hs-identifier hs-var">rawHash</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'b'</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679241990"><span class="hs-identifier hs-var">realCost</span></a></span><span> </span><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679241965"><span class="hs-identifier hs-var">salt</span></a></span><span> </span><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679241966"><span class="hs-identifier hs-var">password</span></a></span><span>
+</span><span id="line-104"></span><span>    </span><span id="local-6989586621679241968"><span class="annot"><span class="annottext">header :: salt
+</span><a href="#local-6989586621679241968"><span class="hs-identifier hs-var hs-var">header</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Word8] -&gt; salt
+forall a. ByteArray a =&gt; [Word8] -&gt; a
+</span><span class="hs-identifier hs-var">B.pack</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679241971"><span class="hs-identifier hs-var">dollar</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><span class="hs-identifier hs-var">ord</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'2'</span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><span class="hs-identifier hs-var">ord</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'b'</span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679241971"><span class="hs-identifier hs-var">dollar</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-105"></span><span>    </span><span id="local-6989586621679241971"><span class="annot"><span class="annottext">dollar :: Word8
+</span><a href="#local-6989586621679241971"><span class="hs-identifier hs-var hs-var">dollar</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><span class="hs-identifier hs-var">ord</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'$'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-106"></span><span>    </span><span id="local-6989586621679242010"><span class="annot"><span class="annottext">zero :: Word8
+</span><a href="#local-6989586621679242010"><span class="hs-identifier hs-var hs-var">zero</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><span class="hs-identifier hs-var">ord</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'0'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>    </span><span id="local-6989586621679241970"><span class="annot"><span class="annottext">costBytes :: salt
+</span><a href="#local-6989586621679241970"><span class="hs-identifier hs-var hs-var">costBytes</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Word8] -&gt; salt
+forall a. ByteArray a =&gt; [Word8] -&gt; a
+</span><span class="hs-identifier hs-var">B.pack</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679242010"><span class="hs-identifier hs-var">zero</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679241990"><span class="hs-identifier hs-var">realCost</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`div`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679242010"><span class="hs-identifier hs-var">zero</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679241990"><span class="hs-identifier hs-var">realCost</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`mod`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-108"></span><span>    </span><span id="local-6989586621679241990"><span class="annot"><span class="annottext">realCost :: Int
+</span><a href="#local-6989586621679241990"><span class="hs-identifier hs-var hs-var">realCost</span></a></span></span><span>
+</span><span id="line-109"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679241964"><span class="hs-identifier hs-var">cost</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span> </span><span class="hs-comment">-- 4 is virtually pointless so go for 10</span><span>
+</span><span id="line-110"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679241964"><span class="hs-identifier hs-var">cost</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">31</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">31</span></span><span>
+</span><span id="line-111"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679241964"><span class="hs-identifier hs-var">cost</span></a></span><span>
+</span><span id="line-112"></span><span>
+</span><span id="line-113"></span><span>    </span><span id="local-6989586621679241837"><span class="annot"><a href="#local-6989586621679241972"><span class="hs-identifier hs-type">b64</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241837"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241837"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241837"><span class="hs-identifier hs-type">ba</span></a></span></span><span>
+</span><span id="line-114"></span><span>    </span><span id="local-6989586621679241972"><span class="annot"><span class="annottext">b64 :: forall ba. ByteArray ba =&gt; ba -&gt; ba
+</span><a href="#local-6989586621679241972"><span class="hs-identifier hs-var hs-var">b64</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Base -&gt; ba -&gt; ba
+forall bin bout.
+(ByteArrayAccess bin, ByteArray bout) =&gt;
+Base -&gt; bin -&gt; bout
+</span><span class="hs-identifier hs-var">convertToBase</span></span><span> </span><span class="annot"><span class="annottext">Base
+</span><span class="hs-identifier hs-var">Base64OpenBSD</span></span><span>
+</span><span id="line-115"></span><span>
+</span><span id="line-116"></span><span class="hs-comment">-- | Check a password against a stored bcrypt hash when authenticating a user.</span><span>
+</span><span id="line-117"></span><span class="hs-comment">--</span><span>
+</span><span id="line-118"></span><span class="hs-comment">-- Returns @False@ if the password doesn't match the hash, or if the hash is</span><span>
+</span><span id="line-119"></span><span class="hs-comment">-- invalid or an unsupported version.</span><span>
+</span><span id="line-120"></span><span id="local-6989586621679241851"><span id="local-6989586621679241852"><span class="annot"><a href="Crypto.KDF.BCrypt.html#validatePassword"><span class="hs-identifier hs-type">validatePassword</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241851"><span class="hs-identifier hs-type">password</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241852"><span class="hs-identifier hs-type">hash</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241851"><span class="hs-identifier hs-type">password</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241852"><span class="hs-identifier hs-type">hash</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span></span></span><span>
+</span><span id="line-121"></span><span id="validatePassword"><span class="annot"><span class="annottext">validatePassword :: forall password hash.
+(ByteArray password, ByteArray hash) =&gt;
+password -&gt; hash -&gt; Bool
+</span><a href="Crypto.KDF.BCrypt.html#validatePassword"><span class="hs-identifier hs-var hs-var">validatePassword</span></a></span></span><span> </span><span id="local-6989586621679242051"><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679242051"><span class="hs-identifier hs-var">password</span></a></span></span><span> </span><span id="local-6989586621679242052"><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679242052"><span class="hs-identifier hs-var">bcHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Bool) -&gt; (Bool -&gt; Bool) -&gt; Either String Bool -&gt; Bool
+forall a c b. (a -&gt; c) -&gt; (b -&gt; c) -&gt; Either a b -&gt; c
+</span><span class="hs-identifier hs-var">either</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; String -&gt; Bool
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">password -&gt; hash -&gt; Either String Bool
+forall password hash.
+(ByteArray password, ByteArray hash) =&gt;
+password -&gt; hash -&gt; Either String Bool
+</span><a href="Crypto.KDF.BCrypt.html#validatePasswordEither"><span class="hs-identifier hs-var">validatePasswordEither</span></a></span><span> </span><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679242051"><span class="hs-identifier hs-var">password</span></a></span><span> </span><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679242052"><span class="hs-identifier hs-var">bcHash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-122"></span><span>
+</span><span id="line-123"></span><span class="hs-comment">-- | Check a password against a bcrypt hash</span><span>
+</span><span id="line-124"></span><span class="hs-comment">--</span><span>
+</span><span id="line-125"></span><span class="hs-comment">-- As for @validatePassword@ but will provide error information if the hash is invalid or</span><span>
+</span><span id="line-126"></span><span class="hs-comment">-- an unsupported version.</span><span>
+</span><span id="line-127"></span><span id="local-6989586621679241861"><span id="local-6989586621679241862"><span class="annot"><a href="Crypto.KDF.BCrypt.html#validatePasswordEither"><span class="hs-identifier hs-type">validatePasswordEither</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241861"><span class="hs-identifier hs-type">password</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241862"><span class="hs-identifier hs-type">hash</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241861"><span class="hs-identifier hs-type">password</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241862"><span class="hs-identifier hs-type">hash</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span></span></span><span>
+</span><span id="line-128"></span><span id="validatePasswordEither"><span class="annot"><span class="annottext">validatePasswordEither :: forall password hash.
+(ByteArray password, ByteArray hash) =&gt;
+password -&gt; hash -&gt; Either String Bool
+</span><a href="Crypto.KDF.BCrypt.html#validatePasswordEither"><span class="hs-identifier hs-var hs-var">validatePasswordEither</span></a></span></span><span> </span><span id="local-6989586621679242068"><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679242068"><span class="hs-identifier hs-var">password</span></a></span></span><span> </span><span id="local-6989586621679242069"><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679242069"><span class="hs-identifier hs-var">bcHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-129"></span><span>    </span><span class="annot"><a href="Crypto.KDF.BCrypt.html#BCH"><span class="hs-identifier hs-type">BCH</span></a></span><span> </span><span id="local-6989586621679242070"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679242070"><span class="hs-identifier hs-var">version</span></a></span></span><span> </span><span id="local-6989586621679242071"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242071"><span class="hs-identifier hs-var">cost</span></a></span></span><span> </span><span id="local-6989586621679242072"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242072"><span class="hs-identifier hs-var">salt</span></a></span></span><span> </span><span id="local-6989586621679242073"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242073"><span class="hs-identifier hs-var">hash</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">hash -&gt; Either String BCryptHash
+forall ba. ByteArray ba =&gt; ba -&gt; Either String BCryptHash
+</span><a href="Crypto.KDF.BCrypt.html#parseBCryptHash"><span class="hs-identifier hs-var">parseBCryptHash</span></a></span><span> </span><span class="annot"><span class="annottext">hash
+</span><a href="#local-6989586621679242069"><span class="hs-identifier hs-var">bcHash</span></a></span><span>
+</span><span id="line-130"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; Either String Bool
+forall a. a -&gt; Either String a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Either String Bool) -&gt; Bool -&gt; Either String Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int -&gt; Bytes -&gt; password -&gt; Bytes
+forall salt password output.
+(ByteArrayAccess salt, ByteArray password, ByteArray output) =&gt;
+Char -&gt; Int -&gt; salt -&gt; password -&gt; output
+</span><a href="Crypto.KDF.BCrypt.html#rawHash"><span class="hs-identifier hs-var">rawHash</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679242070"><span class="hs-identifier hs-var">version</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242071"><span class="hs-identifier hs-var">cost</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242072"><span class="hs-identifier hs-var">salt</span></a></span><span> </span><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679242068"><span class="hs-identifier hs-var">password</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Bytes -&gt; Bool
+forall bs1 bs2.
+(ByteArrayAccess bs1, ByteArrayAccess bs2) =&gt;
+bs1 -&gt; bs2 -&gt; Bool
+</span><span class="hs-operator hs-var">`B.constEq`</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242073"><span class="hs-identifier hs-var">hash</span></a></span><span>
+</span><span id="line-131"></span><span>
+</span><span id="line-132"></span><span id="local-6989586621679241838"><span id="local-6989586621679241839"><span id="local-6989586621679241840"><span class="annot"><a href="Crypto.KDF.BCrypt.html#rawHash"><span class="hs-identifier hs-type">rawHash</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679241838"><span class="hs-identifier hs-type">salt</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241839"><span class="hs-identifier hs-type">password</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241840"><span class="hs-identifier hs-type">output</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Char</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241838"><span class="hs-identifier hs-type">salt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241839"><span class="hs-identifier hs-type">password</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241840"><span class="hs-identifier hs-type">output</span></a></span></span></span></span><span>
+</span><span id="line-133"></span><span id="rawHash"><span class="annot"><span class="annottext">rawHash :: forall salt password output.
+(ByteArrayAccess salt, ByteArray password, ByteArray output) =&gt;
+Char -&gt; Int -&gt; salt -&gt; password -&gt; output
+</span><a href="Crypto.KDF.BCrypt.html#rawHash"><span class="hs-identifier hs-var hs-var">rawHash</span></a></span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679242090"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242090"><span class="hs-identifier hs-var">cost</span></a></span></span><span> </span><span id="local-6989586621679242091"><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679242091"><span class="hs-identifier hs-var">salt</span></a></span></span><span> </span><span id="local-6989586621679242092"><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679242092"><span class="hs-identifier hs-var">password</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; output -&gt; output
+forall bs. ByteArray bs =&gt; Int -&gt; bs -&gt; bs
+</span><span class="hs-identifier hs-var">B.take</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">23</span></span><span> </span><span class="annot"><span class="annottext">output
+</span><a href="#local-6989586621679242094"><span class="hs-identifier hs-var">hash</span></a></span><span> </span><span class="hs-comment">-- Another compatibility bug. Ignore last byte of hash</span><span>
+</span><span id="line-134"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-135"></span><span>    </span><span id="local-6989586621679242094"><span class="annot"><span class="annottext">hash :: output
+</span><a href="#local-6989586621679242094"><span class="hs-identifier hs-var hs-var">hash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; output -&gt; output
+forall {t} {t}. (Num t, ByteArray t, Ord t) =&gt; t -&gt; t -&gt; t
+</span><a href="#local-6989586621679242104"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">output
+</span><a href="#local-6989586621679242105"><span class="hs-identifier hs-var">orpheanBeholder</span></a></span><span>
+</span><span id="line-136"></span><span>
+</span><span id="line-137"></span><span>    </span><span id="local-6989586621679242104"><span class="annot"><span class="annottext">loop :: t -&gt; t -&gt; t
+</span><a href="#local-6989586621679242104"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621679242128"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679242128"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621679242129"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679242129"><span class="hs-identifier hs-var">input</span></a></span></span><span>
+</span><span id="line-138"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679242128"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">t -&gt; t -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">t
+</span><span class="hs-number">64</span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">t -&gt; t -&gt; t
+</span><a href="#local-6989586621679242104"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679242128"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">t -&gt; t -&gt; t
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span class="annot"><span class="annottext">t
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Context -&gt; t -&gt; t
+forall ba. ByteArray ba =&gt; Context -&gt; ba -&gt; ba
+</span><a href="Crypto.Cipher.Blowfish.Primitive.html#encrypt"><span class="hs-identifier hs-var">encrypt</span></a></span><span> </span><span class="annot"><span class="annottext">Context
+</span><a href="#local-6989586621679242130"><span class="hs-identifier hs-var">ctx</span></a></span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679242129"><span class="hs-identifier hs-var">input</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679242129"><span class="hs-identifier hs-var">input</span></a></span><span>
+</span><span id="line-140"></span><span>
+</span><span id="line-141"></span><span>    </span><span class="hs-comment">-- Truncate the password if necessary and append a null byte for C compatibility</span><span>
+</span><span id="line-142"></span><span>    </span><span id="local-6989586621679242140"><span class="annot"><span class="annottext">key :: password
+</span><a href="#local-6989586621679242140"><span class="hs-identifier hs-var hs-var">key</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">password -&gt; Word8 -&gt; password
+forall a. ByteArray a =&gt; a -&gt; Word8 -&gt; a
+</span><span class="hs-identifier hs-var">B.snoc</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; password -&gt; password
+forall bs. ByteArray bs =&gt; Int -&gt; bs -&gt; bs
+</span><span class="hs-identifier hs-var">B.take</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">72</span></span><span> </span><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679242092"><span class="hs-identifier hs-var">password</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-143"></span><span>
+</span><span id="line-144"></span><span>    </span><span id="local-6989586621679242130"><span class="annot"><span class="annottext">ctx :: Context
+</span><a href="#local-6989586621679242130"><span class="hs-identifier hs-var hs-var">ctx</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">password -&gt; salt -&gt; Int -&gt; Context
+forall key salt.
+(ByteArrayAccess key, ByteArrayAccess salt) =&gt;
+key -&gt; salt -&gt; Int -&gt; Context
+</span><a href="Crypto.KDF.BCrypt.html#expensiveBlowfishContext"><span class="hs-identifier hs-var">expensiveBlowfishContext</span></a></span><span> </span><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679242140"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679242091"><span class="hs-identifier hs-var">salt</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242090"><span class="hs-identifier hs-var">cost</span></a></span><span>
+</span><span id="line-145"></span><span>
+</span><span id="line-146"></span><span>    </span><span class="hs-comment">-- The BCrypt plaintext: &quot;OrpheanBeholderScryDoubt&quot;</span><span>
+</span><span id="line-147"></span><span>    </span><span id="local-6989586621679242105"><span class="annot"><span class="annottext">orpheanBeholder :: output
+</span><a href="#local-6989586621679242105"><span class="hs-identifier hs-var hs-var">orpheanBeholder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Word8] -&gt; output
+forall a. ByteArray a =&gt; [Word8] -&gt; a
+</span><span class="hs-identifier hs-var">B.pack</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">79</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">114</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">112</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">104</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">101</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">97</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">110</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">66</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">101</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">104</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">111</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">108</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">100</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">101</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">114</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">83</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">99</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">114</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">121</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">68</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">111</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">117</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">98</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">116</span></span><span class="hs-special">]</span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span class="hs-comment">-- &quot;$2a$10$XajjQvNhvvRt5GSeFk1xFeyqRrsxkhBkUiQeg0dt.wU1qD4aFDcga&quot;</span><span>
+</span><span id="line-150"></span><span id="local-6989586621679241867"><span class="annot"><a href="Crypto.KDF.BCrypt.html#parseBCryptHash"><span class="hs-identifier hs-type">parseBCryptHash</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679241867"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241867"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="annot"><a href="Crypto.KDF.BCrypt.html#BCryptHash"><span class="hs-identifier hs-type">BCryptHash</span></a></span></span><span>
+</span><span id="line-151"></span><span id="parseBCryptHash"><span class="annot"><span class="annottext">parseBCryptHash :: forall ba. ByteArray ba =&gt; ba -&gt; Either String BCryptHash
+</span><a href="Crypto.KDF.BCrypt.html#parseBCryptHash"><span class="hs-identifier hs-var hs-var">parseBCryptHash</span></a></span></span><span> </span><span id="local-6989586621679242215"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242215"><span class="hs-identifier hs-var">bc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-152"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; Either String () -&gt; Either String ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242215"><span class="hs-identifier hs-var">bc</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">60</span></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span>
+</span><span id="line-153"></span><span>            </span><span class="annot"><span class="annottext">ba -&gt; Int -&gt; Word8
+forall a. ByteArrayAccess a =&gt; a -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">B.index</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242215"><span class="hs-identifier hs-var">bc</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679242219"><span class="hs-identifier hs-var">dollar</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span>
+</span><span id="line-154"></span><span>            </span><span class="annot"><span class="annottext">ba -&gt; Int -&gt; Word8
+forall a. ByteArrayAccess a =&gt; a -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">B.index</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242215"><span class="hs-identifier hs-var">bc</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><span class="hs-identifier hs-var">ord</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'2'</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span>
+</span><span id="line-155"></span><span>            </span><span class="annot"><span class="annottext">ba -&gt; Int -&gt; Word8
+forall a. ByteArrayAccess a =&gt; a -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">B.index</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242215"><span class="hs-identifier hs-var">bc</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679242219"><span class="hs-identifier hs-var">dollar</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span>
+</span><span id="line-156"></span><span>            </span><span class="annot"><span class="annottext">ba -&gt; Int -&gt; Word8
+forall a. ByteArrayAccess a =&gt; a -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">B.index</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242215"><span class="hs-identifier hs-var">bc</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679242219"><span class="hs-identifier hs-var">dollar</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Either String ()
+forall a b. a -&gt; Either a b
+</span><span class="hs-identifier hs-var">Left</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Invalid hash format&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-157"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; Either String () -&gt; Either String ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679242220"><span class="hs-identifier hs-var">version</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'b'</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679242220"><span class="hs-identifier hs-var">version</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'a'</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679242220"><span class="hs-identifier hs-var">version</span></a></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'y'</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Either String ()
+forall a b. a -&gt; Either a b
+</span><span class="hs-identifier hs-var">Left</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Unsupported minor version: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679242220"><span class="hs-identifier hs-var">version</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-158"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; Either String () -&gt; Either String ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242222"><span class="hs-identifier hs-var">costTens</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242223"><span class="hs-identifier hs-var">cost</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">31</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242223"><span class="hs-identifier hs-var">cost</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span class="hs-special">)</span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Either String ()
+forall a b. a -&gt; Either a b
+</span><span class="hs-identifier hs-var">Left</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Invalid bcrypt cost&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-159"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621679242224"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242224"><span class="hs-identifier hs-var">salt</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679242225"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242225"><span class="hs-identifier hs-var">hash</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Either String (Bytes, Bytes)
+forall {a} {b} {bin}.
+(ByteArray a, ByteArray b, ByteArray bin) =&gt;
+bin -&gt; Either String (a, b)
+</span><a href="#local-6989586621679242226"><span class="hs-identifier hs-var">decodeSaltHash</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; ba -&gt; ba
+forall bs. ByteArray bs =&gt; Int -&gt; bs -&gt; bs
+</span><span class="hs-identifier hs-var">B.drop</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">7</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242215"><span class="hs-identifier hs-var">bc</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-160"></span><span>    </span><span class="annot"><span class="annottext">BCryptHash -&gt; Either String BCryptHash
+forall a. a -&gt; Either String a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int -&gt; Bytes -&gt; Bytes -&gt; BCryptHash
+</span><a href="Crypto.KDF.BCrypt.html#BCH"><span class="hs-identifier hs-var">BCH</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679242220"><span class="hs-identifier hs-var">version</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242223"><span class="hs-identifier hs-var">cost</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242224"><span class="hs-identifier hs-var">salt</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242225"><span class="hs-identifier hs-var">hash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-161"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-162"></span><span>    </span><span id="local-6989586621679242219"><span class="annot"><span class="annottext">dollar :: Word8
+</span><a href="#local-6989586621679242219"><span class="hs-identifier hs-var hs-var">dollar</span></a></span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><span class="hs-identifier hs-var">ord</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'$'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-163"></span><span>    </span><span id="local-6989586621679242230"><span class="annot"><span class="annottext">zero :: Int
+</span><a href="#local-6989586621679242230"><span class="hs-identifier hs-var hs-var">zero</span></a></span></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><span class="hs-identifier hs-var">ord</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'0'</span></span><span>
+</span><span id="line-164"></span><span>    </span><span id="local-6989586621679242222"><span class="annot"><span class="annottext">costTens :: Int
+</span><a href="#local-6989586621679242222"><span class="hs-identifier hs-var hs-var">costTens</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba -&gt; Int -&gt; Word8
+forall a. ByteArrayAccess a =&gt; a -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">B.index</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242215"><span class="hs-identifier hs-var">bc</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242230"><span class="hs-identifier hs-var">zero</span></a></span><span>
+</span><span id="line-165"></span><span>    </span><span id="local-6989586621679242240"><span class="annot"><span class="annottext">costUnits :: Int
+</span><a href="#local-6989586621679242240"><span class="hs-identifier hs-var hs-var">costUnits</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba -&gt; Int -&gt; Word8
+forall a. ByteArrayAccess a =&gt; a -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">B.index</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242215"><span class="hs-identifier hs-var">bc</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">5</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242230"><span class="hs-identifier hs-var">zero</span></a></span><span>
+</span><span id="line-166"></span><span>    </span><span id="local-6989586621679242220"><span class="annot"><span class="annottext">version :: Char
+</span><a href="#local-6989586621679242220"><span class="hs-identifier hs-var hs-var">version</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Char
+</span><span class="hs-identifier hs-var">chr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba -&gt; Int -&gt; Word8
+forall a. ByteArrayAccess a =&gt; a -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">B.index</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242215"><span class="hs-identifier hs-var">bc</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-167"></span><span>    </span><span id="local-6989586621679242223"><span class="annot"><span class="annottext">cost :: Int
+</span><a href="#local-6989586621679242223"><span class="hs-identifier hs-var hs-var">cost</span></a></span></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242240"><span class="hs-identifier hs-var">costUnits</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242222"><span class="hs-identifier hs-var">costTens</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-168"></span><span>
+</span><span id="line-169"></span><span>    </span><span id="local-6989586621679242226"><span class="annot"><span class="annottext">decodeSaltHash :: bin -&gt; Either String (a, b)
+</span><a href="#local-6989586621679242226"><span class="hs-identifier hs-var hs-var">decodeSaltHash</span></a></span></span><span> </span><span id="local-6989586621679242286"><span class="annot"><span class="annottext">bin
+</span><a href="#local-6989586621679242286"><span class="hs-identifier hs-var">saltHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-170"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679242294"><span class="annot"><span class="annottext">bin
+</span><a href="#local-6989586621679242294"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679242295"><span class="annot"><span class="annottext">bin
+</span><a href="#local-6989586621679242295"><span class="hs-identifier hs-var">h</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; bin -&gt; (bin, bin)
+forall bs. ByteArray bs =&gt; Int -&gt; bs -&gt; (bs, bs)
+</span><span class="hs-identifier hs-var">B.splitAt</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">22</span></span><span> </span><span class="annot"><span class="annottext">bin
+</span><a href="#local-6989586621679242286"><span class="hs-identifier hs-var">saltHash</span></a></span><span>
+</span><span id="line-171"></span><span>        </span><span id="local-6989586621679242297"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679242297"><span class="hs-identifier hs-var">salt</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Base -&gt; bin -&gt; Either String a
+forall bin bout.
+(ByteArrayAccess bin, ByteArray bout) =&gt;
+Base -&gt; bin -&gt; Either String bout
+</span><span class="hs-identifier hs-var">convertFromBase</span></span><span> </span><span class="annot"><span class="annottext">Base
+</span><span class="hs-identifier hs-var">Base64OpenBSD</span></span><span> </span><span class="annot"><span class="annottext">bin
+</span><a href="#local-6989586621679242294"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-172"></span><span>        </span><span id="local-6989586621679242299"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679242299"><span class="hs-identifier hs-var">hash</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Base -&gt; bin -&gt; Either String b
+forall bin bout.
+(ByteArrayAccess bin, ByteArray bout) =&gt;
+Base -&gt; bin -&gt; Either String bout
+</span><span class="hs-identifier hs-var">convertFromBase</span></span><span> </span><span class="annot"><span class="annottext">Base
+</span><span class="hs-identifier hs-var">Base64OpenBSD</span></span><span> </span><span class="annot"><span class="annottext">bin
+</span><a href="#local-6989586621679242295"><span class="hs-identifier hs-var">h</span></a></span><span>
+</span><span id="line-173"></span><span>        </span><span class="annot"><span class="annottext">(a, b) -&gt; Either String (a, b)
+forall a. a -&gt; Either String a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679242297"><span class="hs-identifier hs-var">salt</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679242299"><span class="hs-identifier hs-var">hash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-174"></span><span>
+</span><span id="line-175"></span><span class="hs-comment">-- | Create a key schedule for the BCrypt &quot;EKS&quot; version.</span><span>
+</span><span id="line-176"></span><span class="hs-comment">--</span><span>
+</span><span id="line-177"></span><span class="hs-comment">-- Salt must be a 128-bit byte array.</span><span>
+</span><span id="line-178"></span><span class="hs-comment">-- Cost must be between 4 and 31 inclusive</span><span>
+</span><span id="line-179"></span><span class="hs-comment">-- See &lt;https://www.usenix.org/conference/1999-usenix-annual-technical-conference/future-adaptable-password-scheme&gt;</span><span>
+</span><span id="line-180"></span><span id="local-6989586621679241878"><span id="local-6989586621679241879"><span class="annot"><a href="Crypto.KDF.BCrypt.html#expensiveBlowfishContext"><span class="hs-identifier hs-type">expensiveBlowfishContext</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679241878"><span class="hs-identifier hs-type">key</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679241879"><span class="hs-identifier hs-type">salt</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241878"><span class="hs-identifier hs-type">key</span></a></span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679241879"><span class="hs-identifier hs-type">salt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.Blowfish.Primitive.html#Context"><span class="hs-identifier hs-type">Context</span></a></span></span></span><span>
+</span><span id="line-181"></span><span id="expensiveBlowfishContext"><span class="annot"><span class="annottext">expensiveBlowfishContext :: forall key salt.
+(ByteArrayAccess key, ByteArrayAccess salt) =&gt;
+key -&gt; salt -&gt; Int -&gt; Context
+</span><a href="Crypto.KDF.BCrypt.html#expensiveBlowfishContext"><span class="hs-identifier hs-var hs-var">expensiveBlowfishContext</span></a></span></span><span> </span><span id="local-6989586621679242325"><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679242325"><span class="hs-identifier hs-var">keyBytes</span></a></span></span><span> </span><span id="local-6989586621679242326"><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679242326"><span class="hs-identifier hs-var">saltBytes</span></a></span></span><span> </span><span id="local-6989586621679242327"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242327"><span class="hs-identifier hs-var">cost</span></a></span></span><span>
+</span><span id="line-182"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">salt -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679242326"><span class="hs-identifier hs-var">saltBytes</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Context
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;bcrypt salt must be 16 bytes&quot;</span></span><span>
+</span><span id="line-183"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO Context -&gt; Context
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO Context -&gt; Context) -&gt; IO Context -&gt; Context
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-184"></span><span>        </span><span id="local-6989586621679242331"><span class="annot"><span class="annottext">KeySchedule
+</span><a href="#local-6989586621679242331"><span class="hs-identifier hs-var">ks</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO KeySchedule
+</span><a href="Crypto.Cipher.Blowfish.Box.html#createKeySchedule"><span class="hs-identifier hs-var">createKeySchedule</span></a></span><span>
+</span><span id="line-185"></span><span>        </span><span class="annot"><span class="annottext">KeySchedule -&gt; key -&gt; salt -&gt; IO ()
+forall key salt.
+(ByteArrayAccess key, ByteArrayAccess salt) =&gt;
+KeySchedule -&gt; key -&gt; salt -&gt; IO ()
+</span><a href="Crypto.Cipher.Blowfish.Primitive.html#expandKeyWithSalt"><span class="hs-identifier hs-var">expandKeyWithSalt</span></a></span><span> </span><span class="annot"><span class="annottext">KeySchedule
+</span><a href="#local-6989586621679242331"><span class="hs-identifier hs-var">ks</span></a></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679242325"><span class="hs-identifier hs-var">keyBytes</span></a></span><span> </span><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679242326"><span class="hs-identifier hs-var">saltBytes</span></a></span><span>
+</span><span id="line-186"></span><span>        </span><span class="annot"><span class="annottext">[Int] -&gt; (Int -&gt; IO ()) -&gt; IO ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m ()
+</span><span class="hs-identifier hs-var">forM_</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-glyph">..</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a b. (Num a, Integral b) =&gt; a -&gt; b -&gt; a
+</span><span class="hs-operator hs-var">^</span></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242327"><span class="hs-identifier hs-var">cost</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">((Int -&gt; IO ()) -&gt; IO ()) -&gt; (Int -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-187"></span><span>            </span><span class="annot"><span class="annottext">KeySchedule -&gt; key -&gt; IO ()
+forall key. ByteArrayAccess key =&gt; KeySchedule -&gt; key -&gt; IO ()
+</span><a href="Crypto.Cipher.Blowfish.Primitive.html#expandKey"><span class="hs-identifier hs-var">expandKey</span></a></span><span> </span><span class="annot"><span class="annottext">KeySchedule
+</span><a href="#local-6989586621679242331"><span class="hs-identifier hs-var">ks</span></a></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679242325"><span class="hs-identifier hs-var">keyBytes</span></a></span><span>
+</span><span id="line-188"></span><span>            </span><span class="annot"><span class="annottext">KeySchedule -&gt; salt -&gt; IO ()
+forall key. ByteArrayAccess key =&gt; KeySchedule -&gt; key -&gt; IO ()
+</span><a href="Crypto.Cipher.Blowfish.Primitive.html#expandKey"><span class="hs-identifier hs-var">expandKey</span></a></span><span> </span><span class="annot"><span class="annottext">KeySchedule
+</span><a href="#local-6989586621679242331"><span class="hs-identifier hs-var">ks</span></a></span><span> </span><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679242326"><span class="hs-identifier hs-var">saltBytes</span></a></span><span>
+</span><span id="line-189"></span><span>        </span><span class="annot"><span class="annottext">KeySchedule -&gt; IO Context
+</span><a href="Crypto.Cipher.Blowfish.Primitive.html#freezeKeySchedule"><span class="hs-identifier hs-var">freezeKeySchedule</span></a></span><span> </span><span class="annot"><span class="annottext">KeySchedule
+</span><a href="#local-6989586621679242331"><span class="hs-identifier hs-var">ks</span></a></span><span>
+</span><span id="line-190"></span></pre></body></html>

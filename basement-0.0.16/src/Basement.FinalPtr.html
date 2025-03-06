@@ -1,0 +1,370 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module      : Basement.FinalPtr</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Maintainer  : Vincent Hanquez &lt;vincent@snarc.org&gt;</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Stability   : experimental</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Portability : portable</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- A smaller ForeignPtr reimplementation that work in any prim monad.</span><span>
+</span><span id="line-9"></span><span class="hs-comment">--</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- Here be dragon.</span><span>
+</span><span id="line-11"></span><span class="hs-comment">--</span><span>
+</span><span id="line-12"></span><span class="hs-pragma">{-# LANGUAGE MagicHash #-}</span><span>
+</span><span id="line-13"></span><span class="hs-pragma">{-# LANGUAGE UnboxedTuples #-}</span><span>
+</span><span id="line-14"></span><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-15"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Basement.FinalPtr</span><span>
+</span><span id="line-16"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier">FinalPtr</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#finalPtrSameMemory"><span class="hs-identifier">finalPtrSameMemory</span></a></span><span>
+</span><span id="line-18"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#castFinalPtr"><span class="hs-identifier">castFinalPtr</span></a></span><span>
+</span><span id="line-19"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#toFinalPtr"><span class="hs-identifier">toFinalPtr</span></a></span><span>
+</span><span id="line-20"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#toFinalPtrForeign"><span class="hs-identifier">toFinalPtrForeign</span></a></span><span>
+</span><span id="line-21"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#touchFinalPtr"><span class="hs-identifier">touchFinalPtr</span></a></span><span>
+</span><span id="line-22"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-identifier">withFinalPtr</span></a></span><span>
+</span><span id="line-23"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#withUnsafeFinalPtr"><span class="hs-identifier">withUnsafeFinalPtr</span></a></span><span>
+</span><span id="line-24"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#withFinalPtrNoTouch"><span class="hs-identifier">withFinalPtrNoTouch</span></a></span><span>
+</span><span id="line-25"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">GHC.Ptr</span></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">GHC.ForeignPtr</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">GHCF</span></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">GHC.IO</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Basement.Monad.html"><span class="hs-identifier">Basement.Monad</span></a></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Basement.Compat.Primitive.html"><span class="hs-identifier">Basement.Compat.Primitive</span></a></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Basement.Compat.Base.html"><span class="hs-identifier">Basement.Compat.Base</span></a></span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.ST</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">runST</span></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span class="annot"><span class="hs-comment">-- | Create a pointer with an associated finalizer</span></span><span>
+</span><span id="line-37"></span><span class="hs-keyword">data</span><span> </span><span id="FinalPtr"><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-var">FinalPtr</span></a></span></span><span> </span><span id="local-6989586621679158322"><span class="annot"><a href="#local-6989586621679158322"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="FinalPtr"><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-var">FinalPtr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="#local-6989586621679158322"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span>                </span><span class="hs-glyph">|</span><span> </span><span id="FinalForeign"><span class="annot"><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-var">FinalForeign</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">GHCF.ForeignPtr</span></span><span> </span><span class="annot"><a href="#local-6989586621679158322"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679158265"><span id="local-6989586621679158370"><span id="local-6989586621679158375"><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158265"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-40"></span><span>    </span><span id="local-6989586621679158378"><span class="annot"><span class="annottext">show :: FinalPtr a -&gt; String
+</span><a href="#local-6989586621679158378"><span class="hs-identifier hs-var hs-var hs-var hs-var">show</span></a></span></span><span> </span><span id="local-6989586621679158380"><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158380"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall s. ST s String) -&gt; String
+forall a. (forall s. ST s a) -&gt; a
+</span><span class="hs-identifier hs-var">runST</span></span><span> </span><span class="annot"><span class="annottext">((forall s. ST s String) -&gt; String)
+-&gt; (forall s. ST s String) -&gt; String
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FinalPtr a -&gt; (Ptr a -&gt; ST s String) -&gt; ST s String
+forall (prim :: * -&gt; *) p a.
+PrimMonad prim =&gt;
+FinalPtr p -&gt; (Ptr p -&gt; prim a) -&gt; prim a
+</span><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-identifier hs-var">withFinalPtr</span></a></span><span> </span><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158380"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; ST s String
+forall a. a -&gt; ST s a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; ST s String)
+-&gt; (Ptr a -&gt; String) -&gt; Ptr a -&gt; ST s String
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+forall {k} (cat :: k -&gt; k -&gt; *) (b :: k) (c :: k) (a :: k).
+Category cat =&gt;
+cat b c -&gt; cat a b -&gt; cat a c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Ptr a -&gt; String
+forall a. Show a =&gt; a -&gt; String
+</span><span class="hs-identifier hs-var">show</span></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679158290"><span id="local-6989586621679158392"><span class="annot"><span class="hs-identifier hs-type">Eq</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158290"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-42"></span><span>    </span><span id="local-6989586621679158396"><span class="annot"><span class="annottext">== :: FinalPtr a -&gt; FinalPtr a -&gt; Bool
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">(==)</span></span></span><span> </span><span id="local-6989586621679158397"><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158397"><span class="hs-identifier hs-var">f1</span></a></span></span><span> </span><span id="local-6989586621679158398"><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158398"><span class="hs-identifier hs-var">f2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall s. ST s Bool) -&gt; Bool
+forall a. (forall s. ST s a) -&gt; a
+</span><span class="hs-identifier hs-var">runST</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FinalPtr a -&gt; FinalPtr a -&gt; ST s Bool
+forall (prim :: * -&gt; *) a.
+PrimMonad prim =&gt;
+FinalPtr a -&gt; FinalPtr a -&gt; prim Bool
+</span><a href="Basement.FinalPtr.html#equal"><span class="hs-identifier hs-var">equal</span></a></span><span> </span><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158397"><span class="hs-identifier hs-var">f1</span></a></span><span> </span><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158398"><span class="hs-identifier hs-var">f2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679158296"><span id="local-6989586621679158405"><span id="local-6989586621679158409"><span id="local-6989586621679158412"><span id="local-6989586621679158415"><span id="local-6989586621679158418"><span id="local-6989586621679158421"><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158296"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span></span></span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-44"></span><span>    </span><span id="local-6989586621679158424"><span class="annot"><span class="annottext">compare :: FinalPtr a -&gt; FinalPtr a -&gt; Ordering
+</span><a href="#local-6989586621679158424"><span class="hs-identifier hs-var hs-var hs-var hs-var">compare</span></a></span></span><span> </span><span id="local-6989586621679158426"><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158426"><span class="hs-identifier hs-var">f1</span></a></span></span><span> </span><span id="local-6989586621679158427"><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158427"><span class="hs-identifier hs-var">f2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall s. ST s Ordering) -&gt; Ordering
+forall a. (forall s. ST s a) -&gt; a
+</span><span class="hs-identifier hs-var">runST</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FinalPtr a -&gt; FinalPtr a -&gt; ST s Ordering
+forall (prim :: * -&gt; *) a.
+PrimMonad prim =&gt;
+FinalPtr a -&gt; FinalPtr a -&gt; prim Ordering
+</span><a href="Basement.FinalPtr.html#compare_"><span class="hs-identifier hs-var">compare_</span></a></span><span> </span><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158426"><span class="hs-identifier hs-var">f1</span></a></span><span> </span><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158427"><span class="hs-identifier hs-var">f2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- | Check if 2 final ptr points on the same memory bits</span><span>
+</span><span id="line-47"></span><span class="hs-comment">--</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- it stand to reason that provided a final ptr that is still being referenced</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- and thus have the memory still valid, if 2 final ptrs have the</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- same address, they should be the same final ptr</span><span>
+</span><span id="line-51"></span><span id="local-6989586621679158300"><span id="local-6989586621679158301"><span class="annot"><a href="Basement.FinalPtr.html#finalPtrSameMemory"><span class="hs-identifier hs-type">finalPtrSameMemory</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158300"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158301"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span></span></span><span>
+</span><span id="line-52"></span><span id="finalPtrSameMemory"><span class="annot"><span class="annottext">finalPtrSameMemory :: forall a b. FinalPtr a -&gt; FinalPtr b -&gt; Bool
+</span><a href="Basement.FinalPtr.html#finalPtrSameMemory"><span class="hs-identifier hs-var hs-var">finalPtrSameMemory</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span id="local-6989586621679158434"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158434"><span class="hs-identifier hs-var">p1</span></a></span></span><span class="hs-special">)</span><span>     </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span id="local-6989586621679158435"><span class="annot"><span class="annottext">Ptr b
+</span><a href="#local-6989586621679158435"><span class="hs-identifier hs-var">p2</span></a></span></span><span class="hs-special">)</span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158434"><span class="hs-identifier hs-var">p1</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a -&gt; Ptr a -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Ptr b -&gt; Ptr a
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr b
+</span><a href="#local-6989586621679158435"><span class="hs-identifier hs-var">p2</span></a></span><span>
+</span><span id="line-53"></span><span class="annot"><a href="Basement.FinalPtr.html#finalPtrSameMemory"><span class="hs-identifier hs-var">finalPtrSameMemory</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-type">FinalForeign</span></a></span><span> </span><span id="local-6989586621679158437"><span class="annot"><span class="annottext">ForeignPtr a
+</span><a href="#local-6989586621679158437"><span class="hs-identifier hs-var">p1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-type">FinalForeign</span></a></span><span> </span><span id="local-6989586621679158438"><span class="annot"><span class="annottext">ForeignPtr b
+</span><a href="#local-6989586621679158438"><span class="hs-identifier hs-var">p2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ForeignPtr a
+</span><a href="#local-6989586621679158437"><span class="hs-identifier hs-var">p1</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr a -&gt; ForeignPtr a -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr b -&gt; ForeignPtr a
+forall a b. ForeignPtr a -&gt; ForeignPtr b
+</span><span class="hs-identifier hs-var">GHCF.castForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr b
+</span><a href="#local-6989586621679158438"><span class="hs-identifier hs-var">p2</span></a></span><span>
+</span><span id="line-54"></span><span class="annot"><a href="Basement.FinalPtr.html#finalPtrSameMemory"><span class="hs-identifier hs-var">finalPtrSameMemory</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-type">FinalForeign</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr a
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr b
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-55"></span><span class="annot"><a href="Basement.FinalPtr.html#finalPtrSameMemory"><span class="hs-identifier hs-var">finalPtrSameMemory</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>      </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-type">FinalForeign</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr b
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-56"></span><span>
+</span><span id="line-57"></span><span class="annot"><span class="hs-comment">-- | create a new FinalPtr from a Pointer</span></span><span>
+</span><span id="line-58"></span><span id="local-6989586621679158311"><span id="local-6989586621679158312"><span class="annot"><a href="Basement.FinalPtr.html#toFinalPtr"><span class="hs-identifier hs-type">toFinalPtr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158311"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="#local-6989586621679158312"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="#local-6989586621679158312"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679158311"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158312"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-59"></span><span id="toFinalPtr"><span class="annot"><span class="annottext">toFinalPtr :: forall (prim :: * -&gt; *) a.
+PrimMonad prim =&gt;
+Ptr a -&gt; (Ptr a -&gt; IO ()) -&gt; prim (FinalPtr a)
+</span><a href="Basement.FinalPtr.html#toFinalPtr"><span class="hs-identifier hs-var hs-var">toFinalPtr</span></a></span></span><span> </span><span id="local-6989586621679158444"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158444"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span id="local-6989586621679158445"><span class="annot"><span class="annottext">Ptr a -&gt; IO ()
+</span><a href="#local-6989586621679158445"><span class="hs-identifier hs-var">finalizer</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (FinalPtr a) -&gt; prim (FinalPtr a)
+forall (prim :: * -&gt; *) a. PrimMonad prim =&gt; IO a -&gt; prim a
+</span><a href="Basement.Monad.html#unsafePrimFromIO"><span class="hs-identifier hs-var">unsafePrimFromIO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(State# (PrimState IO) -&gt; (# State# (PrimState IO), FinalPtr a #))
+-&gt; IO (FinalPtr a)
+forall a.
+(State# (PrimState IO) -&gt; (# State# (PrimState IO), a #)) -&gt; IO a
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+(State# (PrimState m) -&gt; (# State# (PrimState m), a #)) -&gt; m a
+</span><a href="Basement.Monad.html#primitive"><span class="hs-identifier hs-var">primitive</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld -&gt; (# State# RealWorld, FinalPtr a #)
+State# (PrimState IO) -&gt; (# State# (PrimState IO), FinalPtr a #)
+</span><a href="#local-6989586621679158448"><span class="hs-identifier hs-var">makeWithFinalizer</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-61"></span><span>    </span><span id="local-6989586621679158448"><span class="annot"><span class="annottext">makeWithFinalizer :: State# RealWorld -&gt; (# State# RealWorld, FinalPtr a #)
+</span><a href="#local-6989586621679158448"><span class="hs-identifier hs-var hs-var">makeWithFinalizer</span></a></span></span><span> </span><span id="local-6989586621679158449"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679158449"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-62"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Ptr a
+-&gt; ()
+-&gt; IO ()
+-&gt; State# RealWorld
+-&gt; (# State# RealWorld, Weak# () #)
+forall o b.
+o
+-&gt; b
+-&gt; IO ()
+-&gt; State# RealWorld
+-&gt; (# State# RealWorld, Weak# b #)
+</span><a href="Basement.Compat.Primitive.html#compatMkWeak%23"><span class="hs-identifier hs-var">compatMkWeak#</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158444"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr a -&gt; IO ()
+</span><a href="#local-6989586621679158445"><span class="hs-identifier hs-var">finalizer</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158444"><span class="hs-identifier hs-var">ptr</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679158449"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span class="hs-special">{</span><span> </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679158451"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679158451"><span class="hs-identifier hs-var">s2</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Weak# ()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679158451"><span class="hs-identifier hs-var">s2</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Ptr a -&gt; FinalPtr a
+forall a. Ptr a -&gt; FinalPtr a
+</span><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-var">FinalPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158444"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="annot"><span class="hs-comment">-- | Create a new FinalPtr from a ForeignPtr</span></span><span>
+</span><span id="line-65"></span><span id="local-6989586621679158323"><span class="annot"><a href="Basement.FinalPtr.html#toFinalPtrForeign"><span class="hs-identifier hs-type">toFinalPtrForeign</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">GHCF.ForeignPtr</span></span><span> </span><span class="annot"><a href="#local-6989586621679158323"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158323"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-66"></span><span id="toFinalPtrForeign"><span class="annot"><span class="annottext">toFinalPtrForeign :: forall a. ForeignPtr a -&gt; FinalPtr a
+</span><a href="Basement.FinalPtr.html#toFinalPtrForeign"><span class="hs-identifier hs-var hs-var">toFinalPtrForeign</span></a></span></span><span> </span><span id="local-6989586621679158452"><span class="annot"><span class="annottext">ForeignPtr a
+</span><a href="#local-6989586621679158452"><span class="hs-identifier hs-var">fptr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ForeignPtr a -&gt; FinalPtr a
+forall a. ForeignPtr a -&gt; FinalPtr a
+</span><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-var">FinalForeign</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr a
+</span><a href="#local-6989586621679158452"><span class="hs-identifier hs-var">fptr</span></a></span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span class="annot"><span class="hs-comment">-- | Cast a finalized pointer from type a to type b</span></span><span>
+</span><span id="line-69"></span><span id="local-6989586621679158325"><span id="local-6989586621679158326"><span class="annot"><a href="Basement.FinalPtr.html#castFinalPtr"><span class="hs-identifier hs-type">castFinalPtr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158325"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158326"><span class="hs-identifier hs-type">b</span></a></span></span></span><span>
+</span><span id="line-70"></span><span id="castFinalPtr"><span class="annot"><span class="annottext">castFinalPtr :: forall a b. FinalPtr a -&gt; FinalPtr b
+</span><a href="Basement.FinalPtr.html#castFinalPtr"><span class="hs-identifier hs-var hs-var">castFinalPtr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span id="local-6989586621679158453"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158453"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr b -&gt; FinalPtr b
+forall a. Ptr a -&gt; FinalPtr a
+</span><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-var">FinalPtr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr a -&gt; Ptr b
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158453"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-71"></span><span class="annot"><a href="Basement.FinalPtr.html#castFinalPtr"><span class="hs-identifier hs-var">castFinalPtr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-type">FinalForeign</span></a></span><span> </span><span id="local-6989586621679158454"><span class="annot"><span class="annottext">ForeignPtr a
+</span><a href="#local-6989586621679158454"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ForeignPtr b -&gt; FinalPtr b
+forall a. ForeignPtr a -&gt; FinalPtr a
+</span><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-var">FinalForeign</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ForeignPtr a -&gt; ForeignPtr b
+forall a b. ForeignPtr a -&gt; ForeignPtr b
+</span><span class="hs-identifier hs-var">GHCF.castForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr a
+</span><a href="#local-6989586621679158454"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-72"></span><span>
+</span><span id="line-73"></span><span id="local-6989586621679158329"><span id="local-6989586621679158330"><span class="annot"><a href="Basement.FinalPtr.html#withFinalPtrNoTouch"><span class="hs-identifier hs-type">withFinalPtrNoTouch</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158329"><span class="hs-identifier hs-type">p</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="#local-6989586621679158329"><span class="hs-identifier hs-type">p</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679158330"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679158330"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-74"></span><span id="withFinalPtrNoTouch"><span class="annot"><span class="annottext">withFinalPtrNoTouch :: forall p a. FinalPtr p -&gt; (Ptr p -&gt; a) -&gt; a
+</span><a href="Basement.FinalPtr.html#withFinalPtrNoTouch"><span class="hs-identifier hs-var hs-var">withFinalPtrNoTouch</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span id="local-6989586621679158455"><span class="annot"><span class="annottext">Ptr p
+</span><a href="#local-6989586621679158455"><span class="hs-identifier hs-var">ptr</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679158456"><span class="annot"><span class="annottext">Ptr p -&gt; a
+</span><a href="#local-6989586621679158456"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr p -&gt; a
+</span><a href="#local-6989586621679158456"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr p
+</span><a href="#local-6989586621679158455"><span class="hs-identifier hs-var">ptr</span></a></span><span>
+</span><span id="line-75"></span><span class="annot"><a href="Basement.FinalPtr.html#withFinalPtrNoTouch"><span class="hs-identifier hs-var">withFinalPtrNoTouch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-type">FinalForeign</span></a></span><span> </span><span id="local-6989586621679158457"><span class="annot"><span class="annottext">ForeignPtr p
+</span><a href="#local-6989586621679158457"><span class="hs-identifier hs-var">fptr</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679158458"><span class="annot"><span class="annottext">Ptr p -&gt; a
+</span><a href="#local-6989586621679158458"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr p -&gt; a
+</span><a href="#local-6989586621679158458"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ForeignPtr p -&gt; Ptr p
+forall a. ForeignPtr a -&gt; Ptr a
+</span><span class="hs-identifier hs-var">GHCF.unsafeForeignPtrToPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr p
+</span><a href="#local-6989586621679158457"><span class="hs-identifier hs-var">fptr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-76"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#withFinalPtrNoTouch"><span class="hs-pragma hs-type">withFinalPtrNoTouch</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- | Looks at the raw pointer inside a FinalPtr, making sure the</span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- data pointed by the pointer is not finalized during the call to 'f'</span><span>
+</span><span id="line-80"></span><span id="local-6989586621679158278"><span id="local-6989586621679158279"><span id="local-6989586621679158280"><span class="annot"><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-identifier hs-type">withFinalPtr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158278"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158279"><span class="hs-identifier hs-type">p</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="#local-6989586621679158279"><span class="hs-identifier hs-type">p</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679158278"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158280"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679158278"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158280"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-81"></span><span id="withFinalPtr"><span class="annot"><span class="annottext">withFinalPtr :: forall (prim :: * -&gt; *) p a.
+PrimMonad prim =&gt;
+FinalPtr p -&gt; (Ptr p -&gt; prim a) -&gt; prim a
+</span><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-identifier hs-var hs-var">withFinalPtr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span id="local-6989586621679158473"><span class="annot"><span class="annottext">Ptr p
+</span><a href="#local-6989586621679158473"><span class="hs-identifier hs-var">ptr</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679158474"><span class="annot"><span class="annottext">Ptr p -&gt; prim a
+</span><a href="#local-6989586621679158474"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-82"></span><span>    </span><span id="local-6989586621679158475"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679158475"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr p -&gt; prim a
+</span><a href="#local-6989586621679158474"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr p
+</span><a href="#local-6989586621679158473"><span class="hs-identifier hs-var">ptr</span></a></span><span>
+</span><span id="line-83"></span><span>    </span><span class="annot"><span class="annottext">Ptr p -&gt; prim ()
+forall (m :: * -&gt; *) a. PrimMonad m =&gt; a -&gt; m ()
+</span><a href="Basement.Monad.html#primTouch"><span class="hs-identifier hs-var">primTouch</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr p
+</span><a href="#local-6989586621679158473"><span class="hs-identifier hs-var">ptr</span></a></span><span>
+</span><span id="line-84"></span><span>    </span><span class="annot"><span class="annottext">a -&gt; prim a
+forall a. a -&gt; prim a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679158475"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-85"></span><span class="annot"><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-identifier hs-var">withFinalPtr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-type">FinalForeign</span></a></span><span> </span><span id="local-6989586621679158477"><span class="annot"><span class="annottext">ForeignPtr p
+</span><a href="#local-6989586621679158477"><span class="hs-identifier hs-var">fptr</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679158478"><span class="annot"><span class="annottext">Ptr p -&gt; prim a
+</span><a href="#local-6989586621679158478"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-86"></span><span>    </span><span id="local-6989586621679158479"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679158479"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr p -&gt; prim a
+</span><a href="#local-6989586621679158478"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ForeignPtr p -&gt; Ptr p
+forall a. ForeignPtr a -&gt; Ptr a
+</span><span class="hs-identifier hs-var">GHCF.unsafeForeignPtrToPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr p
+</span><a href="#local-6989586621679158477"><span class="hs-identifier hs-var">fptr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-87"></span><span>    </span><span class="annot"><span class="annottext">IO () -&gt; prim ()
+forall (prim :: * -&gt; *) a. PrimMonad prim =&gt; IO a -&gt; prim a
+</span><a href="Basement.Monad.html#unsafePrimFromIO"><span class="hs-identifier hs-var">unsafePrimFromIO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ForeignPtr p -&gt; IO ()
+forall a. ForeignPtr a -&gt; IO ()
+</span><span class="hs-identifier hs-var">GHCF.touchForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr p
+</span><a href="#local-6989586621679158477"><span class="hs-identifier hs-var">fptr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span>    </span><span class="annot"><span class="annottext">a -&gt; prim a
+forall a. a -&gt; prim a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679158479"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-89"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-pragma hs-type">withFinalPtr</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span id="local-6989586621679158340"><span id="local-6989586621679158341"><span class="annot"><a href="Basement.FinalPtr.html#touchFinalPtr"><span class="hs-identifier hs-type">touchFinalPtr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158340"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158341"><span class="hs-identifier hs-type">p</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679158340"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-92"></span><span id="touchFinalPtr"><span class="annot"><span class="annottext">touchFinalPtr :: forall (prim :: * -&gt; *) p. PrimMonad prim =&gt; FinalPtr p -&gt; prim ()
+</span><a href="Basement.FinalPtr.html#touchFinalPtr"><span class="hs-identifier hs-var hs-var">touchFinalPtr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span id="local-6989586621679158484"><span class="annot"><span class="annottext">Ptr p
+</span><a href="#local-6989586621679158484"><span class="hs-identifier hs-var">ptr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr p -&gt; prim ()
+forall (m :: * -&gt; *) a. PrimMonad m =&gt; a -&gt; m ()
+</span><a href="Basement.Monad.html#primTouch"><span class="hs-identifier hs-var">primTouch</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr p
+</span><a href="#local-6989586621679158484"><span class="hs-identifier hs-var">ptr</span></a></span><span>
+</span><span id="line-93"></span><span class="annot"><a href="Basement.FinalPtr.html#touchFinalPtr"><span class="hs-identifier hs-var">touchFinalPtr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Basement.FinalPtr.html#FinalForeign"><span class="hs-identifier hs-type">FinalForeign</span></a></span><span> </span><span id="local-6989586621679158485"><span class="annot"><span class="annottext">ForeignPtr p
+</span><a href="#local-6989586621679158485"><span class="hs-identifier hs-var">fptr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; prim ()
+forall (prim :: * -&gt; *) a. PrimMonad prim =&gt; IO a -&gt; prim a
+</span><a href="Basement.Monad.html#unsafePrimFromIO"><span class="hs-identifier hs-var">unsafePrimFromIO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ForeignPtr p -&gt; IO ()
+forall a. ForeignPtr a -&gt; IO ()
+</span><span class="hs-identifier hs-var">GHCF.touchForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr p
+</span><a href="#local-6989586621679158485"><span class="hs-identifier hs-var">fptr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="annot"><span class="hs-comment">-- | Unsafe version of 'withFinalPtr'</span></span><span>
+</span><span id="line-96"></span><span id="local-6989586621679158344"><span id="local-6989586621679158345"><span id="local-6989586621679158346"><span class="annot"><a href="Basement.FinalPtr.html#withUnsafeFinalPtr"><span class="hs-identifier hs-type">withUnsafeFinalPtr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158344"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158345"><span class="hs-identifier hs-type">p</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="#local-6989586621679158345"><span class="hs-identifier hs-type">p</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679158344"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158346"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679158346"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-97"></span><span id="withUnsafeFinalPtr"><span class="annot"><span class="annottext">withUnsafeFinalPtr :: forall (prim :: * -&gt; *) p a.
+PrimMonad prim =&gt;
+FinalPtr p -&gt; (Ptr p -&gt; prim a) -&gt; a
+</span><a href="Basement.FinalPtr.html#withUnsafeFinalPtr"><span class="hs-identifier hs-var hs-var">withUnsafeFinalPtr</span></a></span></span><span> </span><span id="local-6989586621679158489"><span class="annot"><span class="annottext">FinalPtr p
+</span><a href="#local-6989586621679158489"><span class="hs-identifier hs-var">fptr</span></a></span></span><span> </span><span id="local-6989586621679158490"><span class="annot"><span class="annottext">Ptr p -&gt; prim a
+</span><a href="#local-6989586621679158490"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; a
+forall a. IO a -&gt; a
+</span><span class="hs-identifier hs-var">unsafePerformIO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">prim a -&gt; IO a
+forall (prim :: * -&gt; *) a. PrimMonad prim =&gt; prim a -&gt; IO a
+</span><a href="Basement.Monad.html#unsafePrimToIO"><span class="hs-identifier hs-var">unsafePrimToIO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FinalPtr p -&gt; (Ptr p -&gt; prim a) -&gt; prim a
+forall (prim :: * -&gt; *) p a.
+PrimMonad prim =&gt;
+FinalPtr p -&gt; (Ptr p -&gt; prim a) -&gt; prim a
+</span><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-identifier hs-var">withFinalPtr</span></a></span><span> </span><span class="annot"><span class="annottext">FinalPtr p
+</span><a href="#local-6989586621679158489"><span class="hs-identifier hs-var">fptr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr p -&gt; prim a
+</span><a href="#local-6989586621679158490"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#withUnsafeFinalPtr"><span class="hs-pragma hs-type">withUnsafeFinalPtr</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-99"></span><span>
+</span><span id="line-100"></span><span id="local-6989586621679158292"><span id="local-6989586621679158293"><span class="annot"><a href="Basement.FinalPtr.html#equal"><span class="hs-identifier hs-type">equal</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158292"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158293"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158293"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679158292"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span></span></span><span>
+</span><span id="line-101"></span><span id="equal"><span class="annot"><span class="annottext">equal :: forall (prim :: * -&gt; *) a.
+PrimMonad prim =&gt;
+FinalPtr a -&gt; FinalPtr a -&gt; prim Bool
+</span><a href="Basement.FinalPtr.html#equal"><span class="hs-identifier hs-var hs-var">equal</span></a></span></span><span> </span><span id="local-6989586621679158499"><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158499"><span class="hs-identifier hs-var">f1</span></a></span></span><span> </span><span id="local-6989586621679158500"><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158500"><span class="hs-identifier hs-var">f2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-102"></span><span>    </span><span class="annot"><span class="annottext">FinalPtr a -&gt; (Ptr a -&gt; prim Bool) -&gt; prim Bool
+forall (prim :: * -&gt; *) p a.
+PrimMonad prim =&gt;
+FinalPtr p -&gt; (Ptr p -&gt; prim a) -&gt; prim a
+</span><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-identifier hs-var">withFinalPtr</span></a></span><span> </span><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158499"><span class="hs-identifier hs-var">f1</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr a -&gt; prim Bool) -&gt; prim Bool)
+-&gt; (Ptr a -&gt; prim Bool) -&gt; prim Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679158501"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158501"><span class="hs-identifier hs-var">ptr1</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-103"></span><span>    </span><span class="annot"><span class="annottext">FinalPtr a -&gt; (Ptr a -&gt; prim Bool) -&gt; prim Bool
+forall (prim :: * -&gt; *) p a.
+PrimMonad prim =&gt;
+FinalPtr p -&gt; (Ptr p -&gt; prim a) -&gt; prim a
+</span><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-identifier hs-var">withFinalPtr</span></a></span><span> </span><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158500"><span class="hs-identifier hs-var">f2</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr a -&gt; prim Bool) -&gt; prim Bool)
+-&gt; (Ptr a -&gt; prim Bool) -&gt; prim Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679158502"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158502"><span class="hs-identifier hs-var">ptr2</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-104"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; prim Bool
+forall a. a -&gt; prim a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; prim Bool) -&gt; Bool -&gt; prim Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158501"><span class="hs-identifier hs-var">ptr1</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a -&gt; Ptr a -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158502"><span class="hs-identifier hs-var">ptr2</span></a></span><span>
+</span><span id="line-105"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#equal"><span class="hs-pragma hs-type">equal</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-106"></span><span>
+</span><span id="line-107"></span><span id="local-6989586621679158298"><span id="local-6989586621679158299"><span class="annot"><a href="Basement.FinalPtr.html#compare_"><span class="hs-identifier hs-type">compare_</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Basement.Monad.html#PrimMonad"><span class="hs-identifier hs-type">PrimMonad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158298"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158299"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#FinalPtr"><span class="hs-identifier hs-type">FinalPtr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679158299"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679158298"><span class="hs-keyword hs-type">prim</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ordering</span></span></span></span><span>
+</span><span id="line-108"></span><span id="compare_"><span class="annot"><span class="annottext">compare_ :: forall (prim :: * -&gt; *) a.
+PrimMonad prim =&gt;
+FinalPtr a -&gt; FinalPtr a -&gt; prim Ordering
+</span><a href="Basement.FinalPtr.html#compare_"><span class="hs-identifier hs-var hs-var">compare_</span></a></span></span><span> </span><span id="local-6989586621679158510"><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158510"><span class="hs-identifier hs-var">f1</span></a></span></span><span> </span><span id="local-6989586621679158511"><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158511"><span class="hs-identifier hs-var">f2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-109"></span><span>    </span><span class="annot"><span class="annottext">FinalPtr a -&gt; (Ptr a -&gt; prim Ordering) -&gt; prim Ordering
+forall (prim :: * -&gt; *) p a.
+PrimMonad prim =&gt;
+FinalPtr p -&gt; (Ptr p -&gt; prim a) -&gt; prim a
+</span><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-identifier hs-var">withFinalPtr</span></a></span><span> </span><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158510"><span class="hs-identifier hs-var">f1</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr a -&gt; prim Ordering) -&gt; prim Ordering)
+-&gt; (Ptr a -&gt; prim Ordering) -&gt; prim Ordering
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679158512"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158512"><span class="hs-identifier hs-var">ptr1</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-110"></span><span>    </span><span class="annot"><span class="annottext">FinalPtr a -&gt; (Ptr a -&gt; prim Ordering) -&gt; prim Ordering
+forall (prim :: * -&gt; *) p a.
+PrimMonad prim =&gt;
+FinalPtr p -&gt; (Ptr p -&gt; prim a) -&gt; prim a
+</span><a href="Basement.FinalPtr.html#withFinalPtr"><span class="hs-identifier hs-var">withFinalPtr</span></a></span><span> </span><span class="annot"><span class="annottext">FinalPtr a
+</span><a href="#local-6989586621679158511"><span class="hs-identifier hs-var">f2</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr a -&gt; prim Ordering) -&gt; prim Ordering)
+-&gt; (Ptr a -&gt; prim Ordering) -&gt; prim Ordering
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679158513"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158513"><span class="hs-identifier hs-var">ptr2</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-111"></span><span>        </span><span class="annot"><span class="annottext">Ordering -&gt; prim Ordering
+forall a. a -&gt; prim a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Ordering -&gt; prim Ordering) -&gt; Ordering -&gt; prim Ordering
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158512"><span class="hs-identifier hs-var">ptr1</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a -&gt; Ptr a -&gt; Ordering
+forall a. Ord a =&gt; a -&gt; a -&gt; Ordering
+</span><span class="hs-operator hs-var">`compare`</span></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679158513"><span class="hs-identifier hs-var">ptr2</span></a></span><span>
+</span><span id="line-112"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Basement.FinalPtr.html#compare_"><span class="hs-pragma hs-type">compare_</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-113"></span></pre></body></html>

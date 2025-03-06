@@ -1,0 +1,839 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns        #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# OPTIONS_GHC -ddump-simpl -dsuppress-all -ddump-to-file #-}</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- | The naive left fold to convert digits to integer is quadratic</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- as multiplying (big) 'Integer's is not a constant time operation.</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- This module provides sub-quadratic algorithm for conversion of 'Text'</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- or 'ByteString' into 'Integer'.</span><span>
+</span><span id="line-9"></span><span class="hs-comment">--</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- For example for a text of 262144 9 digits, fold implementation</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- takes 1.5 seconds, and 'textToInteger' just 26 milliseconds on my machine.</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- Difference is already noticeable around 100-200 digits.</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- In particular 'read' is correct (i.e. faster) than @List.foldl'@ (better complexity),</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- 'stringToInteger' is a bit faster than 'read' (same complexity, lower coeffcient).</span><span>
+</span><span id="line-16"></span><span class="hs-comment">--</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.Integer.Conversion</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><a href="Data.Integer.Conversion.html#textToInteger"><span class="hs-identifier">textToInteger</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>    </span><span class="annot"><a href="Data.Integer.Conversion.html#byteStringToInteger"><span class="hs-identifier">byteStringToInteger</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>    </span><span class="annot"><a href="Data.Integer.Conversion.html#stringToInteger"><span class="hs-identifier">stringToInteger</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>    </span><span class="annot"><a href="Data.Integer.Conversion.html#stringToIntegerWithLen"><span class="hs-identifier">stringToIntegerWithLen</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.ST</span></span><span>     </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ST</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">runST</span></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Char</span></span><span>            </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ord</span></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Primitive.Array</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">MutableArray</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">newArray</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">readArray</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">writeArray</span></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text.Internal</span></span><span>   </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Text</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span>            </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BS</span></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span>       </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">L</span></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span>       </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- $setup</span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- &gt;&gt;&gt; :set -XOverloadedStrings</span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- Text</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- | Convert 'Text' to 'Integer'.</span><span>
+</span><span id="line-43"></span><span class="hs-comment">--</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- Semantically same as @T.foldl' (\acc c -&gt; acc * 10 + toInteger (ord c - 48)) 0@,</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- but this is more efficient.</span><span>
+</span><span id="line-46"></span><span class="hs-comment">--</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- &gt;&gt;&gt; textToInteger &quot;123456789&quot;</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- 123456789</span><span>
+</span><span id="line-49"></span><span class="hs-comment">--</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- For non-decimal inputs some nonsense is calculated</span><span>
+</span><span id="line-51"></span><span class="hs-comment">--</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- &gt;&gt;&gt; textToInteger &quot;foobar&quot;</span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- 6098556</span><span>
+</span><span id="line-54"></span><span class="hs-comment">--</span><span>
+</span><span id="line-55"></span><span class="annot"><a href="Data.Integer.Conversion.html#textToInteger"><span class="hs-identifier hs-type">textToInteger</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-56"></span><span id="textToInteger"><span class="annot"><span class="annottext">textToInteger :: Text -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#textToInteger"><span class="hs-identifier hs-var hs-var">textToInteger</span></a></span></span><span> </span><span id="local-6989586621679035724"><span class="annot"><span class="annottext">t :: Text
+</span><a href="#local-6989586621679035724"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span id="local-6989586621679035725"><span class="annot"><span class="annottext">Array
+</span><a href="#local-6989586621679035725"><span class="hs-identifier hs-var">_arr</span></a></span></span><span> </span><span id="local-6989586621679035726"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035726"><span class="hs-identifier hs-var">_off</span></a></span></span><span> </span><span id="local-6989586621679035727"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035727"><span class="hs-identifier hs-var">len</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-comment">-- len &gt;= 20000 = algorithmL 10 (T.length t) [ toInteger (ord c - 48) | c &lt;- T.unpack t ]</span><span>
+</span><span id="line-58"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035727"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">40</span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#complexTextToInteger"><span class="hs-identifier hs-var">complexTextToInteger</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679035724"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#simpleTextToInteger"><span class="hs-identifier hs-var">simpleTextToInteger</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679035724"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="annot"><a href="Data.Integer.Conversion.html#simpleTextToInteger"><span class="hs-identifier hs-type">simpleTextToInteger</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-62"></span><span id="simpleTextToInteger"><span class="annot"><span class="annottext">simpleTextToInteger :: Text -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#simpleTextToInteger"><span class="hs-identifier hs-var hs-var">simpleTextToInteger</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; Char -&gt; Integer) -&gt; Integer -&gt; Text -&gt; Integer
+forall a. (a -&gt; Char -&gt; a) -&gt; a -&gt; Text -&gt; a
+</span><span class="hs-identifier hs-var">T.foldl'</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679035731"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035731"><span class="hs-identifier hs-var">acc</span></a></span></span><span> </span><span id="local-6989586621679035732"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035732"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035731"><span class="hs-identifier hs-var">acc</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">10</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#fromChar"><span class="hs-identifier hs-var">fromChar</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035732"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- Text doesn't have cheap length:</span><span>
+</span><span id="line-65"></span><span class="hs-comment">--</span><span>
+</span><span id="line-66"></span><span class="annot"><span class="hs-comment">-- * We can (over)estimate the size of the needed buffer by the length of text's underlying bytearray.</span></span><span>
+</span><span id="line-67"></span><span class="annot"><span class="hs-comment">-- * As we don't know whether the length is even or odd, we cannot do the first pass,</span></span><span>
+</span><span id="line-68"></span><span class="hs-comment">--   so we just copy the contents of given Text as is first.</span><span>
+</span><span id="line-69"></span><span class="hs-comment">--</span><span>
+</span><span id="line-70"></span><span class="annot"><a href="Data.Integer.Conversion.html#complexTextToInteger"><span class="hs-identifier hs-type">complexTextToInteger</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-71"></span><span id="complexTextToInteger"><span class="annot"><span class="annottext">complexTextToInteger :: Text -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#complexTextToInteger"><span class="hs-identifier hs-var hs-var">complexTextToInteger</span></a></span></span><span> </span><span id="local-6989586621679035736"><span class="annot"><span class="annottext">t0 :: Text
+</span><a href="#local-6989586621679035736"><span class="hs-identifier hs-var">t0</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="annot"><span class="annottext">Array
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679035737"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035737"><span class="hs-identifier hs-var">len</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall s. ST s Integer) -&gt; Integer
+forall a. (forall s. ST s a) -&gt; a
+</span><span class="hs-identifier hs-var">runST</span></span><span> </span><span class="annot"><span class="annottext">((forall s. ST s Integer) -&gt; Integer)
+-&gt; (forall s. ST s Integer) -&gt; Integer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-72"></span><span>    </span><span id="local-6989586621679035742"><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035742"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer -&gt; ST s (MutableArray (PrimState (ST s)) Integer)
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+Int -&gt; a -&gt; m (MutableArray (PrimState m) a)
+</span><span class="hs-identifier hs-var">newArray</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035737"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="Data.Integer.Conversion.html#integer0"><span class="hs-identifier hs-var">integer0</span></a></span><span> </span><span class="hs-comment">-- we overestimate the size here</span><span>
+</span><span id="line-73"></span><span>    </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; Text -&gt; Int -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; Text -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035744"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035742"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679035736"><span class="hs-identifier hs-var">t0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-74"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-75"></span><span>    </span><span id="local-6989586621679035654"><span class="annot"><a href="#local-6989586621679035744"><span class="hs-identifier hs-type">loop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MutableArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679035654"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621679035654"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span></span><span>
+</span><span id="line-76"></span><span>    </span><span id="local-6989586621679035744"><span class="annot"><span class="annottext">loop :: forall s. MutableArray s Integer -&gt; Text -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035744"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035749"><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035749"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035750"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679035750"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035751"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035751"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Maybe (Char, Text)
+</span><span class="hs-identifier hs-var">T.uncons</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679035750"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-77"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679035753"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035753"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679035754"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679035754"><span class="hs-identifier hs-var">t'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-78"></span><span>            </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer
+-&gt; Int -&gt; Integer -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">writeArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035749"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035751"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; ST s ()) -&gt; Integer -&gt; ST s ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#fromChar"><span class="hs-identifier hs-var">fromChar</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035753"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-79"></span><span>            </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; Text -&gt; Int -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; Text -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035744"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035749"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679035754"><span class="hs-identifier hs-var">t'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035751"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-80"></span><span>        </span><span class="annot"><span class="annottext">Maybe (Char, Text)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; Int -&gt; Integer -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; Int -&gt; Integer -&gt; ST s Integer
+</span><a href="Data.Integer.Conversion.html#algorithm"><span class="hs-identifier hs-var">algorithm</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035749"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035751"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">10</span></span><span>
+</span><span id="line-81"></span><span>
+</span><span id="line-82"></span><span class="annot"><a href="Data.Integer.Conversion.html#fromChar"><span class="hs-identifier hs-type">fromChar</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Char</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-83"></span><span id="fromChar"><span class="annot"><span class="annottext">fromChar :: Char -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#fromChar"><span class="hs-identifier hs-var hs-var">fromChar</span></a></span></span><span> </span><span id="local-6989586621679035757"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035757"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Int
+</span><span class="hs-identifier hs-var">ord</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035757"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">48</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>
+</span><span id="line-84"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Integer.Conversion.html#fromChar"><span class="hs-pragma hs-type">fromChar</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-87"></span><span class="hs-comment">-- ByteString</span><span>
+</span><span id="line-88"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-89"></span><span>
+</span><span id="line-90"></span><span class="hs-comment">-- | Convert 'ByteString' to 'Integer'.</span><span>
+</span><span id="line-91"></span><span class="hs-comment">--</span><span>
+</span><span id="line-92"></span><span class="hs-comment">-- Semantically same as @BS.foldl' (\acc c -&gt; acc * 10 + toInteger c - 48) 0@,</span><span>
+</span><span id="line-93"></span><span class="hs-comment">-- but this is more efficient.</span><span>
+</span><span id="line-94"></span><span class="hs-comment">--</span><span>
+</span><span id="line-95"></span><span class="hs-comment">-- &gt;&gt;&gt; byteStringToInteger &quot;123456789&quot;</span><span>
+</span><span id="line-96"></span><span class="hs-comment">-- 123456789</span><span>
+</span><span id="line-97"></span><span class="hs-comment">--</span><span>
+</span><span id="line-98"></span><span class="hs-comment">-- For non-decimal inputs some nonsense is calculated</span><span>
+</span><span id="line-99"></span><span class="hs-comment">--</span><span>
+</span><span id="line-100"></span><span class="hs-comment">-- &gt;&gt;&gt; byteStringToInteger &quot;foobar&quot;</span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- 6098556</span><span>
+</span><span id="line-102"></span><span class="hs-comment">--</span><span>
+</span><span id="line-103"></span><span class="annot"><a href="Data.Integer.Conversion.html#byteStringToInteger"><span class="hs-identifier hs-type">byteStringToInteger</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-104"></span><span id="byteStringToInteger"><span class="annot"><span class="annottext">byteStringToInteger :: ByteString -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#byteStringToInteger"><span class="hs-identifier hs-var hs-var">byteStringToInteger</span></a></span></span><span> </span><span id="local-6989586621679035758"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679035758"><span class="hs-identifier hs-var">bs</span></a></span></span><span>
+</span><span id="line-105"></span><span>    </span><span class="hs-comment">-- len &gt;= 20000 = algorithmL 10 len [ toInteger w - 48 | w &lt;- BS.unpack bs ]</span><span>
+</span><span id="line-106"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035759"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">40</span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#complexByteStringToInteger"><span class="hs-identifier hs-var">complexByteStringToInteger</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035759"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679035758"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-107"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#simpleByteStringToInteger"><span class="hs-identifier hs-var">simpleByteStringToInteger</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679035758"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-108"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-109"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679035759"><span class="annot"><span class="annottext">len :: Int
+</span><a href="#local-6989586621679035759"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">BS.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679035758"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span class="annot"><a href="Data.Integer.Conversion.html#simpleByteStringToInteger"><span class="hs-identifier hs-type">simpleByteStringToInteger</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BS.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-112"></span><span id="simpleByteStringToInteger"><span class="annot"><span class="annottext">simpleByteStringToInteger :: ByteString -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#simpleByteStringToInteger"><span class="hs-identifier hs-var hs-var">simpleByteStringToInteger</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; Word8 -&gt; Integer) -&gt; Integer -&gt; ByteString -&gt; Integer
+forall a. (a -&gt; Word8 -&gt; a) -&gt; a -&gt; ByteString -&gt; a
+</span><span class="hs-identifier hs-var">BS.foldl'</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679035764"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035764"><span class="hs-identifier hs-var">acc</span></a></span></span><span> </span><span id="local-6989586621679035765"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679035765"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035764"><span class="hs-identifier hs-var">acc</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">10</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#fromWord8"><span class="hs-identifier hs-var">fromWord8</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679035765"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="annot"><a href="Data.Integer.Conversion.html#complexByteStringToInteger"><span class="hs-identifier hs-type">complexByteStringToInteger</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BS.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-115"></span><span id="complexByteStringToInteger"><span class="annot"><span class="annottext">complexByteStringToInteger :: Int -&gt; ByteString -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#complexByteStringToInteger"><span class="hs-identifier hs-var hs-var">complexByteStringToInteger</span></a></span></span><span> </span><span id="local-6989586621679035767"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035767"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span id="local-6989586621679035768"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679035768"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall s. ST s Integer) -&gt; Integer
+forall a. (forall s. ST s a) -&gt; a
+</span><span class="hs-identifier hs-var">runST</span></span><span> </span><span class="annot"><span class="annottext">((forall s. ST s Integer) -&gt; Integer)
+-&gt; (forall s. ST s Integer) -&gt; Integer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-116"></span><span>    </span><span id="local-6989586621679035775"><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035775"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer -&gt; ST s (MutableArray (PrimState (ST s)) Integer)
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+Int -&gt; a -&gt; m (MutableArray (PrimState m) a)
+</span><span class="hs-identifier hs-var">newArray</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035776"><span class="hs-identifier hs-var">len'</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span>    </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Bool
+forall a. Integral a =&gt; a -&gt; Bool
+</span><span class="hs-identifier hs-var">even</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035767"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-119"></span><span>    </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-120"></span><span>        </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; Int -&gt; Int -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; Int -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035778"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035775"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-121"></span><span>    </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-122"></span><span>        </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer
+-&gt; Int -&gt; Integer -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">writeArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035775"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; ST s ()) -&gt; Integer -&gt; ST s ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#indexBS"><span class="hs-identifier hs-var">indexBS</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679035768"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-123"></span><span>        </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; Int -&gt; Int -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; Int -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035778"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035775"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-124"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-125"></span><span>    </span><span id="local-6989586621679035776"><span class="annot"><span class="annottext">len' :: Int
+</span><a href="#local-6989586621679035776"><span class="hs-identifier hs-var hs-var">len'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035767"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`div`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-126"></span><span>
+</span><span id="line-127"></span><span>    </span><span id="local-6989586621679035664"><span class="annot"><a href="#local-6989586621679035778"><span class="hs-identifier hs-type">loop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MutableArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679035664"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621679035664"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span></span><span>
+</span><span id="line-128"></span><span>    </span><span id="local-6989586621679035778"><span class="annot"><span class="annottext">loop :: forall s. MutableArray s Integer -&gt; Int -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035778"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035797"><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035797"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035798"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035798"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035799"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035799"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035798"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035767"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-129"></span><span>        </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer
+-&gt; Int -&gt; Integer -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">writeArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035797"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035799"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; ST s ()) -&gt; Integer -&gt; ST s ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#indexBS"><span class="hs-identifier hs-var">indexBS</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679035768"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035798"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">10</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#indexBS"><span class="hs-identifier hs-var">indexBS</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679035768"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035798"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-130"></span><span>        </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; Int -&gt; Int -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; Int -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035778"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035797"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035798"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035799"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-131"></span><span>    </span><span class="annot"><a href="#local-6989586621679035778"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span id="local-6989586621679035801"><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035801"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; Int -&gt; Integer -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; Int -&gt; Integer -&gt; ST s Integer
+</span><a href="Data.Integer.Conversion.html#algorithm"><span class="hs-identifier hs-var">algorithm</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035801"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035776"><span class="hs-identifier hs-var">len'</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">100</span></span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span class="annot"><a href="Data.Integer.Conversion.html#indexBS"><span class="hs-identifier hs-type">indexBS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BS.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-134"></span><span id="indexBS"><span class="annot"><span class="annottext">indexBS :: ByteString -&gt; Int -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#indexBS"><span class="hs-identifier hs-var hs-var">indexBS</span></a></span></span><span> </span><span id="local-6989586621679035802"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679035802"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span id="local-6989586621679035803"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035803"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#fromWord8"><span class="hs-identifier hs-var">fromWord8</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HasCallStack =&gt; ByteString -&gt; Int -&gt; Word8
+ByteString -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">BS.index</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679035802"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035803"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Integer.Conversion.html#indexBS"><span class="hs-pragma hs-type">indexBS</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-136"></span><span>
+</span><span id="line-137"></span><span class="annot"><a href="Data.Integer.Conversion.html#fromWord8"><span class="hs-identifier hs-type">fromWord8</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-138"></span><span id="fromWord8"><span class="annot"><span class="annottext">fromWord8 :: Word8 -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#fromWord8"><span class="hs-identifier hs-var hs-var">fromWord8</span></a></span></span><span> </span><span id="local-6989586621679035805"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679035805"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679035805"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">48</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Integer.Conversion.html#fromWord8"><span class="hs-pragma hs-type">fromWord8</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-140"></span><span>
+</span><span id="line-141"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-142"></span><span class="hs-comment">-- String</span><span>
+</span><span id="line-143"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-144"></span><span>
+</span><span id="line-145"></span><span class="hs-comment">-- | Convert 'String' to 'Integer'.</span><span>
+</span><span id="line-146"></span><span class="hs-comment">--</span><span>
+</span><span id="line-147"></span><span class="hs-comment">-- Semantically same as @List.foldl' (\acc c -&gt; acc * 10 + toInteger c - 48) 0@,</span><span>
+</span><span id="line-148"></span><span class="hs-comment">-- but this is more efficient.</span><span>
+</span><span id="line-149"></span><span class="hs-comment">--</span><span>
+</span><span id="line-150"></span><span class="hs-comment">-- &gt;&gt;&gt; stringToInteger &quot;123456789&quot;</span><span>
+</span><span id="line-151"></span><span class="hs-comment">-- 123456789</span><span>
+</span><span id="line-152"></span><span class="hs-comment">--</span><span>
+</span><span id="line-153"></span><span class="hs-comment">-- For non-decimal inputs some nonsense is calculated</span><span>
+</span><span id="line-154"></span><span class="hs-comment">--</span><span>
+</span><span id="line-155"></span><span class="hs-comment">-- &gt;&gt;&gt; stringToInteger &quot;foobar&quot;</span><span>
+</span><span id="line-156"></span><span class="hs-comment">-- 6098556</span><span>
+</span><span id="line-157"></span><span class="hs-comment">--</span><span>
+</span><span id="line-158"></span><span class="annot"><a href="Data.Integer.Conversion.html#stringToInteger"><span class="hs-identifier hs-type">stringToInteger</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-159"></span><span id="stringToInteger"><span class="annot"><span class="annottext">stringToInteger :: String -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#stringToInteger"><span class="hs-identifier hs-var hs-var">stringToInteger</span></a></span></span><span> </span><span id="local-6989586621679035806"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035806"><span class="hs-identifier hs-var">str</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Int -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#stringToIntegerWithLen"><span class="hs-identifier hs-var">stringToIntegerWithLen</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035806"><span class="hs-identifier hs-var">str</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Int
+forall a. [a] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035806"><span class="hs-identifier hs-var">str</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="hs-comment">-- | Convert 'String' to 'Integer' when you know the length beforehand.</span><span>
+</span><span id="line-162"></span><span class="hs-comment">--</span><span>
+</span><span id="line-163"></span><span class="hs-comment">-- &gt;&gt;&gt; stringToIntegerWithLen &quot;123&quot; 3</span><span>
+</span><span id="line-164"></span><span class="hs-comment">-- 123</span><span>
+</span><span id="line-165"></span><span class="hs-comment">--</span><span>
+</span><span id="line-166"></span><span class="hs-comment">-- If the length is wrong, you may get wrong results.</span><span>
+</span><span id="line-167"></span><span class="hs-comment">-- (Simple algorithm is used for short strings).</span><span>
+</span><span id="line-168"></span><span class="hs-comment">--</span><span>
+</span><span id="line-169"></span><span class="hs-comment">-- &gt;&gt;&gt; stringToIntegerWithLen (replicate 40 '0' ++ &quot;123&quot;) 45</span><span>
+</span><span id="line-170"></span><span class="hs-comment">-- 12300</span><span>
+</span><span id="line-171"></span><span class="hs-comment">--</span><span>
+</span><span id="line-172"></span><span class="hs-comment">-- &gt;&gt;&gt; stringToIntegerWithLen (replicate 40 '0' ++ &quot;123&quot;) 44</span><span>
+</span><span id="line-173"></span><span class="hs-comment">-- 1200</span><span>
+</span><span id="line-174"></span><span class="hs-comment">--</span><span>
+</span><span id="line-175"></span><span class="hs-comment">-- &gt;&gt;&gt; stringToIntegerWithLen (replicate 40 '0' ++ &quot;123&quot;) 42</span><span>
+</span><span id="line-176"></span><span class="hs-comment">-- 12</span><span>
+</span><span id="line-177"></span><span class="hs-comment">--</span><span>
+</span><span id="line-178"></span><span class="annot"><a href="Data.Integer.Conversion.html#stringToIntegerWithLen"><span class="hs-identifier hs-type">stringToIntegerWithLen</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-179"></span><span id="stringToIntegerWithLen"><span class="annot"><span class="annottext">stringToIntegerWithLen :: String -&gt; Int -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#stringToIntegerWithLen"><span class="hs-identifier hs-var hs-var">stringToIntegerWithLen</span></a></span></span><span> </span><span id="local-6989586621679035808"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035808"><span class="hs-identifier hs-var">str</span></a></span></span><span> </span><span id="local-6989586621679035809"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035809"><span class="hs-identifier hs-var">len</span></a></span></span><span>
+</span><span id="line-180"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035809"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">40</span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; String -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#complexStringToInteger"><span class="hs-identifier hs-var">complexStringToInteger</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035809"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035808"><span class="hs-identifier hs-var">str</span></a></span><span>
+</span><span id="line-181"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#simpleStringToInteger"><span class="hs-identifier hs-var">simpleStringToInteger</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035808"><span class="hs-identifier hs-var">str</span></a></span><span>
+</span><span id="line-182"></span><span>
+</span><span id="line-183"></span><span class="annot"><a href="Data.Integer.Conversion.html#simpleStringToInteger"><span class="hs-identifier hs-type">simpleStringToInteger</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-184"></span><span id="simpleStringToInteger"><span class="annot"><span class="annottext">simpleStringToInteger :: String -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#simpleStringToInteger"><span class="hs-identifier hs-var hs-var">simpleStringToInteger</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; Char -&gt; Integer) -&gt; Integer -&gt; String -&gt; Integer
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; [a] -&gt; b
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">L.foldl'</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Char -&gt; Integer
+</span><a href="#local-6989586621679035813"><span class="hs-identifier hs-var">step</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-185"></span><span>  </span><span id="local-6989586621679035813"><span class="annot"><span class="annottext">step :: Integer -&gt; Char -&gt; Integer
+</span><a href="#local-6989586621679035813"><span class="hs-identifier hs-var hs-var">step</span></a></span></span><span> </span><span id="local-6989586621679035817"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035817"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621679035818"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035818"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035817"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">10</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#fromChar"><span class="hs-identifier hs-var">fromChar</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035818"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-186"></span><span>
+</span><span id="line-187"></span><span class="annot"><a href="Data.Integer.Conversion.html#complexStringToInteger"><span class="hs-identifier hs-type">complexStringToInteger</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-188"></span><span id="complexStringToInteger"><span class="annot"><span class="annottext">complexStringToInteger :: Int -&gt; String -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#complexStringToInteger"><span class="hs-identifier hs-var hs-var">complexStringToInteger</span></a></span></span><span> </span><span id="local-6989586621679035819"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035819"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span id="local-6989586621679035820"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035820"><span class="hs-identifier hs-var">str</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall s. ST s Integer) -&gt; Integer
+forall a. (forall s. ST s a) -&gt; a
+</span><span class="hs-identifier hs-var">runST</span></span><span> </span><span class="annot"><span class="annottext">((forall s. ST s Integer) -&gt; Integer)
+-&gt; (forall s. ST s Integer) -&gt; Integer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-189"></span><span>    </span><span id="local-6989586621679035827"><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035827"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer -&gt; ST s (MutableArray (PrimState (ST s)) Integer)
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+Int -&gt; a -&gt; m (MutableArray (PrimState m) a)
+</span><span class="hs-identifier hs-var">newArray</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035828"><span class="hs-identifier hs-var">len'</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="Data.Integer.Conversion.html#integer0"><span class="hs-identifier hs-var">integer0</span></a></span><span>
+</span><span id="line-190"></span><span>    </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Bool
+forall a. Integral a =&gt; a -&gt; Bool
+</span><span class="hs-identifier hs-var">even</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035819"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-191"></span><span>    </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; String -&gt; Int -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; String -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035829"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035827"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035820"><span class="hs-identifier hs-var">str</span></a></span><span>     </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-192"></span><span>    </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035820"><span class="hs-identifier hs-var">str</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-193"></span><span>        </span><span class="hs-special">[</span><span class="hs-special">]</span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; ST s Integer
+forall a. a -&gt; ST s a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="Data.Integer.Conversion.html#integer0"><span class="hs-identifier hs-var">integer0</span></a></span><span> </span><span class="hs-comment">-- cannot happen, length is odd! but could, via stringToIntegerWithLen.</span><span>
+</span><span id="line-194"></span><span>        </span><span id="local-6989586621679035830"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035830"><span class="hs-identifier hs-var">a</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621679035831"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035831"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-195"></span><span>            </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer
+-&gt; Int -&gt; Integer -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">writeArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035827"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; ST s ()) -&gt; Integer -&gt; ST s ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#fromChar"><span class="hs-identifier hs-var">fromChar</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035830"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-196"></span><span>            </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; String -&gt; Int -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; String -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035829"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035827"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035831"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-197"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-198"></span><span>    </span><span id="local-6989586621679035828"><span class="annot"><span class="annottext">len' :: Int
+</span><a href="#local-6989586621679035828"><span class="hs-identifier hs-var hs-var">len'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035819"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`div`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-199"></span><span>
+</span><span id="line-200"></span><span>    </span><span id="local-6989586621679035673"><span class="annot"><a href="#local-6989586621679035829"><span class="hs-identifier hs-type">loop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MutableArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679035673"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621679035673"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span></span><span>
+</span><span id="line-201"></span><span>    </span><span id="local-6989586621679035829"><span class="annot"><span class="annottext">loop :: forall s. MutableArray s Integer -&gt; String -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035829"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035844"><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035844"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679035845"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035845"><span class="hs-identifier hs-var">a</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621679035846"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035846"><span class="hs-identifier hs-var">b</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621679035847"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035847"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035848"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035848"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035848"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035828"><span class="hs-identifier hs-var">len'</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-202"></span><span>        </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer
+-&gt; Int -&gt; Integer -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">writeArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035844"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035848"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; ST s ()) -&gt; Integer -&gt; ST s ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#fromChar"><span class="hs-identifier hs-var">fromChar</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035845"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">10</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Integer
+</span><a href="Data.Integer.Conversion.html#fromChar"><span class="hs-identifier hs-var">fromChar</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679035846"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-203"></span><span>        </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; String -&gt; Int -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; String -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035829"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035844"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679035847"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035848"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-204"></span><span>    </span><span class="annot"><a href="#local-6989586621679035829"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span id="local-6989586621679035849"><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035849"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; Int -&gt; Integer -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; Int -&gt; Integer -&gt; ST s Integer
+</span><a href="Data.Integer.Conversion.html#algorithm"><span class="hs-identifier hs-var">algorithm</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035849"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035828"><span class="hs-identifier hs-var">len'</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">100</span></span><span>
+</span><span id="line-205"></span><span>
+</span><span id="line-206"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-207"></span><span class="hs-comment">-- Algorithm</span><span>
+</span><span id="line-208"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-209"></span><span>
+</span><span id="line-210"></span><span class="hs-comment">-- The core of algorithm uses mutable arrays.</span><span>
+</span><span id="line-211"></span><span class="hs-comment">-- An alternative (found in e.g. @base@) uses lists.</span><span>
+</span><span id="line-212"></span><span class="hs-comment">-- For very big integers (thousands of decimal digits) the difference</span><span>
+</span><span id="line-213"></span><span class="hs-comment">-- is small (runtime is dominated by integer multiplication),</span><span>
+</span><span id="line-214"></span><span class="hs-comment">-- but for medium sized integers this is slightly faster, as we avoid cons cell allocation.</span><span>
+</span><span id="line-215"></span><span class="hs-comment">--</span><span>
+</span><span id="line-216"></span><span class="annot"><a href="Data.Integer.Conversion.html#algorithm"><span class="hs-identifier hs-type">algorithm</span></a></span><span>
+</span><span id="line-217"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679035658"><span class="annot"><a href="#local-6989586621679035658"><span class="hs-identifier hs-type">s</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MutableArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679035658"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ working buffer</span></span><span>
+</span><span id="line-218"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>                               </span><span class="annot"><span class="hs-comment">-- ^ buffer size</span></span><span>
+</span><span id="line-219"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>                           </span><span class="annot"><span class="hs-comment">-- ^ base</span></span><span>
+</span><span id="line-220"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621679035658"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-221"></span><span id="algorithm"><span class="annot"><span class="annottext">algorithm :: forall s. MutableArray s Integer -&gt; Int -&gt; Integer -&gt; ST s Integer
+</span><a href="Data.Integer.Conversion.html#algorithm"><span class="hs-identifier hs-var hs-var">algorithm</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035882"><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035882"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035883"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035883"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035884"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035884"><span class="hs-identifier hs-var">base</span></a></span></span><span>
+</span><span id="line-222"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035883"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">40</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035886"><span class="hs-identifier hs-var">finish</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-223"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Bool
+forall a. Integral a =&gt; a -&gt; Bool
+</span><span class="hs-identifier hs-var">even</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035883"><span class="hs-identifier hs-var">len</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035887"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-224"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035887"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-225"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-226"></span><span>    </span><span class="annot"><a href="#local-6989586621679035887"><span class="hs-identifier hs-type">loop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621679035658"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-227"></span><span>    </span><span id="local-6989586621679035887"><span class="annot"><span class="annottext">loop :: Int -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035887"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035888"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035888"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035889"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035889"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035888"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035883"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-228"></span><span>        </span><span class="hs-comment">-- read at i, i +1</span><span>
+</span><span id="line-229"></span><span>        </span><span id="local-6989586621679035890"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035890"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer -&gt; Int -&gt; ST s Integer
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; m a
+</span><span class="hs-identifier hs-var">readArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035882"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035888"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-230"></span><span>        </span><span id="local-6989586621679035891"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035891"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer -&gt; Int -&gt; ST s Integer
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; m a
+</span><span class="hs-identifier hs-var">readArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035882"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035888"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-231"></span><span>
+</span><span id="line-232"></span><span>        </span><span class="hs-comment">-- rewrite with constant to release memory</span><span>
+</span><span id="line-233"></span><span>        </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer
+-&gt; Int -&gt; Integer -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">writeArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035882"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035888"><span class="hs-identifier hs-var">i</span></a></span><span>       </span><span class="annot"><span class="annottext">Integer
+</span><a href="Data.Integer.Conversion.html#integer0"><span class="hs-identifier hs-var">integer0</span></a></span><span>
+</span><span id="line-234"></span><span>        </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer
+-&gt; Int -&gt; Integer -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">writeArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035882"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035888"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="Data.Integer.Conversion.html#integer0"><span class="hs-identifier hs-var">integer0</span></a></span><span>
+</span><span id="line-235"></span><span>
+</span><span id="line-236"></span><span>        </span><span class="hs-comment">-- write at o</span><span>
+</span><span id="line-237"></span><span>        </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer
+-&gt; Int -&gt; Integer -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">writeArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035882"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035889"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; ST s ()) -&gt; Integer -&gt; ST s ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035890"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035884"><span class="hs-identifier hs-var">base</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035891"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-238"></span><span>
+</span><span id="line-239"></span><span>        </span><span class="hs-comment">-- continue</span><span>
+</span><span id="line-240"></span><span>        </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035887"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035888"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035889"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-241"></span><span>
+</span><span id="line-242"></span><span>    </span><span class="annot"><a href="#local-6989586621679035887"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer -&gt; Int -&gt; Integer -&gt; ST s Integer
+forall s. MutableArray s Integer -&gt; Int -&gt; Integer -&gt; ST s Integer
+</span><a href="Data.Integer.Conversion.html#algorithm"><span class="hs-identifier hs-var">algorithm</span></a></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+</span><a href="#local-6989586621679035882"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035892"><span class="hs-identifier hs-var">len'</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035893"><span class="hs-identifier hs-var">base'</span></a></span><span>
+</span><span id="line-243"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-244"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679035893"><span class="annot"><span class="annottext">base' :: Integer
+</span><a href="#local-6989586621679035893"><span class="hs-identifier hs-var hs-var">base'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035884"><span class="hs-identifier hs-var">base</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035884"><span class="hs-identifier hs-var">base</span></a></span><span>
+</span><span id="line-245"></span><span>        </span><span class="hs-glyph">!</span><span id="local-6989586621679035892"><span class="annot"><span class="annottext">len' :: Int
+</span><a href="#local-6989586621679035892"><span class="hs-identifier hs-var hs-var">len'</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035883"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`div`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-246"></span><span>
+</span><span id="line-247"></span><span>    </span><span class="annot"><a href="#local-6989586621679035886"><span class="hs-identifier hs-type">finish</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621679035658"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-248"></span><span>    </span><span id="local-6989586621679035886"><span class="annot"><span class="annottext">finish :: Integer -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035886"><span class="hs-identifier hs-var hs-var">finish</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035899"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035899"><span class="hs-identifier hs-var">acc</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035900"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035900"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035900"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035883"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-249"></span><span>        </span><span id="local-6989586621679035901"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035901"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MutableArray (PrimState (ST s)) Integer -&gt; Int -&gt; ST s Integer
+forall (m :: * -&gt; *) a.
+PrimMonad m =&gt;
+MutableArray (PrimState m) a -&gt; Int -&gt; m a
+</span><span class="hs-identifier hs-var">readArray</span></span><span> </span><span class="annot"><span class="annottext">MutableArray s Integer
+MutableArray (PrimState (ST s)) Integer
+</span><a href="#local-6989586621679035882"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035900"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-250"></span><span>        </span><span class="annot"><span class="annottext">Integer -&gt; Int -&gt; ST s Integer
+</span><a href="#local-6989586621679035886"><span class="hs-identifier hs-var">finish</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035899"><span class="hs-identifier hs-var">acc</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035884"><span class="hs-identifier hs-var">base</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035901"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679035900"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-251"></span><span>    </span><span class="annot"><a href="#local-6989586621679035886"><span class="hs-identifier hs-var">finish</span></a></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679035902"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035902"><span class="hs-identifier hs-var">acc</span></a></span></span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-252"></span><span>        </span><span class="annot"><span class="annottext">Integer -&gt; ST s Integer
+forall a. a -&gt; ST s a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679035902"><span class="hs-identifier hs-var">acc</span></a></span><span>
+</span><span id="line-253"></span><span>
+</span><span id="line-254"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-255"></span><span class="hs-comment">-- List variant</span><span>
+</span><span id="line-256"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-257"></span><span>
+</span><span id="line-258"></span><span class="hs-comment">{-
+
+-- | A sub-quadratic algorithm implementation using lists.
+--
+-- Sometimes this is faster, but I fail to quantify when exactly.
+--
+algorithmL
+    :: Integer    -- ^ base
+    -&gt; Int        -- ^ length of digits
+    -&gt; [Integer]  -- ^ digits
+    -&gt; Integer
+algorithmL = go
+  where
+    go :: Integer -&gt; Int -&gt; [Integer] -&gt; Integer
+    go _ _ []  = 0
+    go _ _ [d] = d
+    go b l ds
+        | l &gt; 40 = b' `seq` go b' l' (combine b ds')
+        | otherwise = finishAlgorithmL b ds
+      where
+        -- ensure that we have an even number of digits
+        -- before we call combine:
+        ds' = if even l then ds else 0 : ds
+        b' = b * b
+        l' = (l + 1) `quot` 2
+
+    combine b (d1 : d2 : ds) = d `seq` (d : combine b ds)
+      where
+        d = d1 * b + d2
+    combine _ []  = []
+    combine _ [_] = errorWithoutStackTrace &quot;this should not happen&quot;
+
+-- | The following algorithm is only linear for types whose Num operations
+-- are in constant time.
+--
+-- We export this (mostly) for testing purposes.
+--
+finishAlgorithmL :: Integer -&gt; [Integer] -&gt; Integer
+finishAlgorithmL base = go 0
+  where
+    go r [] = r
+    go r (d : ds) = r' `seq` go r' ds
+      where
+        r' = r * base + fromIntegral d
+-}</span><span>
+</span><span id="line-303"></span><span>
+</span><span id="line-304"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-305"></span><span class="hs-comment">-- Misc</span><span>
+</span><span id="line-306"></span><span class="hs-comment">-------------------------------------------------------------------------------</span><span>
+</span><span id="line-307"></span><span>
+</span><span id="line-308"></span><span class="annot"><a href="Data.Integer.Conversion.html#integer0"><span class="hs-identifier hs-type">integer0</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span>
+</span><span id="line-309"></span><span id="integer0"><span class="annot"><span class="annottext">integer0 :: Integer
+</span><a href="Data.Integer.Conversion.html#integer0"><span class="hs-identifier hs-var hs-var">integer0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-310"></span></pre></body></html>

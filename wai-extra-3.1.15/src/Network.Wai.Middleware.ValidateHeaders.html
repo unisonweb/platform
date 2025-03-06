@@ -1,0 +1,399 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | This module provides a middleware to validate response headers.</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-5) constrains the allowed octets in header names and values:</span><span>
+</span><span id="line-3"></span><span class="hs-comment">--</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- * Header names are [tokens](https://www.rfc-editor.org/rfc/rfc9110#section-5.6.2), i.e. visible ASCII characters (octets 33 to 126 inclusive) except delimiters.</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- * Header values should be limited to visible ASCII characters, the whitespace characters space and horizontal tab and octets 128 to 255. Headers values may not have trailing whitespace (see [RFC 9110 Section 5.5](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.5)). Folding is not allowed.</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- 'validateHeadersMiddleware' enforces these constraints for response headers by responding with a 500 Internal Server Error when an offending character is present. This is meant to catch programmer errors early on and reduce attack surface.</span><span>
+</span><span id="line-8"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.Wai.Middleware.ValidateHeaders</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Middleware</span></span><span>
+</span><span id="line-10"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#validateHeadersMiddleware"><span class="hs-identifier">validateHeadersMiddleware</span></a></span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Settings</span></span><span>
+</span><span id="line-12"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#ValidateHeadersSettings"><span class="hs-identifier">ValidateHeadersSettings</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#defaultValidateHeadersSettings"><span class="hs-identifier">defaultValidateHeadersSettings</span></a></span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Types</span></span><span>
+</span><span id="line-15"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeader"><span class="hs-identifier">InvalidHeader</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeaderReason"><span class="hs-identifier">InvalidHeaderReason</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.CaseInsensitive</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">original</span></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Char</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">chr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.HTTP.Types</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Header</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ResponseHeaders</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">internalServerError500</span></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Wai</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Middleware</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Response</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">responseHeaders</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">responseLBS</span></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Text.Printf</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">printf</span></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BS</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Char8</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BS8</span></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Lazy</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BSL</span></span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- | Middleware to validate response headers.</span><span>
+</span><span id="line-31"></span><span class="hs-comment">--</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- @since 3.1.15</span><span>
+</span><span id="line-33"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#validateHeadersMiddleware"><span class="hs-identifier hs-type">validateHeadersMiddleware</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#ValidateHeadersSettings"><span class="hs-identifier hs-type">ValidateHeadersSettings</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Middleware</span></span><span>
+</span><span id="line-34"></span><span id="validateHeadersMiddleware"><span class="annot"><span class="annottext">validateHeadersMiddleware :: ValidateHeadersSettings -&gt; Middleware
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#validateHeadersMiddleware"><span class="hs-identifier hs-var hs-var">validateHeadersMiddleware</span></a></span></span><span> </span><span id="local-6989586621679127665"><span class="annot"><span class="annottext">ValidateHeadersSettings
+</span><a href="#local-6989586621679127665"><span class="hs-identifier hs-var">settings</span></a></span></span><span> </span><span id="local-6989586621679127666"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679127666"><span class="hs-identifier hs-var">app</span></a></span></span><span> </span><span id="local-6989586621679127667"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679127667"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span id="local-6989586621679127668"><span class="annot"><span class="annottext">Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679127668"><span class="hs-identifier hs-var">respond</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-35"></span><span>    </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679127666"><span class="hs-identifier hs-var">app</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679127667"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679127669"><span class="hs-identifier hs-var">respond'</span></a></span><span>
+</span><span id="line-36"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-37"></span><span>        </span><span id="local-6989586621679127669"><span class="annot"><span class="annottext">respond' :: Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679127669"><span class="hs-identifier hs-var hs-var">respond'</span></a></span></span><span> </span><span id="local-6989586621679127670"><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679127670"><span class="hs-identifier hs-var">response</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders -&gt; Maybe InvalidHeader
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#getInvalidHeader"><span class="hs-identifier hs-var">getInvalidHeader</span></a></span><span> </span><span class="annot"><span class="annottext">(ResponseHeaders -&gt; Maybe InvalidHeader)
+-&gt; ResponseHeaders -&gt; Maybe InvalidHeader
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Response -&gt; ResponseHeaders
+</span><span class="hs-identifier hs-var">responseHeaders</span></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679127670"><span class="hs-identifier hs-var">response</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-38"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679127672"><span class="annot"><span class="annottext">InvalidHeader
+</span><a href="#local-6989586621679127672"><span class="hs-identifier hs-var">invalidHeader</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ValidateHeadersSettings -&gt; InvalidHeader -&gt; Middleware
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#onInvalidHeader"><span class="hs-identifier hs-var">onInvalidHeader</span></a></span><span> </span><span class="annot"><span class="annottext">ValidateHeadersSettings
+</span><a href="#local-6989586621679127665"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="annot"><span class="annottext">InvalidHeader
+</span><a href="#local-6989586621679127672"><span class="hs-identifier hs-var">invalidHeader</span></a></span><span> </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679127666"><span class="hs-identifier hs-var">app</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679127667"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679127668"><span class="hs-identifier hs-var">respond</span></a></span><span>
+</span><span id="line-39"></span><span>            </span><span class="annot"><span class="annottext">Maybe InvalidHeader
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679127668"><span class="hs-identifier hs-var">respond</span></a></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679127670"><span class="hs-identifier hs-var">response</span></a></span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- | Configuration for 'validateHeadersMiddleware'.</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- </span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- @since 3.1.15</span><span>
+</span><span id="line-44"></span><span class="hs-keyword">data</span><span> </span><span id="ValidateHeadersSettings"><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#ValidateHeadersSettings"><span class="hs-identifier hs-var">ValidateHeadersSettings</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="ValidateHeadersSettings"><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#ValidateHeadersSettings"><span class="hs-identifier hs-var">ValidateHeadersSettings</span></a></span></span><span>
+</span><span id="line-45"></span><span>  </span><span class="annot"><span class="hs-comment">-- | Called when an invalid header is present.</span></span><span>
+</span><span id="line-46"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="onInvalidHeader"><span class="annot"><span class="annottext">ValidateHeadersSettings -&gt; InvalidHeader -&gt; Middleware
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#onInvalidHeader"><span class="hs-identifier hs-var hs-var">onInvalidHeader</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeader"><span class="hs-identifier hs-type">InvalidHeader</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Middleware</span></span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- | Default configuration for 'validateHeadersMiddleware'.</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- Checks that each header meets the requirements listed at the top of this module: Allowed octets for name and value and no trailing whitespace in the value.</span><span>
+</span><span id="line-51"></span><span class="hs-comment">--</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- @since 3.1.15</span><span>
+</span><span id="line-53"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#defaultValidateHeadersSettings"><span class="hs-identifier hs-type">defaultValidateHeadersSettings</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#ValidateHeadersSettings"><span class="hs-identifier hs-type">ValidateHeadersSettings</span></a></span><span>
+</span><span id="line-54"></span><span id="defaultValidateHeadersSettings"><span class="annot"><span class="annottext">defaultValidateHeadersSettings :: ValidateHeadersSettings
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#defaultValidateHeadersSettings"><span class="hs-identifier hs-var hs-var">defaultValidateHeadersSettings</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#ValidateHeadersSettings"><span class="hs-identifier hs-type">ValidateHeadersSettings</span></a></span><span>
+</span><span id="line-55"></span><span>  </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">onInvalidHeader :: InvalidHeader -&gt; Middleware
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#onInvalidHeader"><span class="hs-identifier hs-var">onInvalidHeader</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679127675"><span class="annot"><span class="annottext">InvalidHeader
+</span><a href="#local-6989586621679127675"><span class="hs-identifier hs-var">invalidHeader</span></a></span></span><span> </span><span id="local-6989586621679127676"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679127676"><span class="hs-identifier hs-var">_app</span></a></span></span><span> </span><span id="local-6989586621679127677"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679127677"><span class="hs-identifier hs-var">_req</span></a></span></span><span> </span><span id="local-6989586621679127678"><span class="annot"><span class="annottext">Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679127678"><span class="hs-identifier hs-var">respond</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679127678"><span class="hs-identifier hs-var">respond</span></a></span><span> </span><span class="annot"><span class="annottext">(Response -&gt; IO ResponseReceived)
+-&gt; Response -&gt; IO ResponseReceived
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">InvalidHeader -&gt; Response
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#invalidHeaderResponse"><span class="hs-identifier hs-var">invalidHeaderResponse</span></a></span><span> </span><span class="annot"><span class="annottext">InvalidHeader
+</span><a href="#local-6989586621679127675"><span class="hs-identifier hs-var">invalidHeader</span></a></span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- | Description of an invalid header.</span><span>
+</span><span id="line-59"></span><span class="hs-comment">--</span><span>
+</span><span id="line-60"></span><span class="hs-comment">-- @since 3.1.15</span><span>
+</span><span id="line-61"></span><span class="hs-keyword">data</span><span> </span><span id="InvalidHeader"><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeader"><span class="hs-identifier hs-var">InvalidHeader</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="InvalidHeader"><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeader"><span class="hs-identifier hs-var">InvalidHeader</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Header</span></span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeaderReason"><span class="hs-identifier hs-type">InvalidHeaderReason</span></a></span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- | Reasons a header might be invalid.</span><span>
+</span><span id="line-64"></span><span class="hs-comment">--</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- @since 3.1.15</span><span>
+</span><span id="line-66"></span><span class="hs-keyword">data</span><span> </span><span id="InvalidHeaderReason"><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeaderReason"><span class="hs-identifier hs-var">InvalidHeaderReason</span></a></span></span><span>
+</span><span id="line-67"></span><span>  </span><span class="annot"><span class="hs-comment">-- | Header name contains an invalid octet.</span></span><span>
+</span><span id="line-68"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="InvalidOctetInHeaderName"><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidOctetInHeaderName"><span class="hs-identifier hs-var">InvalidOctetInHeaderName</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><span class="hs-comment">-- | Header value contains an invalid octet.</span></span><span>
+</span><span id="line-70"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="InvalidOctetInHeaderValue"><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidOctetInHeaderValue"><span class="hs-identifier hs-var">InvalidOctetInHeaderValue</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>
+</span><span id="line-71"></span><span>  </span><span class="annot"><span class="hs-comment">-- | Header value contains trailing whitespace.</span></span><span>
+</span><span id="line-72"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="TrailingWhitespaceInHeaderValue"><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#TrailingWhitespaceInHeaderValue"><span class="hs-identifier hs-var">TrailingWhitespaceInHeaderValue</span></a></span></span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- Internal stuff.</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- 'getInvalidHeader' returns an appropriate 'InvalidHeader' for a given header if applicable.</span><span>
+</span><span id="line-76"></span><span class="hs-comment">-- 'invalidHeaderResponse' creates a 'Response' for a given 'InvalidHeader'.</span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#getInvalidHeader"><span class="hs-identifier hs-type">getInvalidHeader</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ResponseHeaders</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeader"><span class="hs-identifier hs-type">InvalidHeader</span></a></span><span>
+</span><span id="line-79"></span><span id="getInvalidHeader"><span class="annot"><span class="annottext">getInvalidHeader :: ResponseHeaders -&gt; Maybe InvalidHeader
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#getInvalidHeader"><span class="hs-identifier hs-var hs-var">getInvalidHeader</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Maybe InvalidHeader] -&gt; Maybe InvalidHeader
+forall a. [Maybe a] -&gt; Maybe a
+</span><a href="#local-6989586621679127684"><span class="hs-identifier hs-var">firstJust</span></a></span><span> </span><span class="annot"><span class="annottext">([Maybe InvalidHeader] -&gt; Maybe InvalidHeader)
+-&gt; (ResponseHeaders -&gt; [Maybe InvalidHeader])
+-&gt; ResponseHeaders
+-&gt; Maybe InvalidHeader
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Header -&gt; Maybe InvalidHeader)
+-&gt; ResponseHeaders -&gt; [Maybe InvalidHeader]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Header -&gt; Maybe InvalidHeader
+</span><a href="#local-6989586621679127686"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-80"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-81"></span><span>        </span><span id="local-6989586621679127580"><span class="annot"><a href="#local-6989586621679127684"><span class="hs-identifier hs-type">firstJust</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="#local-6989586621679127580"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="#local-6989586621679127580"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-82"></span><span>        </span><span id="local-6989586621679127684"><span class="annot"><span class="annottext">firstJust :: forall a. [Maybe a] -&gt; Maybe a
+</span><a href="#local-6989586621679127684"><span class="hs-identifier hs-var hs-var">firstJust</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-83"></span><span>        </span><span class="annot"><a href="#local-6989586621679127684"><span class="hs-identifier hs-var">firstJust</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679127687"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679127687"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[Maybe a]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679127687"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-84"></span><span>        </span><span class="annot"><a href="#local-6989586621679127684"><span class="hs-identifier hs-var">firstJust</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621679127688"><span class="annot"><span class="annottext">[Maybe a]
+</span><a href="#local-6989586621679127688"><span class="hs-identifier hs-var">xs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Maybe a] -&gt; Maybe a
+forall a. [Maybe a] -&gt; Maybe a
+</span><a href="#local-6989586621679127684"><span class="hs-identifier hs-var">firstJust</span></a></span><span> </span><span class="annot"><span class="annottext">[Maybe a]
+</span><a href="#local-6989586621679127688"><span class="hs-identifier hs-var">xs</span></a></span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span>        </span><span class="annot"><a href="#local-6989586621679127686"><span class="hs-identifier hs-type">go</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Header</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeader"><span class="hs-identifier hs-type">InvalidHeader</span></a></span><span>
+</span><span id="line-87"></span><span>        </span><span id="local-6989586621679127686"><span class="annot"><span class="annottext">go :: Header -&gt; Maybe InvalidHeader
+</span><a href="#local-6989586621679127686"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679127689"><span class="annot"><span class="annottext">header :: Header
+</span><a href="#local-6989586621679127689"><span class="hs-identifier hs-var">header</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span id="local-6989586621679127690"><span class="annot"><span class="annottext">HeaderName
+</span><a href="#local-6989586621679127690"><span class="hs-identifier hs-var">name</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679127691"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679127691"><span class="hs-identifier hs-var">value</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Header -&gt; InvalidHeaderReason -&gt; InvalidHeader
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeader"><span class="hs-identifier hs-var">InvalidHeader</span></a></span><span> </span><span class="annot"><span class="annottext">Header
+</span><a href="#local-6989586621679127689"><span class="hs-identifier hs-var">header</span></a></span><span> </span><span class="annot"><span class="annottext">(InvalidHeaderReason -&gt; InvalidHeader)
+-&gt; Maybe InvalidHeaderReason -&gt; Maybe InvalidHeader
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">[Maybe InvalidHeaderReason] -&gt; Maybe InvalidHeaderReason
+forall a. [Maybe a] -&gt; Maybe a
+</span><a href="#local-6989586621679127684"><span class="hs-identifier hs-var">firstJust</span></a></span><span>
+</span><span id="line-88"></span><span>          </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; InvalidHeaderReason
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidOctetInHeaderName"><span class="hs-identifier hs-var">InvalidOctetInHeaderName</span></a></span><span> </span><span class="annot"><span class="annottext">(Word8 -&gt; InvalidHeaderReason)
+-&gt; Maybe Word8 -&gt; Maybe InvalidHeaderReason
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Word8 -&gt; Bool) -&gt; ByteString -&gt; Maybe Word8
+</span><span class="hs-identifier hs-var">BS.find</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Bool) -&gt; (Word8 -&gt; Bool) -&gt; Word8 -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isValidHeaderNameOctet"><span class="hs-identifier hs-var">isValidHeaderNameOctet</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HeaderName -&gt; ByteString
+forall s. CI s -&gt; s
+</span><span class="hs-identifier hs-var">original</span></span><span> </span><span class="annot"><span class="annottext">HeaderName
+</span><a href="#local-6989586621679127690"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span>          </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; InvalidHeaderReason
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidOctetInHeaderValue"><span class="hs-identifier hs-var">InvalidOctetInHeaderValue</span></a></span><span> </span><span class="annot"><span class="annottext">(Word8 -&gt; InvalidHeaderReason)
+-&gt; Maybe Word8 -&gt; Maybe InvalidHeaderReason
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Word8 -&gt; Bool) -&gt; ByteString -&gt; Maybe Word8
+</span><span class="hs-identifier hs-var">BS.find</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Bool) -&gt; (Word8 -&gt; Bool) -&gt; Word8 -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isValidHeaderValueOctet"><span class="hs-identifier hs-var">isValidHeaderValueOctet</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679127691"><span class="hs-identifier hs-var">value</span></a></span><span>
+</span><span id="line-90"></span><span>          </span><span class="hs-special">,</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#hasTrailingWhitespace"><span class="hs-identifier hs-var">hasTrailingWhitespace</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679127691"><span class="hs-identifier hs-var">value</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">InvalidHeaderReason -&gt; Maybe InvalidHeaderReason
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">InvalidHeaderReason
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#TrailingWhitespaceInHeaderValue"><span class="hs-identifier hs-var">TrailingWhitespaceInHeaderValue</span></a></span><span> </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">Maybe InvalidHeaderReason
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-91"></span><span>          </span><span class="hs-special">]</span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#isValidHeaderNameOctet"><span class="hs-identifier hs-type">isValidHeaderNameOctet</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-94"></span><span id="isValidHeaderNameOctet"><span class="annot"><span class="annottext">isValidHeaderNameOctet :: Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isValidHeaderNameOctet"><span class="hs-identifier hs-var hs-var">isValidHeaderNameOctet</span></a></span></span><span> </span><span id="local-6989586621679127698"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127698"><span class="hs-identifier hs-var">octet</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-95"></span><span>    </span><span class="annot"><span class="annottext">Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isVisibleASCII"><span class="hs-identifier hs-var">isVisibleASCII</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127698"><span class="hs-identifier hs-var">octet</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isDelimiter"><span class="hs-identifier hs-var">isDelimiter</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127698"><span class="hs-identifier hs-var">octet</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-96"></span><span>
+</span><span id="line-97"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#isValidHeaderValueOctet"><span class="hs-identifier hs-type">isValidHeaderValueOctet</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-98"></span><span id="isValidHeaderValueOctet"><span class="annot"><span class="annottext">isValidHeaderValueOctet :: Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isValidHeaderValueOctet"><span class="hs-identifier hs-var hs-var">isValidHeaderValueOctet</span></a></span></span><span> </span><span id="local-6989586621679127702"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127702"><span class="hs-identifier hs-var">octet</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-99"></span><span>    </span><span class="annot"><span class="annottext">Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isVisibleASCII"><span class="hs-identifier hs-var">isVisibleASCII</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127702"><span class="hs-identifier hs-var">octet</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isWhitespace"><span class="hs-identifier hs-var">isWhitespace</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127702"><span class="hs-identifier hs-var">octet</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isObsText"><span class="hs-identifier hs-var">isObsText</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127702"><span class="hs-identifier hs-var">octet</span></a></span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#isVisibleASCII"><span class="hs-identifier hs-type">isVisibleASCII</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-102"></span><span id="isVisibleASCII"><span class="annot"><span class="annottext">isVisibleASCII :: Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isVisibleASCII"><span class="hs-identifier hs-var hs-var">isVisibleASCII</span></a></span></span><span> </span><span id="local-6989586621679127706"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127706"><span class="hs-identifier hs-var">octet</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127706"><span class="hs-identifier hs-var">octet</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">33</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127706"><span class="hs-identifier hs-var">octet</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">126</span></span><span>
+</span><span id="line-103"></span><span>
+</span><span id="line-104"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#isDelimiter"><span class="hs-identifier hs-type">isDelimiter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-105"></span><span id="isDelimiter"><span class="annot"><span class="annottext">isDelimiter :: Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isDelimiter"><span class="hs-identifier hs-var hs-var">isDelimiter</span></a></span></span><span> </span><span id="local-6989586621679127708"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127708"><span class="hs-identifier hs-var">octet</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Char
+</span><span class="hs-identifier hs-var">chr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127708"><span class="hs-identifier hs-var">octet</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Char -&gt; [Char] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; [a] -&gt; Bool
+forall (t :: * -&gt; *) a. (Foldable t, Eq a) =&gt; a -&gt; t a -&gt; Bool
+</span><span class="hs-operator hs-var">`elem`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;\&quot;(),/:;&lt;=&gt;?@[\\]{}&quot;</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">)</span><span>
+</span><span id="line-106"></span><span>
+</span><span id="line-107"></span><span class="hs-comment">-- Whitespace characters are only horizontal tab and space here.</span><span>
+</span><span id="line-108"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#isWhitespace"><span class="hs-identifier hs-type">isWhitespace</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-109"></span><span id="isWhitespace"><span class="annot"><span class="annottext">isWhitespace :: Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isWhitespace"><span class="hs-identifier hs-var hs-var">isWhitespace</span></a></span></span><span> </span><span id="local-6989586621679127710"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127710"><span class="hs-identifier hs-var">octet</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127710"><span class="hs-identifier hs-var">octet</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0x9</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127710"><span class="hs-identifier hs-var">octet</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0x20</span></span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#isObsText"><span class="hs-identifier hs-type">isObsText</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-112"></span><span id="isObsText"><span class="annot"><span class="annottext">isObsText :: Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isObsText"><span class="hs-identifier hs-var hs-var">isObsText</span></a></span></span><span> </span><span id="local-6989586621679127711"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127711"><span class="hs-identifier hs-var">octet</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127711"><span class="hs-identifier hs-var">octet</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0x80</span></span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#hasTrailingWhitespace"><span class="hs-identifier hs-type">hasTrailingWhitespace</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BS.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-115"></span><span id="hasTrailingWhitespace"><span class="annot"><span class="annottext">hasTrailingWhitespace :: ByteString -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#hasTrailingWhitespace"><span class="hs-identifier hs-var hs-var">hasTrailingWhitespace</span></a></span></span><span> </span><span id="local-6989586621679127712"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679127712"><span class="hs-identifier hs-var">bs</span></a></span></span><span>
+</span><span id="line-116"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">BS.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679127712"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-117"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isWhitespace"><span class="hs-identifier hs-var">isWhitespace</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HasCallStack =&gt; ByteString -&gt; Int -&gt; Word8
+ByteString -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">BS.index</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679127712"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isWhitespace"><span class="hs-identifier hs-var">isWhitespace</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HasCallStack =&gt; ByteString -&gt; Int -&gt; Word8
+ByteString -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">BS.index</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679127712"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Word8) -&gt; Int -&gt; Word8
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">BS.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679127712"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#invalidHeaderResponse"><span class="hs-identifier hs-type">invalidHeaderResponse</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeader"><span class="hs-identifier hs-type">InvalidHeader</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Response</span></span><span>
+</span><span id="line-120"></span><span id="invalidHeaderResponse"><span class="annot"><span class="annottext">invalidHeaderResponse :: InvalidHeader -&gt; Response
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#invalidHeaderResponse"><span class="hs-identifier hs-var hs-var">invalidHeaderResponse</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidHeader"><span class="hs-identifier hs-type">InvalidHeader</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679127715"><span class="annot"><span class="annottext">HeaderName
+</span><a href="#local-6989586621679127715"><span class="hs-identifier hs-var">headerName</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679127716"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679127716"><span class="hs-identifier hs-var">headerValue</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679127717"><span class="annot"><span class="annottext">InvalidHeaderReason
+</span><a href="#local-6989586621679127717"><span class="hs-identifier hs-var">reason</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-121"></span><span>    </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; ByteString -&gt; Response
+</span><span class="hs-identifier hs-var">responseLBS</span></span><span> </span><span class="annot"><span class="annottext">Status
+</span><span class="hs-identifier hs-var">internalServerError500</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">HeaderName
+</span><span class="hs-string">&quot;Content-Type&quot;</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;text/plain&quot;</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Response) -&gt; ByteString -&gt; Response
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; ByteString
+</span><span class="hs-identifier hs-var">BSL.concat</span></span><span>
+</span><span id="line-122"></span><span>        </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;Invalid response header found:\n&quot;</span></span><span>
+</span><span id="line-123"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;In header '&quot;</span></span><span>
+</span><span id="line-124"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">BSL.fromStrict</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">HeaderName -&gt; ByteString
+forall s. CI s -&gt; s
+</span><span class="hs-identifier hs-var">original</span></span><span> </span><span class="annot"><span class="annottext">HeaderName
+</span><a href="#local-6989586621679127715"><span class="hs-identifier hs-var">headerName</span></a></span><span>
+</span><span id="line-125"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;' with value '&quot;</span></span><span>
+</span><span id="line-126"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">BSL.fromStrict</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679127716"><span class="hs-identifier hs-var">headerValue</span></a></span><span>
+</span><span id="line-127"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;': &quot;</span></span><span>
+</span><span id="line-128"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">InvalidHeaderReason -&gt; ByteString
+</span><a href="#local-6989586621679127720"><span class="hs-identifier hs-var">showReason</span></a></span><span> </span><span class="annot"><span class="annottext">InvalidHeaderReason
+</span><a href="#local-6989586621679127717"><span class="hs-identifier hs-var">reason</span></a></span><span>
+</span><span id="line-129"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;\nYou are seeing this error message because validateHeadersMiddleware is enabled.&quot;</span></span><span>
+</span><span id="line-130"></span><span>        </span><span class="hs-special">]</span><span>
+</span><span id="line-131"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-132"></span><span>        </span><span id="local-6989586621679127720"><span class="annot"><span class="annottext">showReason :: InvalidHeaderReason -&gt; ByteString
+</span><a href="#local-6989586621679127720"><span class="hs-identifier hs-var hs-var">showReason</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidOctetInHeaderName"><span class="hs-identifier hs-type">InvalidOctetInHeaderName</span></a></span><span> </span><span id="local-6989586621679127727"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127727"><span class="hs-identifier hs-var">octet</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;Name contains invalid octet &quot;</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; ByteString
+</span><a href="#local-6989586621679127728"><span class="hs-identifier hs-var">showOctet</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127727"><span class="hs-identifier hs-var">octet</span></a></span><span>
+</span><span id="line-133"></span><span>        </span><span class="annot"><a href="#local-6989586621679127720"><span class="hs-identifier hs-var">showReason</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Middleware.ValidateHeaders.html#InvalidOctetInHeaderValue"><span class="hs-identifier hs-type">InvalidOctetInHeaderValue</span></a></span><span> </span><span id="local-6989586621679127729"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127729"><span class="hs-identifier hs-var">octet</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;Value contains invalid octet &quot;</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; ByteString
+</span><a href="#local-6989586621679127728"><span class="hs-identifier hs-var">showOctet</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127729"><span class="hs-identifier hs-var">octet</span></a></span><span>
+</span><span id="line-134"></span><span>        </span><span class="annot"><a href="#local-6989586621679127720"><span class="hs-identifier hs-var">showReason</span></a></span><span> </span><span class="annot"><span class="annottext">InvalidHeaderReason
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#TrailingWhitespaceInHeaderValue"><span class="hs-identifier hs-var">TrailingWhitespaceInHeaderValue</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;Value contains trailing whitespace.&quot;</span></span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span>        </span><span id="local-6989586621679127728"><span class="annot"><span class="annottext">showOctet :: Word8 -&gt; ByteString
+</span><a href="#local-6989586621679127728"><span class="hs-identifier hs-var hs-var">showOctet</span></a></span></span><span> </span><span id="local-6989586621679127744"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127744"><span class="hs-identifier hs-var">octet</span></a></span></span><span>
+</span><span id="line-137"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Bool
+</span><a href="Network.Wai.Middleware.ValidateHeaders.html#isVisibleASCII"><span class="hs-identifier hs-var">isVisibleASCII</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127744"><span class="hs-identifier hs-var">octet</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">BSL.fromStrict</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ByteString
+</span><span class="hs-identifier hs-var">BS8.pack</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; ByteString) -&gt; [Char] -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Char -&gt; Word8 -&gt; [Char]
+forall r. PrintfType r =&gt; [Char] -&gt; r
+</span><span class="hs-identifier hs-var">printf</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;'%c' (0x%02X)&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Char
+</span><span class="hs-identifier hs-var">chr</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Char) -&gt; Int -&gt; Char
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127744"><span class="hs-identifier hs-var">octet</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127744"><span class="hs-identifier hs-var">octet</span></a></span><span>
+</span><span id="line-138"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">BSL.fromStrict</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; ByteString
+</span><span class="hs-identifier hs-var">BS8.pack</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; ByteString) -&gt; [Char] -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Word8 -&gt; [Char]
+forall r. PrintfType r =&gt; [Char] -&gt; r
+</span><span class="hs-identifier hs-var">printf</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;0x%02X&quot;</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679127744"><span class="hs-identifier hs-var">octet</span></a></span><span>
+</span><span id="line-139"></span></pre></body></html>

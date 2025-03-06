@@ -1,0 +1,225 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE DeriveDataTypeable #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | Middleware for establishing the root of the application.</span><span>
+</span><span id="line-4"></span><span class="hs-comment">--</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Many application need the ability to create URLs referring back to the</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- application itself. For example: generate RSS feeds or sitemaps, giving</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- users copy-paste links, or sending emails. In many cases, the approot can be</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- determined correctly from the request headers. However, some things can</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- prevent this, especially reverse proxies. This module provides multiple ways</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- of configuring approot discovery, and functions for applications to get that</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- approot.</span><span>
+</span><span id="line-12"></span><span class="hs-comment">--</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- Approots are structured such that they can be prepended to a string such as</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- @/foo/bar?baz=bin@. For example, if your application is hosted on</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- example.com using HTTPS, the approot would be @https://example.com@. Note</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- the lack of a trailing slash.</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.Wai.Middleware.Approot</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Middleware</span></span><span>
+</span><span id="line-19"></span><span>    </span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#approotMiddleware"><span class="hs-identifier">approotMiddleware</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Common providers</span></span><span>
+</span><span id="line-22"></span><span>    </span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#envFallback"><span class="hs-identifier">envFallback</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-23"></span><span>    </span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#envFallbackNamed"><span class="hs-identifier">envFallbackNamed</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-24"></span><span>    </span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#hardcoded"><span class="hs-identifier">hardcoded</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>    </span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#fromRequest"><span class="hs-identifier">fromRequest</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Functions for applications</span></span><span>
+</span><span id="line-28"></span><span>    </span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#getApproot"><span class="hs-identifier">getApproot</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-29"></span><span>    </span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#getApprootMay"><span class="hs-identifier">getApprootMay</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-30"></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Exception</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">throw</span></span><span class="hs-special">)</span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Char8</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S8</span></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">fromMaybe</span></span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Typeable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Typeable</span></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Vault.Lazy</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">V</span></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Wai</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Middleware</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Request</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">vault</span></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Environment</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">getEnvironment</span></span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.IO.Unsafe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unsafePerformIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Request.html"><span class="hs-identifier">Network.Wai.Request</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Request.html#guessApproot"><span class="hs-identifier">guessApproot</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#approotKey"><span class="hs-identifier hs-type">approotKey</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">V.Key</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-45"></span><span id="approotKey"><span class="annot"><span class="annottext">approotKey :: Key ByteString
+</span><a href="Network.Wai.Middleware.Approot.html#approotKey"><span class="hs-identifier hs-var hs-var">approotKey</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (Key ByteString) -&gt; Key ByteString
+forall a. IO a -&gt; a
+</span><span class="hs-identifier hs-var">unsafePerformIO</span></span><span> </span><span class="annot"><span class="annottext">IO (Key ByteString)
+forall a. IO (Key a)
+</span><span class="hs-identifier hs-var">V.newKey</span></span><span>
+</span><span id="line-46"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#approotKey"><span class="hs-pragma hs-type">approotKey</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- | The most generic version of the middleware, allowing you to provide a</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- function to get the approot for each request. For many use cases, one of the</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- helper functions provided by this module will give the necessary</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- functionality more conveniently.</span><span>
+</span><span id="line-52"></span><span class="hs-comment">--</span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- Since 3.0.7</span><span>
+</span><span id="line-54"></span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#approotMiddleware"><span class="hs-identifier hs-type">approotMiddleware</span></a></span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ get the approot</span></span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Middleware</span></span><span>
+</span><span id="line-58"></span><span id="approotMiddleware"><span class="annot"><span class="annottext">approotMiddleware :: (Request -&gt; IO ByteString) -&gt; Middleware
+</span><a href="Network.Wai.Middleware.Approot.html#approotMiddleware"><span class="hs-identifier hs-var hs-var">approotMiddleware</span></a></span></span><span> </span><span id="local-6989586621679129333"><span class="annot"><span class="annottext">Request -&gt; IO ByteString
+</span><a href="#local-6989586621679129333"><span class="hs-identifier hs-var">getRoot</span></a></span></span><span> </span><span id="local-6989586621679129334"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679129334"><span class="hs-identifier hs-var">app</span></a></span></span><span> </span><span id="local-6989586621679129335"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129335"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span id="local-6989586621679129336"><span class="annot"><span class="annottext">Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679129336"><span class="hs-identifier hs-var">respond</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-59"></span><span>    </span><span id="local-6989586621679129337"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679129337"><span class="hs-identifier hs-var">ar</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Request -&gt; IO ByteString
+</span><a href="#local-6989586621679129333"><span class="hs-identifier hs-var">getRoot</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129335"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-60"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679129338"><span class="annot"><span class="annottext">req' :: Request
+</span><a href="#local-6989586621679129338"><span class="hs-identifier hs-var hs-var">req'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129335"><span class="hs-identifier hs-var">req</span></a></span><span class="hs-special">{</span><span class="annot"><span class="hs-identifier hs-var">vault</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">V.insert</span></span><span> </span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#approotKey"><span class="hs-identifier hs-type">approotKey</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679129337"><span class="hs-identifier hs-type">ar</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">$</span></span><span> </span><span class="annot"><span class="hs-identifier hs-var">vault</span></span><span> </span><span class="annot"><a href="#local-6989586621679129335"><span class="hs-identifier hs-type">req</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-61"></span><span>    </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679129334"><span class="hs-identifier hs-var">app</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129338"><span class="hs-identifier hs-var">req'</span></a></span><span> </span><span class="annot"><span class="annottext">Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679129336"><span class="hs-identifier hs-var">respond</span></a></span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- | Same as @'envFallbackNamed' &quot;APPROOT&quot;@.</span><span>
+</span><span id="line-64"></span><span class="hs-comment">--</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- The environment variable @APPROOT@ is used by Keter, School of Haskell, and yesod-devel.</span><span>
+</span><span id="line-66"></span><span class="hs-comment">--</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- Since 3.0.7</span><span>
+</span><span id="line-68"></span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#envFallback"><span class="hs-identifier hs-type">envFallback</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Middleware</span></span><span>
+</span><span id="line-69"></span><span id="envFallback"><span class="annot"><span class="annottext">envFallback :: IO Middleware
+</span><a href="Network.Wai.Middleware.Approot.html#envFallback"><span class="hs-identifier hs-var hs-var">envFallback</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO Middleware
+</span><a href="Network.Wai.Middleware.Approot.html#envFallbackNamed"><span class="hs-identifier hs-var">envFallbackNamed</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;APPROOT&quot;</span></span><span>
+</span><span id="line-70"></span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- | Produce a middleware that takes the approot from the given environment</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- variable, falling back to the behavior of 'fromRequest' if the variable is</span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- not set.</span><span>
+</span><span id="line-74"></span><span class="hs-comment">--</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- Since 3.0.7</span><span>
+</span><span id="line-76"></span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#envFallbackNamed"><span class="hs-identifier hs-type">envFallbackNamed</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Middleware</span></span><span>
+</span><span id="line-77"></span><span id="envFallbackNamed"><span class="annot"><span class="annottext">envFallbackNamed :: String -&gt; IO Middleware
+</span><a href="Network.Wai.Middleware.Approot.html#envFallbackNamed"><span class="hs-identifier hs-var hs-var">envFallbackNamed</span></a></span></span><span> </span><span id="local-6989586621679129340"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679129340"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-78"></span><span>    </span><span id="local-6989586621679129341"><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679129341"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO [(String, String)]
+</span><span class="hs-identifier hs-var">getEnvironment</span></span><span>
+</span><span id="line-79"></span><span>    </span><span class="annot"><span class="annottext">Middleware -&gt; IO Middleware
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Middleware -&gt; IO Middleware) -&gt; Middleware -&gt; IO Middleware
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">String -&gt; [(String, String)] -&gt; Maybe String
+forall a b. Eq a =&gt; a -&gt; [(a, b)] -&gt; Maybe b
+</span><span class="hs-identifier hs-var">lookup</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679129340"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">[(String, String)]
+</span><a href="#local-6989586621679129341"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-80"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679129343"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679129343"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Middleware
+</span><a href="Network.Wai.Middleware.Approot.html#hardcoded"><span class="hs-identifier hs-var">hardcoded</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Middleware) -&gt; ByteString -&gt; Middleware
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; ByteString
+</span><span class="hs-identifier hs-var">S8.pack</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679129343"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-81"></span><span>        </span><span class="annot"><span class="annottext">Maybe String
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Middleware
+</span><a href="Network.Wai.Middleware.Approot.html#fromRequest"><span class="hs-identifier hs-var">fromRequest</span></a></span><span>
+</span><span id="line-82"></span><span>
+</span><span id="line-83"></span><span class="hs-comment">-- | Hard-code the given value as the approot.</span><span>
+</span><span id="line-84"></span><span class="hs-comment">--</span><span>
+</span><span id="line-85"></span><span class="hs-comment">-- Since 3.0.7</span><span>
+</span><span id="line-86"></span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#hardcoded"><span class="hs-identifier hs-type">hardcoded</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Middleware</span></span><span>
+</span><span id="line-87"></span><span id="hardcoded"><span class="annot"><span class="annottext">hardcoded :: ByteString -&gt; Middleware
+</span><a href="Network.Wai.Middleware.Approot.html#hardcoded"><span class="hs-identifier hs-var hs-var">hardcoded</span></a></span></span><span> </span><span id="local-6989586621679129345"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679129345"><span class="hs-identifier hs-var">ar</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Request -&gt; IO ByteString) -&gt; Middleware
+</span><a href="Network.Wai.Middleware.Approot.html#approotMiddleware"><span class="hs-identifier hs-var">approotMiddleware</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IO ByteString -&gt; Request -&gt; IO ByteString
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">(IO ByteString -&gt; Request -&gt; IO ByteString)
+-&gt; IO ByteString -&gt; Request -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679129345"><span class="hs-identifier hs-var">ar</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span>
+</span><span id="line-89"></span><span class="hs-comment">-- | Get the approot by analyzing the request. This is not a full-proof</span><span>
+</span><span id="line-90"></span><span class="hs-comment">-- approach, but in many common cases will work. Situations that can break this</span><span>
+</span><span id="line-91"></span><span class="hs-comment">-- are:</span><span>
+</span><span id="line-92"></span><span class="hs-comment">--</span><span>
+</span><span id="line-93"></span><span class="hs-comment">-- * Requests which spoof headers and imply the connection is over HTTPS</span><span>
+</span><span id="line-94"></span><span class="hs-comment">--</span><span>
+</span><span id="line-95"></span><span class="hs-comment">-- * Reverse proxies that change ports in surprising ways</span><span>
+</span><span id="line-96"></span><span class="hs-comment">--</span><span>
+</span><span id="line-97"></span><span class="hs-comment">-- * Invalid Host headers</span><span>
+</span><span id="line-98"></span><span class="hs-comment">--</span><span>
+</span><span id="line-99"></span><span class="hs-comment">-- * Reverse proxies which modify the path info</span><span>
+</span><span id="line-100"></span><span class="hs-comment">--</span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- Normally trusting headers in this way is insecure, however in the case of</span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- approot, the worst that can happen is that the client will get an incorrect</span><span>
+</span><span id="line-103"></span><span class="hs-comment">-- URL. If you are relying on the approot for some security-sensitive purpose,</span><span>
+</span><span id="line-104"></span><span class="hs-comment">-- it is highly recommended to use @hardcoded@, which cannot be spoofed.</span><span>
+</span><span id="line-105"></span><span class="hs-comment">--</span><span>
+</span><span id="line-106"></span><span class="hs-comment">-- Since 3.0.7</span><span>
+</span><span id="line-107"></span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#fromRequest"><span class="hs-identifier hs-type">fromRequest</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Middleware</span></span><span>
+</span><span id="line-108"></span><span id="fromRequest"><span class="annot"><span class="annottext">fromRequest :: Middleware
+</span><a href="Network.Wai.Middleware.Approot.html#fromRequest"><span class="hs-identifier hs-var hs-var">fromRequest</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Request -&gt; IO ByteString) -&gt; Middleware
+</span><a href="Network.Wai.Middleware.Approot.html#approotMiddleware"><span class="hs-identifier hs-var">approotMiddleware</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ByteString)
+-&gt; (Request -&gt; ByteString) -&gt; Request -&gt; IO ByteString
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Request -&gt; ByteString
+</span><a href="Network.Wai.Request.html#guessApproot"><span class="hs-identifier hs-var">guessApproot</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-109"></span><span>
+</span><span id="line-110"></span><span class="hs-keyword">data</span><span> </span><span id="ApprootMiddlewareNotSetup"><span class="annot"><a href="Network.Wai.Middleware.Approot.html#ApprootMiddlewareNotSetup"><span class="hs-identifier hs-var">ApprootMiddlewareNotSetup</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="ApprootMiddlewareNotSetup"><span class="annot"><a href="Network.Wai.Middleware.Approot.html#ApprootMiddlewareNotSetup"><span class="hs-identifier hs-var">ApprootMiddlewareNotSetup</span></a></span></span><span>
+</span><span id="line-111"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679129350"><span id="local-6989586621679129352"><span id="local-6989586621679129356"><span class="annot"><span class="annottext">Int -&gt; ApprootMiddlewareNotSetup -&gt; ShowS
+[ApprootMiddlewareNotSetup] -&gt; ShowS
+ApprootMiddlewareNotSetup -&gt; String
+(Int -&gt; ApprootMiddlewareNotSetup -&gt; ShowS)
+-&gt; (ApprootMiddlewareNotSetup -&gt; String)
+-&gt; ([ApprootMiddlewareNotSetup] -&gt; ShowS)
+-&gt; Show ApprootMiddlewareNotSetup
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; ApprootMiddlewareNotSetup -&gt; ShowS
+showsPrec :: Int -&gt; ApprootMiddlewareNotSetup -&gt; ShowS
+$cshow :: ApprootMiddlewareNotSetup -&gt; String
+show :: ApprootMiddlewareNotSetup -&gt; String
+$cshowList :: [ApprootMiddlewareNotSetup] -&gt; ShowS
+showList :: [ApprootMiddlewareNotSetup] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Typeable</span></span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679129364"><span id="local-6989586621679129367"><span id="local-6989586621679129370"><span class="annot"><span class="hs-identifier hs-type">Exception</span></span><span> </span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#ApprootMiddlewareNotSetup"><span class="hs-identifier hs-type">ApprootMiddlewareNotSetup</span></a></span></span></span></span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="hs-comment">-- | Get the approot set by the middleware. If the middleware is not in use,</span><span>
+</span><span id="line-115"></span><span class="hs-comment">-- then this function will return an exception. For a total version of the</span><span>
+</span><span id="line-116"></span><span class="hs-comment">-- function, see 'getApprootMay'.</span><span>
+</span><span id="line-117"></span><span class="hs-comment">--</span><span>
+</span><span id="line-118"></span><span class="hs-comment">-- Since 3.0.7</span><span>
+</span><span id="line-119"></span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#getApproot"><span class="hs-identifier hs-type">getApproot</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-120"></span><span id="getApproot"><span class="annot"><span class="annottext">getApproot :: Request -&gt; ByteString
+</span><a href="Network.Wai.Middleware.Approot.html#getApproot"><span class="hs-identifier hs-var hs-var">getApproot</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe ByteString -&gt; ByteString
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ApprootMiddlewareNotSetup -&gt; ByteString
+forall a e. Exception e =&gt; e -&gt; a
+</span><span class="hs-identifier hs-var">throw</span></span><span> </span><span class="annot"><span class="annottext">ApprootMiddlewareNotSetup
+</span><a href="Network.Wai.Middleware.Approot.html#ApprootMiddlewareNotSetup"><span class="hs-identifier hs-var">ApprootMiddlewareNotSetup</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Maybe ByteString -&gt; ByteString)
+-&gt; (Request -&gt; Maybe ByteString) -&gt; Request -&gt; ByteString
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Request -&gt; Maybe ByteString
+</span><a href="Network.Wai.Middleware.Approot.html#getApprootMay"><span class="hs-identifier hs-var">getApprootMay</span></a></span><span>
+</span><span id="line-121"></span><span>
+</span><span id="line-122"></span><span class="hs-comment">-- | A total version of 'getApproot', which returns 'Nothing' if the middleware</span><span>
+</span><span id="line-123"></span><span class="hs-comment">-- is not in use.</span><span>
+</span><span id="line-124"></span><span class="hs-comment">--</span><span>
+</span><span id="line-125"></span><span class="hs-comment">-- Since 3.0.7</span><span>
+</span><span id="line-126"></span><span class="annot"><a href="Network.Wai.Middleware.Approot.html#getApprootMay"><span class="hs-identifier hs-type">getApprootMay</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-127"></span><span id="getApprootMay"><span class="annot"><span class="annottext">getApprootMay :: Request -&gt; Maybe ByteString
+</span><a href="Network.Wai.Middleware.Approot.html#getApprootMay"><span class="hs-identifier hs-var hs-var">getApprootMay</span></a></span></span><span> </span><span id="local-6989586621679129373"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129373"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Key ByteString -&gt; Vault -&gt; Maybe ByteString
+forall a. Key a -&gt; Vault -&gt; Maybe a
+</span><span class="hs-identifier hs-var">V.lookup</span></span><span> </span><span class="annot"><span class="annottext">Key ByteString
+</span><a href="Network.Wai.Middleware.Approot.html#approotKey"><span class="hs-identifier hs-var">approotKey</span></a></span><span> </span><span class="annot"><span class="annottext">(Vault -&gt; Maybe ByteString) -&gt; Vault -&gt; Maybe ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Request -&gt; Vault
+</span><span class="hs-identifier hs-var">vault</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129373"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-128"></span></pre></body></html>

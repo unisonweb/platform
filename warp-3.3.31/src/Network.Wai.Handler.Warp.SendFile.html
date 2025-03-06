@@ -1,0 +1,477 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP, ForeignFunctionInterface #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.Wai.Handler.Warp.SendFile</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-4"></span><span>    </span><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#sendFile"><span class="hs-identifier">sendFile</span></a></span><span>
+</span><span id="line-5"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#readSendFile"><span class="hs-identifier">readSendFile</span></a></span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#packHeader"><span class="hs-identifier">packHeader</span></a></span><span> </span><span class="hs-comment">-- for testing</span><span class="hs-cpp">
+#ifndef WINDOWS
+</span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#positionRead"><span class="hs-identifier">positionRead</span></a></span><span class="hs-cpp">
+#endif
+</span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-11"></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BS</span></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Socket</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Socket</span></span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Socket.BufferPool</span></span><span class="hs-cpp">
+
+#ifdef WINDOWS
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-identifier">Foreign.ForeignPtr</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">newForeignPtr_</span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="hs-identifier">Foreign.Ptr</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">plusPtr</span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-identifier">System.IO</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="hs-identifier">IO</span><span class="hs-cpp">
+#else
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">UnliftIO</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.C.Error</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">throwErrno</span></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.C.Types</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Ptr</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">castPtr</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">plusPtr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Sendfile</span></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html"><span class="hs-identifier">Network.Wai.Handler.Warp.FdCache</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#openFile"><span class="hs-identifier">openFile</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#closeFile"><span class="hs-identifier">closeFile</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Posix.Types</span></span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Buffer.html"><span class="hs-identifier">Network.Wai.Handler.Warp.Buffer</span></a></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Imports.html"><span class="hs-identifier">Network.Wai.Handler.Warp.Imports</span></a></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html"><span class="hs-identifier">Network.Wai.Handler.Warp.Types</span></a></span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- | Function to send a file based on sendfile() for Linux\/Mac\/FreeBSD.</span><span>
+</span><span id="line-37"></span><span class="hs-comment">--   This makes use of the file descriptor cache.</span><span>
+</span><span id="line-38"></span><span class="hs-comment">--   For other OSes, this is identical to 'readSendFile'.</span><span>
+</span><span id="line-39"></span><span class="hs-comment">--</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- Since: 3.1.0</span><span>
+</span><span id="line-41"></span><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#sendFile"><span class="hs-identifier hs-type">sendFile</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Socket</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Buffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BufSize</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html#SendFile"><span class="hs-identifier hs-type">SendFile</span></a></span><span class="hs-cpp">
+#ifdef SENDFILEFD
+</span><span id="sendFile"><span class="annot"><span class="annottext">sendFile :: Socket -&gt; Buffer -&gt; Int -&gt; (ByteString -&gt; IO ()) -&gt; SendFile
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#sendFile"><span class="hs-identifier hs-var hs-var">sendFile</span></a></span></span><span> </span><span id="local-6989586621679109796"><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679109796"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679109797"><span class="annot"><span class="annottext">FileId
+</span><a href="#local-6989586621679109797"><span class="hs-identifier hs-var">fid</span></a></span></span><span> </span><span id="local-6989586621679109798"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109798"><span class="hs-identifier hs-var">off</span></a></span></span><span> </span><span id="local-6989586621679109799"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109799"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span id="local-6989586621679109800"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109800"><span class="hs-identifier hs-var">act</span></a></span></span><span> </span><span id="local-6989586621679109801"><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679109801"><span class="hs-identifier hs-var">hdr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe Fd
+</span><a href="#local-6989586621679109802"><span class="hs-identifier hs-var">mfid</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-44"></span><span>    </span><span class="hs-comment">-- settingsFdCacheDuration is 0</span><span>
+</span><span id="line-45"></span><span>    </span><span class="annot"><span class="annottext">Maybe Fd
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Socket -&gt; FilePath -&gt; FileRange -&gt; IO () -&gt; [ByteString] -&gt; IO ()
+</span><span class="hs-identifier hs-var">sendfileWithHeader</span></span><span>   </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679109796"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679109804"><span class="hs-identifier hs-var">path</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; FileRange
+</span><span class="hs-identifier hs-var">PartOfFile</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109798"><span class="hs-identifier hs-var">off</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109799"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109800"><span class="hs-identifier hs-var">act</span></a></span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679109801"><span class="hs-identifier hs-var">hdr</span></a></span><span>
+</span><span id="line-46"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679109806"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109806"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Socket -&gt; Fd -&gt; FileRange -&gt; IO () -&gt; [ByteString] -&gt; IO ()
+</span><span class="hs-identifier hs-var">sendfileFdWithHeader</span></span><span> </span><span class="annot"><span class="annottext">Socket
+</span><a href="#local-6989586621679109796"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109806"><span class="hs-identifier hs-var">fd</span></a></span><span>   </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; FileRange
+</span><span class="hs-identifier hs-var">PartOfFile</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109798"><span class="hs-identifier hs-var">off</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109799"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109800"><span class="hs-identifier hs-var">act</span></a></span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679109801"><span class="hs-identifier hs-var">hdr</span></a></span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-48"></span><span>    </span><span id="local-6989586621679109802"><span class="annot"><span class="annottext">mfid :: Maybe Fd
+</span><a href="#local-6989586621679109802"><span class="hs-identifier hs-var hs-var">mfid</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FileId -&gt; Maybe Fd
+</span><a href="Network.Wai.Handler.Warp.Types.html#fileIdFd"><span class="hs-identifier hs-var">fileIdFd</span></a></span><span> </span><span class="annot"><span class="annottext">FileId
+</span><a href="#local-6989586621679109797"><span class="hs-identifier hs-var">fid</span></a></span><span>
+</span><span id="line-49"></span><span>    </span><span id="local-6989586621679109804"><span class="annot"><span class="annottext">path :: FilePath
+</span><a href="#local-6989586621679109804"><span class="hs-identifier hs-var hs-var">path</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FileId -&gt; FilePath
+</span><a href="Network.Wai.Handler.Warp.Types.html#fileIdPath"><span class="hs-identifier hs-var">fileIdPath</span></a></span><span> </span><span class="annot"><span class="annottext">FileId
+</span><a href="#local-6989586621679109797"><span class="hs-identifier hs-var">fid</span></a></span><span class="hs-cpp">
+#else
+</span><span class="hs-identifier">sendFile</span><span> </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">readSendFile</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-54"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-55"></span><span>
+</span><span id="line-56"></span><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#packHeader"><span class="hs-identifier hs-type">packHeader</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Buffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BufSize</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span class="hs-special">]</span><span>
+</span><span id="line-58"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-59"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-60"></span><span id="packHeader"><span class="annot"><span class="annottext">packHeader :: Buffer
+-&gt; Int
+-&gt; (ByteString -&gt; IO ())
+-&gt; IO ()
+-&gt; [ByteString]
+-&gt; Int
+-&gt; IO Int
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#packHeader"><span class="hs-identifier hs-var hs-var">packHeader</span></a></span></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><span class="hs-identifier">_</span></span><span>   </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span>   </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><span class="hs-identifier">_</span></span><span>    </span><span class="annot"><span class="annottext">IO ()
+</span><span class="hs-identifier">_</span></span><span>    </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span id="local-6989586621679109810"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109810"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO Int
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109810"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-61"></span><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#packHeader"><span class="hs-identifier hs-var">packHeader</span></a></span><span> </span><span id="local-6989586621679109811"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109811"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621679109812"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109812"><span class="hs-identifier hs-var">siz</span></a></span></span><span> </span><span id="local-6989586621679109813"><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679109813"><span class="hs-identifier hs-var">send</span></a></span></span><span> </span><span id="local-6989586621679109814"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109814"><span class="hs-identifier hs-var">hook</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679109815"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679109815"><span class="hs-identifier hs-var">bs</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621679109816"><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679109816"><span class="hs-identifier hs-var">bss</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679109817"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109817"><span class="hs-identifier hs-var">n</span></a></span></span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109818"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109820"><span class="hs-identifier hs-var">room</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-63"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679109821"><span class="annot"><span class="annottext">dst :: Ptr b
+</span><a href="#local-6989586621679109821"><span class="hs-identifier hs-var hs-var">dst</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109811"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; Ptr b
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109817"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-64"></span><span>      </span><span class="annot"><span class="annottext">IO Buffer -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO Buffer -&gt; IO ()) -&gt; IO Buffer -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; ByteString -&gt; IO Buffer
+</span><span class="hs-identifier hs-var">copy</span></span><span> </span><span class="annot"><span class="annottext">Buffer
+forall {b}. Ptr b
+</span><a href="#local-6989586621679109821"><span class="hs-identifier hs-var">dst</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679109815"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-65"></span><span>      </span><span class="annot"><span class="annottext">Buffer
+-&gt; Int
+-&gt; (ByteString -&gt; IO ())
+-&gt; IO ()
+-&gt; [ByteString]
+-&gt; Int
+-&gt; IO Int
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#packHeader"><span class="hs-identifier hs-var">packHeader</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109811"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109812"><span class="hs-identifier hs-var">siz</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679109813"><span class="hs-identifier hs-var">send</span></a></span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109814"><span class="hs-identifier hs-var">hook</span></a></span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679109816"><span class="hs-identifier hs-var">bss</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109817"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109818"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-67"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679109825"><span class="annot"><span class="annottext">dst :: Ptr b
+</span><a href="#local-6989586621679109825"><span class="hs-identifier hs-var hs-var">dst</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109811"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; Ptr b
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109817"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-68"></span><span>          </span><span class="hs-special">(</span><span id="local-6989586621679109826"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679109826"><span class="hs-identifier hs-var">bs1</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679109827"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679109827"><span class="hs-identifier hs-var">bs2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; (ByteString, ByteString)
+</span><span class="hs-identifier hs-var">BS.splitAt</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109820"><span class="hs-identifier hs-var">room</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679109815"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-69"></span><span>      </span><span class="annot"><span class="annottext">IO Buffer -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO Buffer -&gt; IO ()) -&gt; IO Buffer -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; ByteString -&gt; IO Buffer
+</span><span class="hs-identifier hs-var">copy</span></span><span> </span><span class="annot"><span class="annottext">Buffer
+forall {b}. Ptr b
+</span><a href="#local-6989586621679109825"><span class="hs-identifier hs-var">dst</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679109826"><span class="hs-identifier hs-var">bs1</span></a></span><span>
+</span><span id="line-70"></span><span>      </span><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; (ByteString -&gt; IO ()) -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.Buffer.html#bufferIO"><span class="hs-identifier hs-var">bufferIO</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109811"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109812"><span class="hs-identifier hs-var">siz</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679109813"><span class="hs-identifier hs-var">send</span></a></span><span>
+</span><span id="line-71"></span><span>      </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109814"><span class="hs-identifier hs-var">hook</span></a></span><span>
+</span><span id="line-72"></span><span>      </span><span class="annot"><span class="annottext">Buffer
+-&gt; Int
+-&gt; (ByteString -&gt; IO ())
+-&gt; IO ()
+-&gt; [ByteString]
+-&gt; Int
+-&gt; IO Int
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#packHeader"><span class="hs-identifier hs-var">packHeader</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109811"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109812"><span class="hs-identifier hs-var">siz</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679109813"><span class="hs-identifier hs-var">send</span></a></span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109814"><span class="hs-identifier hs-var">hook</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679109827"><span class="hs-identifier hs-var">bs2</span></a></span><span class="annot"><span class="annottext">ByteString -&gt; [ByteString] -&gt; [ByteString]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679109816"><span class="hs-identifier hs-var">bss</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-73"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-74"></span><span>    </span><span id="local-6989586621679109818"><span class="annot"><span class="annottext">len :: Int
+</span><a href="#local-6989586621679109818"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">BS.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679109815"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-75"></span><span>    </span><span id="local-6989586621679109820"><span class="annot"><span class="annottext">room :: Int
+</span><a href="#local-6989586621679109820"><span class="hs-identifier hs-var hs-var">room</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109812"><span class="hs-identifier hs-var">siz</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109817"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-76"></span><span>
+</span><span id="line-77"></span><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#mini"><span class="hs-identifier hs-type">mini</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-78"></span><span id="mini"><span class="annot"><span class="annottext">mini :: Int -&gt; Integer -&gt; Int
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#mini"><span class="hs-identifier hs-var hs-var">mini</span></a></span></span><span> </span><span id="local-6989586621679109833"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109833"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621679109834"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109834"><span class="hs-identifier hs-var">n</span></a></span></span><span>
+</span><span id="line-79"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109833"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109834"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109833"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>          </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109834"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-81"></span><span>
+</span><span id="line-82"></span><span class="hs-comment">-- | Function to send a file based on pread()\/send() for Unix.</span><span>
+</span><span id="line-83"></span><span class="hs-comment">--   This makes use of the file descriptor cache.</span><span>
+</span><span id="line-84"></span><span class="hs-comment">--   For Windows, this is emulated by 'Handle'.</span><span>
+</span><span id="line-85"></span><span class="hs-comment">--</span><span>
+</span><span id="line-86"></span><span class="hs-comment">-- Since: 3.1.0</span><span class="hs-cpp">
+#ifdef WINDOWS
+</span><span class="hs-identifier">readSendFile</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">Buffer</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">BufSize</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">ByteString</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">IO</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">SendFile</span><span>
+</span><span id="line-89"></span><span class="hs-identifier">readSendFile</span><span> </span><span class="hs-identifier">buf</span><span> </span><span class="hs-identifier">siz</span><span> </span><span class="hs-identifier">send</span><span> </span><span class="hs-identifier">fid</span><span> </span><span class="hs-identifier">off0</span><span> </span><span class="hs-identifier">len0</span><span> </span><span class="hs-identifier">hook</span><span> </span><span class="hs-identifier">headers</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-90"></span><span>    </span><span class="hs-identifier">hn</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">packHeader</span><span> </span><span class="hs-identifier">buf</span><span> </span><span class="hs-identifier">siz</span><span> </span><span class="hs-identifier">send</span><span> </span><span class="hs-identifier">hook</span><span> </span><span class="hs-identifier">headers</span><span> </span><span class="hs-number">0</span><span>
+</span><span id="line-91"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span class="hs-identifier">room</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">siz</span><span> </span><span class="hs-glyph">-</span><span> </span><span class="hs-identifier">hn</span><span>
+</span><span id="line-92"></span><span>        </span><span class="hs-identifier">buf'</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">buf</span><span> </span><span class="hs-special">`</span><span class="hs-identifier">plusPtr</span><span class="hs-special">`</span><span> </span><span class="hs-identifier">hn</span><span>
+</span><span id="line-93"></span><span>    </span><span class="hs-identifier">IO.withBinaryFile</span><span> </span><span class="hs-identifier">path</span><span> </span><span class="hs-identifier">IO.ReadMode</span><span> </span><span class="hs-operator">$</span><span> </span><span class="hs-glyph">\</span><span class="hs-identifier">h</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-94"></span><span>        </span><span class="hs-identifier">IO.hSeek</span><span> </span><span class="hs-identifier">h</span><span> </span><span class="hs-identifier">IO.AbsoluteSeek</span><span> </span><span class="hs-identifier">off0</span><span>
+</span><span id="line-95"></span><span>        </span><span class="hs-identifier">n</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">IO.hGetBufSome</span><span> </span><span class="hs-identifier">h</span><span> </span><span class="hs-identifier">buf'</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">mini</span><span> </span><span class="hs-identifier">room</span><span> </span><span class="hs-identifier">len0</span><span class="hs-special">)</span><span>
+</span><span id="line-96"></span><span>        </span><span class="hs-identifier">bufferIO</span><span> </span><span class="hs-identifier">buf</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">hn</span><span> </span><span class="hs-operator">+</span><span> </span><span class="hs-identifier">n</span><span class="hs-special">)</span><span> </span><span class="hs-identifier">send</span><span>
+</span><span id="line-97"></span><span>        </span><span class="hs-identifier">hook</span><span>
+</span><span id="line-98"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-identifier">n'</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">fromIntegral</span><span> </span><span class="hs-identifier">n</span><span>
+</span><span id="line-99"></span><span>        </span><span class="hs-identifier">fptr</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">newForeignPtr_</span><span> </span><span class="hs-identifier">buf</span><span>
+</span><span id="line-100"></span><span>        </span><span class="hs-identifier">loop</span><span> </span><span class="hs-identifier">h</span><span> </span><span class="hs-identifier">fptr</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">len0</span><span> </span><span class="hs-glyph">-</span><span> </span><span class="hs-identifier">n'</span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-102"></span><span>    </span><span class="hs-identifier">path</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">fileIdPath</span><span> </span><span class="hs-identifier">fid</span><span>
+</span><span id="line-103"></span><span>    </span><span class="hs-identifier">loop</span><span> </span><span class="hs-identifier">h</span><span> </span><span class="hs-identifier">fptr</span><span> </span><span class="hs-identifier">len</span><span>
+</span><span id="line-104"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-identifier">len</span><span> </span><span class="hs-operator">&lt;=</span><span> </span><span class="hs-number">0</span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">return</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-identifier">otherwise</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-106"></span><span>        </span><span class="hs-identifier">n</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">IO.hGetBufSome</span><span> </span><span class="hs-identifier">h</span><span> </span><span class="hs-identifier">buf</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">mini</span><span> </span><span class="hs-identifier">siz</span><span> </span><span class="hs-identifier">len</span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>        </span><span class="hs-identifier">when</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">n</span><span> </span><span class="hs-operator">/=</span><span> </span><span class="hs-number">0</span><span class="hs-special">)</span><span> </span><span class="hs-operator">$</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-108"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span class="hs-identifier">bs</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">PS</span><span> </span><span class="hs-identifier">fptr</span><span> </span><span class="hs-number">0</span><span> </span><span class="hs-identifier">n</span><span>
+</span><span id="line-109"></span><span>                </span><span class="hs-identifier">n'</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">fromIntegral</span><span> </span><span class="hs-identifier">n</span><span>
+</span><span id="line-110"></span><span>            </span><span class="hs-identifier">send</span><span> </span><span class="hs-identifier">bs</span><span>
+</span><span id="line-111"></span><span>            </span><span class="hs-identifier">hook</span><span>
+</span><span id="line-112"></span><span>            </span><span class="hs-identifier">loop</span><span> </span><span class="hs-identifier">h</span><span> </span><span class="hs-identifier">fptr</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">len</span><span> </span><span class="hs-glyph">-</span><span> </span><span class="hs-identifier">n'</span><span class="hs-special">)</span><span class="hs-cpp">
+#else
+</span><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#readSendFile"><span class="hs-identifier hs-type">readSendFile</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Buffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BufSize</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.Types.html#SendFile"><span class="hs-identifier hs-type">SendFile</span></a></span><span>
+</span><span id="line-115"></span><span id="readSendFile"><span class="annot"><span class="annottext">readSendFile :: Buffer -&gt; Int -&gt; (ByteString -&gt; IO ()) -&gt; SendFile
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#readSendFile"><span class="hs-identifier hs-var hs-var">readSendFile</span></a></span></span><span> </span><span id="local-6989586621679109835"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109835"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621679109836"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109836"><span class="hs-identifier hs-var">siz</span></a></span></span><span> </span><span id="local-6989586621679109837"><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679109837"><span class="hs-identifier hs-var">send</span></a></span></span><span> </span><span id="local-6989586621679109838"><span class="annot"><span class="annottext">FileId
+</span><a href="#local-6989586621679109838"><span class="hs-identifier hs-var">fid</span></a></span></span><span> </span><span id="local-6989586621679109839"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109839"><span class="hs-identifier hs-var">off0</span></a></span></span><span> </span><span id="local-6989586621679109840"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109840"><span class="hs-identifier hs-var">len0</span></a></span></span><span> </span><span id="local-6989586621679109841"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109841"><span class="hs-identifier hs-var">hook</span></a></span></span><span> </span><span id="local-6989586621679109842"><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679109842"><span class="hs-identifier hs-var">headers</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-116"></span><span>  </span><span class="annot"><span class="annottext">IO Fd -&gt; (Fd -&gt; IO ()) -&gt; (Fd -&gt; IO ()) -&gt; IO ()
+forall (m :: * -&gt; *) a b c.
+MonadUnliftIO m =&gt;
+m a -&gt; (a -&gt; m b) -&gt; (a -&gt; m c) -&gt; m c
+</span><span class="hs-identifier hs-var">UnliftIO.bracket</span></span><span> </span><span class="annot"><span class="annottext">IO Fd
+</span><a href="#local-6989586621679109844"><span class="hs-identifier hs-var">setup</span></a></span><span> </span><span class="annot"><span class="annottext">Fd -&gt; IO ()
+</span><a href="#local-6989586621679109845"><span class="hs-identifier hs-var">teardown</span></a></span><span> </span><span class="annot"><span class="annottext">((Fd -&gt; IO ()) -&gt; IO ()) -&gt; (Fd -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679109846"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109846"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-117"></span><span>    </span><span id="local-6989586621679109847"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109847"><span class="hs-identifier hs-var">hn</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Buffer
+-&gt; Int
+-&gt; (ByteString -&gt; IO ())
+-&gt; IO ()
+-&gt; [ByteString]
+-&gt; Int
+-&gt; IO Int
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#packHeader"><span class="hs-identifier hs-var">packHeader</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109835"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109836"><span class="hs-identifier hs-var">siz</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679109837"><span class="hs-identifier hs-var">send</span></a></span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109841"><span class="hs-identifier hs-var">hook</span></a></span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679109842"><span class="hs-identifier hs-var">headers</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-118"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679109849"><span class="annot"><span class="annottext">room :: Int
+</span><a href="#local-6989586621679109849"><span class="hs-identifier hs-var hs-var">room</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109836"><span class="hs-identifier hs-var">siz</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109847"><span class="hs-identifier hs-var">hn</span></a></span><span>
+</span><span id="line-119"></span><span>        </span><span id="local-6989586621679109850"><span class="annot"><span class="annottext">buf' :: Ptr b
+</span><a href="#local-6989586621679109850"><span class="hs-identifier hs-var hs-var">buf'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109835"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; Ptr b
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109847"><span class="hs-identifier hs-var">hn</span></a></span><span>
+</span><span id="line-120"></span><span>    </span><span id="local-6989586621679109851"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109851"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; Buffer -&gt; Int -&gt; Integer -&gt; IO Int
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#positionRead"><span class="hs-identifier hs-var">positionRead</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109846"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer
+forall {b}. Ptr b
+</span><a href="#local-6989586621679109850"><span class="hs-identifier hs-var">buf'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Integer -&gt; Int
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#mini"><span class="hs-identifier hs-var">mini</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109849"><span class="hs-identifier hs-var">room</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109840"><span class="hs-identifier hs-var">len0</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109839"><span class="hs-identifier hs-var">off0</span></a></span><span>
+</span><span id="line-121"></span><span>    </span><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; (ByteString -&gt; IO ()) -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.Buffer.html#bufferIO"><span class="hs-identifier hs-var">bufferIO</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109835"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109847"><span class="hs-identifier hs-var">hn</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109851"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679109837"><span class="hs-identifier hs-var">send</span></a></span><span>
+</span><span id="line-122"></span><span>    </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109841"><span class="hs-identifier hs-var">hook</span></a></span><span>
+</span><span id="line-123"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679109854"><span class="annot"><span class="annottext">n' :: Integer
+</span><a href="#local-6989586621679109854"><span class="hs-identifier hs-var hs-var">n'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109851"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-124"></span><span>    </span><span class="annot"><span class="annottext">Fd -&gt; Integer -&gt; Integer -&gt; IO ()
+</span><a href="#local-6989586621679109855"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109846"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109840"><span class="hs-identifier hs-var">len0</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109854"><span class="hs-identifier hs-var">n'</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109839"><span class="hs-identifier hs-var">off0</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109854"><span class="hs-identifier hs-var">n'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-126"></span><span>    </span><span id="local-6989586621679109856"><span class="annot"><span class="annottext">path :: FilePath
+</span><a href="#local-6989586621679109856"><span class="hs-identifier hs-var hs-var">path</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FileId -&gt; FilePath
+</span><a href="Network.Wai.Handler.Warp.Types.html#fileIdPath"><span class="hs-identifier hs-var">fileIdPath</span></a></span><span> </span><span class="annot"><span class="annottext">FileId
+</span><a href="#local-6989586621679109838"><span class="hs-identifier hs-var">fid</span></a></span><span>
+</span><span id="line-127"></span><span>    </span><span id="local-6989586621679109844"><span class="annot"><span class="annottext">setup :: IO Fd
+</span><a href="#local-6989586621679109844"><span class="hs-identifier hs-var hs-var">setup</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">FileId -&gt; Maybe Fd
+</span><a href="Network.Wai.Handler.Warp.Types.html#fileIdFd"><span class="hs-identifier hs-var">fileIdFd</span></a></span><span> </span><span class="annot"><span class="annottext">FileId
+</span><a href="#local-6989586621679109838"><span class="hs-identifier hs-var">fid</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-128"></span><span>       </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679109858"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109858"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; IO Fd
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109858"><span class="hs-identifier hs-var">fd</span></a></span><span>
+</span><span id="line-129"></span><span>       </span><span class="annot"><span class="annottext">Maybe Fd
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IO Fd
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#openFile"><span class="hs-identifier hs-var">openFile</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679109856"><span class="hs-identifier hs-var">path</span></a></span><span>
+</span><span id="line-130"></span><span>    </span><span id="local-6989586621679109845"><span class="annot"><span class="annottext">teardown :: Fd -&gt; IO ()
+</span><a href="#local-6989586621679109845"><span class="hs-identifier hs-var hs-var">teardown</span></a></span></span><span> </span><span id="local-6989586621679109860"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109860"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">FileId -&gt; Maybe Fd
+</span><a href="Network.Wai.Handler.Warp.Types.html#fileIdFd"><span class="hs-identifier hs-var">fileIdFd</span></a></span><span> </span><span class="annot"><span class="annottext">FileId
+</span><a href="#local-6989586621679109838"><span class="hs-identifier hs-var">fid</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-131"></span><span>       </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><span class="hs-identifier">_</span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-132"></span><span>       </span><span class="annot"><span class="annottext">Maybe Fd
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#closeFile"><span class="hs-identifier hs-var">closeFile</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109860"><span class="hs-identifier hs-var">fd</span></a></span><span>
+</span><span id="line-133"></span><span>    </span><span id="local-6989586621679109855"><span class="annot"><span class="annottext">loop :: Fd -&gt; Integer -&gt; Integer -&gt; IO ()
+</span><a href="#local-6989586621679109855"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621679109869"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109869"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span id="local-6989586621679109870"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109870"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span id="local-6989586621679109871"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109871"><span class="hs-identifier hs-var">off</span></a></span></span><span>
+</span><span id="line-134"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109870"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-136"></span><span>          </span><span id="local-6989586621679109873"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109873"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; Buffer -&gt; Int -&gt; Integer -&gt; IO Int
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#positionRead"><span class="hs-identifier hs-var">positionRead</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109869"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109835"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Integer -&gt; Int
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#mini"><span class="hs-identifier hs-var">mini</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109836"><span class="hs-identifier hs-var">siz</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109870"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109871"><span class="hs-identifier hs-var">off</span></a></span><span>
+</span><span id="line-137"></span><span>          </span><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; (ByteString -&gt; IO ()) -&gt; IO ()
+</span><a href="Network.Wai.Handler.Warp.Buffer.html#bufferIO"><span class="hs-identifier hs-var">bufferIO</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109835"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109873"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679109837"><span class="hs-identifier hs-var">send</span></a></span><span>
+</span><span id="line-138"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679109876"><span class="annot"><span class="annottext">n' :: Integer
+</span><a href="#local-6989586621679109876"><span class="hs-identifier hs-var hs-var">n'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109873"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-139"></span><span>          </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679109841"><span class="hs-identifier hs-var">hook</span></a></span><span>
+</span><span id="line-140"></span><span>          </span><span class="annot"><span class="annottext">Fd -&gt; Integer -&gt; Integer -&gt; IO ()
+</span><a href="#local-6989586621679109855"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109869"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109870"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109876"><span class="hs-identifier hs-var">n'</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109871"><span class="hs-identifier hs-var">off</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109876"><span class="hs-identifier hs-var">n'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-141"></span><span>
+</span><span id="line-142"></span><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#positionRead"><span class="hs-identifier hs-type">positionRead</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Buffer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BufSize</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Integer</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-143"></span><span id="positionRead"><span class="annot"><span class="annottext">positionRead :: Fd -&gt; Buffer -&gt; Int -&gt; Integer -&gt; IO Int
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#positionRead"><span class="hs-identifier hs-var hs-var">positionRead</span></a></span></span><span> </span><span id="local-6989586621679109877"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109877"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span id="local-6989586621679109878"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109878"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621679109879"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109879"><span class="hs-identifier hs-var">siz</span></a></span></span><span> </span><span id="local-6989586621679109880"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109880"><span class="hs-identifier hs-var">off</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-144"></span><span>    </span><span id="local-6989586621679109881"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109881"><span class="hs-identifier hs-var">bytes</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CSsize -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(CSsize -&gt; Int) -&gt; IO CSsize -&gt; IO Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Fd -&gt; Ptr CChar -&gt; ByteCount -&gt; FileOffset -&gt; IO CSsize
+</span><a href="Network.Wai.Handler.Warp.SendFile.html#c_pread"><span class="hs-identifier hs-var">c_pread</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679109877"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Buffer -&gt; Ptr CChar
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679109878"><span class="hs-identifier hs-var">buf</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; ByteCount
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109879"><span class="hs-identifier hs-var">siz</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer -&gt; FileOffset
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621679109880"><span class="hs-identifier hs-var">off</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-145"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109881"><span class="hs-identifier hs-var">bytes</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IO ()
+forall a. FilePath -&gt; IO a
+</span><span class="hs-identifier hs-var">throwErrno</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;positionRead&quot;</span></span><span>
+</span><span id="line-146"></span><span>    </span><span class="annot"><span class="annottext">Int -&gt; IO Int
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109881"><span class="hs-identifier hs-var">bytes</span></a></span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;pread&quot;</span></span><span>
+</span><span id="line-149"></span><span>  </span><span id="c_pread"><span class="annot"><a href="Network.Wai.Handler.Warp.SendFile.html#c_pread"><span class="hs-identifier hs-var">c_pread</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">CChar</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteCount</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FileOffset</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">CSsize</span></span><span class="hs-cpp">
+#endif
+</span></pre></body></html>

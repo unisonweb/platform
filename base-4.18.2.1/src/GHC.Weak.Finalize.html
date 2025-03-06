@@ -1,0 +1,174 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE NoImplicitPrelude #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE UnboxedTuples #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE MagicHash #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE Unsafe #-}</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Weak.Finalize</span><span>
+</span><span id="line-7"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- * Handling exceptions</span></span><span>
+</span><span id="line-8"></span><span>      </span><span class="hs-comment">-- | When an exception is thrown by a finalizer called by the</span><span>
+</span><span id="line-9"></span><span>      </span><span class="hs-comment">-- garbage collector, GHC calls a global handler which can be set with</span><span>
+</span><span id="line-10"></span><span>      </span><span class="hs-comment">-- 'setFinalizerExceptionHandler'. Note that any exceptions thrown by</span><span>
+</span><span id="line-11"></span><span>      </span><span class="hs-comment">-- this handler will be ignored.</span><span>
+</span><span id="line-12"></span><span>      </span><span class="annot"><a href="GHC.Weak.Finalize.html#setFinalizerExceptionHandler"><span class="hs-identifier">setFinalizerExceptionHandler</span></a></span><span>
+</span><span id="line-13"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Weak.Finalize.html#getFinalizerExceptionHandler"><span class="hs-identifier">getFinalizerExceptionHandler</span></a></span><span>
+</span><span id="line-14"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Internal</span></span><span>
+</span><span id="line-15"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Weak.Finalize.html#runFinalizerBatch"><span class="hs-identifier">runFinalizerBatch</span></a></span><span>
+</span><span id="line-16"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Base.html"><span class="hs-identifier">GHC.Base</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Exception.html"><span class="hs-identifier">GHC.Exception</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.IORef.html"><span class="hs-identifier">GHC.IORef</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="hs-pragma">{-# SOURCE</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="annot"><a href="GHC.Conc.Sync.html"><span class="hs-identifier">GHC.Conc.Sync</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Conc.Sync.html#labelThreadByteArray%23"><span class="hs-identifier">labelThreadByteArray#</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Conc.Sync.html#myThreadId"><span class="hs-identifier">myThreadId</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.IO.html"><span class="hs-identifier">GHC.IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.IO.html#catchException"><span class="hs-identifier">catchException</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.IO.Unsafe.html#unsafePerformIO"><span class="hs-identifier">unsafePerformIO</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Encoding.UTF8.html"><span class="hs-identifier">GHC.Encoding.UTF8</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Encoding.UTF8.html#utf8EncodeByteArray%23"><span class="hs-identifier">utf8EncodeByteArray#</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">data</span><span> </span><span id="ByteArray"><span class="annot"><a href="GHC.Weak.Finalize.html#ByteArray"><span class="hs-identifier hs-var">ByteArray</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="ByteArray"><span class="annot"><a href="GHC.Weak.Finalize.html#ByteArray"><span class="hs-identifier hs-var">ByteArray</span></a></span></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#ByteArray%23/GHC.Prim.html#ByteArray%23"><span class="hs-identifier hs-type">ByteArray#</span></a></span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- | The label we use for finalization threads. We manually float this to the</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- top-level to ensure that the ByteArray# can be shared.</span><span>
+</span><span id="line-29"></span><span class="annot"><a href="GHC.Weak.Finalize.html#label"><span class="hs-keyword hs-type">label</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Weak.Finalize.html#ByteArray"><span class="hs-identifier hs-type">ByteArray</span></a></span><span>
+</span><span id="line-30"></span><span id="label"><span class="annot"><span class="annottext">label :: ByteArray
+</span><a href="GHC.Weak.Finalize.html#label"><span class="hs-keyword hs-var hs-var">label</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteArray# -&gt; ByteArray
+</span><a href="GHC.Weak.Finalize.html#ByteArray"><span class="hs-identifier hs-var">ByteArray</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; ByteArray#
+</span><a href="GHC.Encoding.UTF8.html#utf8EncodeByteArray%23"><span class="hs-identifier hs-var">utf8EncodeByteArray#</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;weak finalizer thread&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- | Run a batch of finalizers from the garbage collector.  We're given</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- an array of finalizers and the length of the array, and we just</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- call each one in turn.</span><span>
+</span><span id="line-35"></span><span class="annot"><a href="GHC.Weak.Finalize.html#runFinalizerBatch"><span class="hs-identifier hs-type">runFinalizerBatch</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span>
+</span><span id="line-36"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#Array%23/GHC.Prim.html#Array%23"><span class="hs-identifier hs-type">Array#</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#State%23/GHC.Prim.html#State%23"><span class="hs-identifier hs-type">State#</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#RealWorld/GHC.Prim.html#RealWorld"><span class="hs-identifier hs-type">RealWorld</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#State%23/GHC.Prim.html#State%23"><span class="hs-identifier hs-type">State#</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#RealWorld/GHC.Prim.html#RealWorld"><span class="hs-identifier hs-type">RealWorld</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span id="runFinalizerBatch"><span class="annot"><span class="annottext">runFinalizerBatch :: Int -&gt; Array# (State# RealWorld -&gt; State# RealWorld) -&gt; IO ()
+</span><a href="GHC.Weak.Finalize.html#runFinalizerBatch"><span class="hs-identifier hs-var hs-var">runFinalizerBatch</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#I%23/GHC.Types.html#I%23"><span class="hs-identifier hs-type">I#</span></a></span><span> </span><span id="local-6989586621679651200"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679651200"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679651201"><span class="annot"><span class="annottext">Array# (State# RealWorld -&gt; State# RealWorld)
+</span><a href="#local-6989586621679651201"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-39"></span><span>    </span><span id="local-6989586621679651202"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679651202"><span class="hs-identifier hs-var">tid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO ThreadId
+</span><a href="GHC.Conc.Sync.html#myThreadId"><span class="hs-identifier hs-var">myThreadId</span></a></span><span>
+</span><span id="line-40"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ByteArray
+</span><a href="GHC.Weak.Finalize.html#label"><span class="hs-keyword hs-var">label</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span class="annot"><a href="GHC.Weak.Finalize.html#ByteArray"><span class="hs-identifier hs-type">ByteArray</span></a></span><span> </span><span id="local-6989586621679651203"><span class="annot"><span class="annottext">ByteArray#
+</span><a href="#local-6989586621679651203"><span class="hs-identifier hs-var">ba#</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; ByteArray# -&gt; IO ()
+</span><a href="GHC.Conc.Sync.html#labelThreadByteArray%23"><span class="hs-identifier hs-var">labelThreadByteArray#</span></a></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679651202"><span class="hs-identifier hs-var">tid</span></a></span><span> </span><span class="annot"><span class="annottext">ByteArray#
+</span><a href="#local-6989586621679651203"><span class="hs-identifier hs-var">ba#</span></a></span><span>
+</span><span id="line-41"></span><span>    </span><span class="annot"><span class="annottext">Int# -&gt; IO ()
+</span><a href="#local-6989586621679651204"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679651200"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-42"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-43"></span><span>    </span><span class="annot"><a href="#local-6989586621679651205"><span class="hs-identifier hs-type">getFinalizer</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#Int%23/GHC.Prim.html#Int%23"><span class="hs-identifier hs-type">Int#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span>    </span><span id="local-6989586621679651205"><span class="annot"><span class="annottext">getFinalizer :: Int# -&gt; IO ()
+</span><a href="#local-6989586621679651205"><span class="hs-identifier hs-var hs-var">getFinalizer</span></a></span></span><span> </span><span id="local-6989586621679651206"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679651206"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-45"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Array# (State# RealWorld -&gt; State# RealWorld)
+-&gt; Int# -&gt; (# State# RealWorld -&gt; State# RealWorld #)
+forall a. Array# a -&gt; Int# -&gt; (# a #)
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#indexArray%23/GHC.Prim.html#indexArray%23"><span class="hs-identifier hs-var">indexArray#</span></a></span><span> </span><span class="annot"><span class="annottext">Array# (State# RealWorld -&gt; State# RealWorld)
+</span><a href="#local-6989586621679651201"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679651206"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-46"></span><span>          </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679651207"><span class="annot"><span class="annottext">State# RealWorld -&gt; State# RealWorld
+</span><a href="#local-6989586621679651207"><span class="hs-identifier hs-var">io</span></a></span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ()
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-var">IO</span></a></span><span> </span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ())
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679651208"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679651208"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-47"></span><span>              </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">State# RealWorld -&gt; State# RealWorld
+</span><a href="#local-6989586621679651207"><span class="hs-identifier hs-var">io</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679651208"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-48"></span><span>                </span><span id="local-6989586621679651209"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679651209"><span class="hs-identifier hs-var">s'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679651209"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span>    </span><span class="annot"><a href="#local-6989586621679651204"><span class="hs-identifier hs-type">go</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#Int%23/GHC.Prim.html#Int%23"><span class="hs-identifier hs-type">Int#</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-51"></span><span>    </span><span id="local-6989586621679651204"><span class="annot"><span class="annottext">go :: Int# -&gt; IO ()
+</span><a href="#local-6989586621679651204"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>    </span><span class="annot"><a href="#local-6989586621679651204"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621679651210"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679651210"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679651211"><span class="annot"><span class="annottext">i' :: Int#
+</span><a href="#local-6989586621679651211"><span class="hs-identifier hs-var hs-var">i'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679651210"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#-%23/GHC.Prim.html#-%23"><span class="hs-operator hs-var">-#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span>
+</span><span id="line-54"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679651212"><span class="annot"><span class="annottext">finalizer :: IO ()
+</span><a href="#local-6989586621679651212"><span class="hs-identifier hs-var hs-var">finalizer</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; IO ()
+</span><a href="#local-6989586621679651205"><span class="hs-identifier hs-var">getFinalizer</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679651211"><span class="hs-identifier hs-var">i'</span></a></span><span>
+</span><span id="line-55"></span><span>        </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679651212"><span class="hs-identifier hs-var">finalizer</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; (SomeException -&gt; IO ()) -&gt; IO ()
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catchException"><span class="hs-operator hs-var">`catchException`</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO ()
+</span><a href="#local-6989586621679651213"><span class="hs-identifier hs-var">handleExc</span></a></span><span>
+</span><span id="line-56"></span><span>        </span><span class="annot"><span class="annottext">Int# -&gt; IO ()
+</span><a href="#local-6989586621679651204"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679651211"><span class="hs-identifier hs-var">i'</span></a></span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span>    </span><span class="annot"><a href="#local-6989586621679651213"><span class="hs-identifier hs-type">handleExc</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Exception.Type.html#SomeException"><span class="hs-identifier hs-type">SomeException</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-59"></span><span>    </span><span id="local-6989586621679651213"><span class="annot"><span class="annottext">handleExc :: SomeException -&gt; IO ()
+</span><a href="#local-6989586621679651213"><span class="hs-identifier hs-var hs-var">handleExc</span></a></span></span><span> </span><span id="local-6989586621679651214"><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679651214"><span class="hs-identifier hs-var">se</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-60"></span><span>        </span><span id="local-6989586621679651215"><span class="annot"><span class="annottext">SomeException -&gt; IO ()
+</span><a href="#local-6989586621679651215"><span class="hs-identifier hs-var">handleFinalizerExc</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO (SomeException -&gt; IO ())
+</span><a href="GHC.Weak.Finalize.html#getFinalizerExceptionHandler"><span class="hs-identifier hs-var">getFinalizerExceptionHandler</span></a></span><span>
+</span><span id="line-61"></span><span>        </span><span class="annot"><span class="annottext">SomeException -&gt; IO ()
+</span><a href="#local-6989586621679651215"><span class="hs-identifier hs-var">handleFinalizerExc</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679651214"><span class="hs-identifier hs-var">se</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; (SomeException -&gt; IO ()) -&gt; IO ()
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catchException"><span class="hs-operator hs-var">`catchException`</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Exception.Type.html#SomeException"><span class="hs-identifier hs-type">SomeException</span></a></span><span> </span><span class="annot"><span class="annottext">e
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- See Note [Handling exceptions during Handle finalization] for the</span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- motivation for this mechanism.</span><span>
+</span><span id="line-65"></span><span class="annot"><a href="GHC.Weak.Finalize.html#finalizerExceptionHandler"><span class="hs-identifier hs-type">finalizerExceptionHandler</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.IORef.html#IORef"><span class="hs-identifier hs-type">IORef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Exception.Type.html#SomeException"><span class="hs-identifier hs-type">SomeException</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span id="finalizerExceptionHandler"><span class="annot"><span class="annottext">finalizerExceptionHandler :: IORef (SomeException -&gt; IO ())
+</span><a href="GHC.Weak.Finalize.html#finalizerExceptionHandler"><span class="hs-identifier hs-var hs-var">finalizerExceptionHandler</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (IORef (SomeException -&gt; IO ()))
+-&gt; IORef (SomeException -&gt; IO ())
+forall a. IO a -&gt; a
+</span><a href="GHC.IO.Unsafe.html#unsafePerformIO"><span class="hs-identifier hs-var">unsafePerformIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO (IORef (SomeException -&gt; IO ()))
+ -&gt; IORef (SomeException -&gt; IO ()))
+-&gt; IO (IORef (SomeException -&gt; IO ()))
+-&gt; IORef (SomeException -&gt; IO ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">(SomeException -&gt; IO ()) -&gt; IO (IORef (SomeException -&gt; IO ()))
+forall a. a -&gt; IO (IORef a)
+</span><a href="GHC.IORef.html#newIORef"><span class="hs-identifier hs-var">newIORef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IO () -&gt; SomeException -&gt; IO ()
+forall a b. a -&gt; b -&gt; a
+</span><a href="GHC.Base.html#const"><span class="hs-identifier hs-var">const</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; SomeException -&gt; IO ())
+-&gt; IO () -&gt; SomeException -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-67"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="GHC.Weak.Finalize.html#finalizerExceptionHandler"><span class="hs-pragma hs-type">finalizerExceptionHandler</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- | Get the global action called to report exceptions thrown by weak pointer</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- finalizers to the user.</span><span>
+</span><span id="line-71"></span><span class="hs-comment">--</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- @since 4.18.0.0</span><span>
+</span><span id="line-73"></span><span class="annot"><a href="GHC.Weak.Finalize.html#getFinalizerExceptionHandler"><span class="hs-identifier hs-type">getFinalizerExceptionHandler</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Exception.Type.html#SomeException"><span class="hs-identifier hs-type">SomeException</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span id="getFinalizerExceptionHandler"><span class="annot"><span class="annottext">getFinalizerExceptionHandler :: IO (SomeException -&gt; IO ())
+</span><a href="GHC.Weak.Finalize.html#getFinalizerExceptionHandler"><span class="hs-identifier hs-var hs-var">getFinalizerExceptionHandler</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef (SomeException -&gt; IO ()) -&gt; IO (SomeException -&gt; IO ())
+forall a. IORef a -&gt; IO a
+</span><a href="GHC.IORef.html#readIORef"><span class="hs-identifier hs-var">readIORef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (SomeException -&gt; IO ())
+</span><a href="GHC.Weak.Finalize.html#finalizerExceptionHandler"><span class="hs-identifier hs-var">finalizerExceptionHandler</span></a></span><span>
+</span><span id="line-75"></span><span>
+</span><span id="line-76"></span><span class="hs-comment">-- | Set the global action called to report exceptions thrown by weak pointer</span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- finalizers to the user.</span><span>
+</span><span id="line-78"></span><span class="hs-comment">--</span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- @since 4.18.0.0</span><span>
+</span><span id="line-80"></span><span class="annot"><a href="GHC.Weak.Finalize.html#setFinalizerExceptionHandler"><span class="hs-identifier hs-type">setFinalizerExceptionHandler</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Exception.Type.html#SomeException"><span class="hs-identifier hs-type">SomeException</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-81"></span><span id="setFinalizerExceptionHandler"><span class="annot"><span class="annottext">setFinalizerExceptionHandler :: (SomeException -&gt; IO ()) -&gt; IO ()
+</span><a href="GHC.Weak.Finalize.html#setFinalizerExceptionHandler"><span class="hs-identifier hs-var hs-var">setFinalizerExceptionHandler</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef (SomeException -&gt; IO ()) -&gt; (SomeException -&gt; IO ()) -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><a href="GHC.IORef.html#writeIORef"><span class="hs-identifier hs-var">writeIORef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (SomeException -&gt; IO ())
+</span><a href="GHC.Weak.Finalize.html#finalizerExceptionHandler"><span class="hs-identifier hs-var">finalizerExceptionHandler</span></a></span><span>
+</span><span id="line-82"></span></pre></body></html>

@@ -1,0 +1,370 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | Pattern match coverage checking is implemented following the</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- algorithm described in [Lower Your</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- Guards](https://simon.peytonjones.org/assets/pdfs/lower-your-guards.pdf). The</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- goal of pattern match coverage checking is to identify the</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- following problems that may arise in a pattern match:</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- * It is missing clauses (/i.e./ it is non-exhaustive)</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- * It contains redundant patterns (/i.e./ the case can be deleted without altering the program)</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- * It contains inaccessible patterns (/i.e/ the rhs can never be entered)</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- Furthermore, in the case of a non-exhaustive match, the goal to</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- present the user with concrete values that do not match any of the</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- existing patterns.</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- /N.B./ An inaccessible pattern in unison would be one that performs</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- effects in a guard although the constraints are unsatisfiable. Such</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- a pattern cannot be deleted without altering the program.</span><span>
+</span><span id="line-18"></span><span class="hs-comment">--</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- == High-level algorithm overview</span><span>
+</span><span id="line-20"></span><span class="hs-comment">--</span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- 1. [Desugar](&quot;Unison.PatternMatchCoverage.Desugar&quot;) a match expression into a 'Unison.PatternMatchCoverage.GrdTree.GrdTree'.</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- 2. Annotate the @GrdTree@ leaves with [refinement types](&quot;Unison.PatternMatchCoverage.NormalizedConstraints&quot;)</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- describing values that match this branch. Redundant and inaccessible patterns are then identified by @GrdTree@ leaves</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- with uninhabited refinement types. Inaccessible patterns are distinguished by an effect being performed between the</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- @GrdTree@ root and the leaf.</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- 3. Traverse the @GrdTree@ building up a refinement type describing uncovered values. If the resulting refinement type</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- is inhabited then the match is missing clauses.</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- 4. Find inhabitants of the uncovered refinement type to present to the user.</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- Step (1) is implemented by 'desugarMatch'. Steps (2) and (3) are</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- implemented as a single traversal: 'uncoverAnnotate'/'classify'. Step (4) is</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- implemented by 'expandSolution'/'generateInhabitants'.</span><span>
+</span><span id="line-33"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Unison.PatternMatchCoverage</span><span>
+</span><span id="line-34"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Unison.PatternMatchCoverage.html#checkMatch"><span class="hs-identifier">checkMatch</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-35"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Set</span></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Debug.Trace</span></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Debug</span></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Pattern</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Pattern</span></span><span class="hs-special">)</span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.PatternMatchCoverage.Class.html"><span class="hs-identifier">Unison.PatternMatchCoverage.Class</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.PatternMatchCoverage.Class.html#Pmc"><span class="hs-identifier">Pmc</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.PatternMatchCoverage.Desugar.html"><span class="hs-identifier">Unison.PatternMatchCoverage.Desugar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.PatternMatchCoverage.Desugar.html#desugarMatch"><span class="hs-identifier">desugarMatch</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.PatternMatchCoverage.GrdTree.html"><span class="hs-identifier">Unison.PatternMatchCoverage.GrdTree</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.PatternMatchCoverage.GrdTree.html#prettyGrdTree"><span class="hs-identifier">prettyGrdTree</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.PatternMatchCoverage.NormalizedConstraints.html"><span class="hs-identifier">Unison.PatternMatchCoverage.NormalizedConstraints</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">NC</span></span><span>
+</span><span id="line-46"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.PatternMatchCoverage.PmGrd.html"><span class="hs-identifier">Unison.PatternMatchCoverage.PmGrd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.PatternMatchCoverage.PmGrd.html#prettyPmGrd"><span class="hs-identifier">prettyPmGrd</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.PatternMatchCoverage.Solve.html"><span class="hs-identifier">Unison.PatternMatchCoverage.Solve</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.PatternMatchCoverage.Solve.html#classify"><span class="hs-identifier">classify</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.PatternMatchCoverage.Solve.html#expandSolution"><span class="hs-identifier">expandSolution</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.PatternMatchCoverage.Solve.html#generateInhabitants"><span class="hs-identifier">generateInhabitants</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.PatternMatchCoverage.Solve.html#uncoverAnnotate"><span class="hs-identifier">uncoverAnnotate</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Term</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Term</span></span><span>
+</span><span id="line-49"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Type</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Type</span></span><span>
+</span><span id="line-50"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Util.Pretty</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">P</span></span><span>
+</span><span id="line-51"></span><span>
+</span><span id="line-52"></span><span class="annot"><span class="hs-comment">-- | Perform pattern match coverage checking on a match expression</span></span><span>
+</span><span id="line-53"></span><span class="annot"><a href="Unison.PatternMatchCoverage.html#checkMatch"><span class="hs-identifier hs-type">checkMatch</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-54"></span><span>  </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621680531414"><span class="annot"><a href="#local-6989586621680531414"><span class="hs-identifier hs-type">vt</span></a></span></span><span> </span><span id="local-6989586621680531415"><span class="annot"><a href="#local-6989586621680531415"><span class="hs-identifier hs-type">v</span></a></span></span><span> </span><span id="local-6989586621680531416"><span class="annot"><a href="#local-6989586621680531416"><span class="hs-identifier hs-type">loc</span></a></span></span><span> </span><span id="local-6989586621680531417"><span class="annot"><a href="#local-6989586621680531417"><span class="hs-identifier hs-type">m</span></a></span></span><span class="hs-operator">.</span><span>
+</span><span id="line-55"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Unison.PatternMatchCoverage.Class.html#Pmc"><span class="hs-identifier hs-type">Pmc</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680531414"><span class="hs-identifier hs-type">vt</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680531415"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680531416"><span class="hs-identifier hs-type">loc</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680531417"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-56"></span><span>  </span><span class="annot"><span class="hs-comment">-- | scrutinee type</span></span><span>
+</span><span id="line-57"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Type.Type</span></span><span> </span><span class="annot"><a href="#local-6989586621680531414"><span class="hs-identifier hs-type">vt</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680531416"><span class="hs-identifier hs-type">loc</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-58"></span><span>  </span><span class="annot"><span class="hs-comment">-- | match cases</span></span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Term.MatchCase</span></span><span> </span><span class="annot"><a href="#local-6989586621680531416"><span class="hs-identifier hs-type">loc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Term.Term'</span></span><span> </span><span class="annot"><a href="#local-6989586621680531414"><span class="hs-identifier hs-type">vt</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680531415"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680531416"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-60"></span><span>  </span><span class="annot"><span class="hs-comment">-- | (redundant locations, inaccessible locations, inhabitants of uncovered refinement type)</span></span><span>
+</span><span id="line-61"></span><span>  </span><span class="annot"><a href="#local-6989586621680531417"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621680531416"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621680531416"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Pattern</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span id="checkMatch"><span class="annot"><span class="annottext">checkMatch :: forall vt v loc (m :: * -&gt; *).
+Pmc vt v loc m =&gt;
+Type vt loc
+-&gt; [MatchCase loc (Term' vt v loc)]
+-&gt; m ([loc], [loc], [Pattern ()])
+</span><a href="Unison.PatternMatchCoverage.html#checkMatch"><span class="hs-identifier hs-var hs-var">checkMatch</span></a></span></span><span> </span><span id="local-6989586621680531619"><span class="annot"><span class="annottext">Type vt loc
+</span><a href="#local-6989586621680531619"><span class="hs-identifier hs-var">scrutineeType</span></a></span></span><span> </span><span id="local-6989586621680531620"><span class="annot"><span class="annottext">[MatchCase loc (Term' vt v loc)]
+</span><a href="#local-6989586621680531620"><span class="hs-identifier hs-var">cases</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-63"></span><span>  </span><span id="local-6989586621680531621"><span class="annot"><span class="annottext">PrettyPrintEnv
+</span><a href="#local-6989586621680531621"><span class="hs-identifier hs-var">ppe</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">m PrettyPrintEnv
+forall vt v loc (m :: * -&gt; *). Pmc vt v loc m =&gt; m PrettyPrintEnv
+</span><a href="Unison.PatternMatchCoverage.Class.html#getPrettyPrintEnv"><span class="hs-identifier hs-var">getPrettyPrintEnv</span></a></span><span>
+</span><span id="line-64"></span><span>  </span><span id="local-6989586621680531623"><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621680531623"><span class="hs-identifier hs-var">v0</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">m v
+forall vt v loc (m :: * -&gt; *). Pmc vt v loc m =&gt; m v
+</span><a href="Unison.PatternMatchCoverage.Class.html#fresh"><span class="hs-identifier hs-var">fresh</span></a></span><span>
+</span><span id="line-65"></span><span>  </span><span id="local-6989586621680531625"><span class="annot"><span class="annottext">GrdTree (PmGrd vt v loc) loc
+</span><a href="#local-6989586621680531625"><span class="hs-identifier hs-var">grdtree0</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Type vt loc
+-&gt; v
+-&gt; [MatchCase loc (Term' vt v loc)]
+-&gt; m (GrdTree (PmGrd vt v loc) loc)
+forall loc vt v (m :: * -&gt; *).
+Pmc vt v loc m =&gt;
+Type vt loc
+-&gt; v
+-&gt; [MatchCase loc (Term' vt v loc)]
+-&gt; m (GrdTree (PmGrd vt v loc) loc)
+</span><a href="Unison.PatternMatchCoverage.Desugar.html#desugarMatch"><span class="hs-identifier hs-var">desugarMatch</span></a></span><span> </span><span class="annot"><span class="annottext">Type vt loc
+</span><a href="#local-6989586621680531619"><span class="hs-identifier hs-var">scrutineeType</span></a></span><span> </span><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621680531623"><span class="hs-identifier hs-var">v0</span></a></span><span> </span><span class="annot"><span class="annottext">[MatchCase loc (Term' vt v loc)]
+</span><a href="#local-6989586621680531620"><span class="hs-identifier hs-var">cases</span></a></span><span>
+</span><span id="line-66"></span><span>  </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; m () -&gt; m ()
+forall {a}. Pretty ColorText -&gt; a -&gt; a
+</span><a href="#local-6989586621680531626"><span class="hs-identifier hs-var">doDebug</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall s.
+(ListLike s Char, IsString s) =&gt;
+Pretty s -&gt; Pretty s -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.hang</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText
+</span><a href="#local-6989586621680531628"><span class="hs-identifier hs-var">title</span></a></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;desugared:&quot;</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(PmGrd vt v loc -&gt; Pretty ColorText)
+-&gt; (loc -&gt; Pretty ColorText)
+-&gt; GrdTree (PmGrd vt v loc) loc
+-&gt; Pretty ColorText
+forall n l s.
+(ListLike s Char, IsString s) =&gt;
+(n -&gt; Pretty s) -&gt; (l -&gt; Pretty s) -&gt; GrdTree n l -&gt; Pretty s
+</span><a href="Unison.PatternMatchCoverage.GrdTree.html#prettyGrdTree"><span class="hs-identifier hs-var">prettyGrdTree</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrettyPrintEnv -&gt; PmGrd vt v loc -&gt; Pretty ColorText
+forall vt v loc.
+(Var vt, Var v) =&gt;
+PrettyPrintEnv -&gt; PmGrd vt v loc -&gt; Pretty ColorText
+</span><a href="Unison.PatternMatchCoverage.PmGrd.html#prettyPmGrd"><span class="hs-identifier hs-var">prettyPmGrd</span></a></span><span> </span><span class="annot"><span class="annottext">PrettyPrintEnv
+</span><a href="#local-6989586621680531621"><span class="hs-identifier hs-var">ppe</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">loc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;&lt;loc&gt;&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">GrdTree (PmGrd vt v loc) loc
+</span><a href="#local-6989586621680531625"><span class="hs-identifier hs-var">grdtree0</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">() -&gt; m ()
+forall a. a -&gt; m a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-67"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680531629"><span class="annot"><span class="annottext">initialUncovered :: Set (NormalizedConstraints vt v loc)
+</span><a href="#local-6989586621680531629"><span class="hs-identifier hs-var hs-var">initialUncovered</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NormalizedConstraints vt v loc
+-&gt; Set (NormalizedConstraints vt v loc)
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">Set.singleton</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">v
+-&gt; NormalizedConstraints vt v loc -&gt; NormalizedConstraints vt v loc
+forall v vt loc.
+Ord v =&gt;
+v
+-&gt; NormalizedConstraints vt v loc -&gt; NormalizedConstraints vt v loc
+</span><a href="Unison.PatternMatchCoverage.NormalizedConstraints.html#markDirty"><span class="hs-identifier hs-var">NC.markDirty</span></a></span><span> </span><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621680531623"><span class="hs-identifier hs-var">v0</span></a></span><span> </span><span class="annot"><span class="annottext">(NormalizedConstraints vt v loc -&gt; NormalizedConstraints vt v loc)
+-&gt; NormalizedConstraints vt v loc -&gt; NormalizedConstraints vt v loc
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">v
+-&gt; Type vt loc
+-&gt; (VarInfo vt v loc -&gt; VarInfo vt v loc)
+-&gt; NormalizedConstraints vt v loc
+-&gt; NormalizedConstraints vt v loc
+forall vt v loc.
+Var v =&gt;
+v
+-&gt; Type vt loc
+-&gt; (VarInfo vt v loc -&gt; VarInfo vt v loc)
+-&gt; NormalizedConstraints vt v loc
+-&gt; NormalizedConstraints vt v loc
+</span><a href="Unison.PatternMatchCoverage.NormalizedConstraints.html#declVar"><span class="hs-identifier hs-var">NC.declVar</span></a></span><span> </span><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621680531623"><span class="hs-identifier hs-var">v0</span></a></span><span> </span><span class="annot"><span class="annottext">Type vt loc
+</span><a href="#local-6989586621680531619"><span class="hs-identifier hs-var">scrutineeType</span></a></span><span> </span><span class="annot"><span class="annottext">VarInfo vt v loc -&gt; VarInfo vt v loc
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="annot"><span class="annottext">NormalizedConstraints vt v loc
+forall v vt loc. Ord v =&gt; NormalizedConstraints vt v loc
+</span><a href="Unison.PatternMatchCoverage.NormalizedConstraints.html#emptyNormalizedConstraints"><span class="hs-identifier hs-var">NC.emptyNormalizedConstraints</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621680531635"><span class="annot"><span class="annottext">Set (NormalizedConstraints vt v loc)
+</span><a href="#local-6989586621680531635"><span class="hs-identifier hs-var">uncovered</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680531636"><span class="annot"><span class="annottext">GrdTree
+  (Set (NormalizedConstraints vt v loc))
+  (Set (NormalizedConstraints vt v loc), loc)
+</span><a href="#local-6989586621680531636"><span class="hs-identifier hs-var">grdtree1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Set (NormalizedConstraints vt v loc)
+-&gt; GrdTree (PmGrd vt v loc) loc
+-&gt; m (Set (NormalizedConstraints vt v loc),
+      GrdTree
+        (Set (NormalizedConstraints vt v loc))
+        (Set (NormalizedConstraints vt v loc), loc))
+forall vt v loc (m :: * -&gt; *) l.
+Pmc vt v loc m =&gt;
+Set (NormalizedConstraints vt v loc)
+-&gt; GrdTree (PmGrd vt v loc) l
+-&gt; m (Set (NormalizedConstraints vt v loc),
+      GrdTree
+        (Set (NormalizedConstraints vt v loc))
+        (Set (NormalizedConstraints vt v loc), l))
+</span><a href="Unison.PatternMatchCoverage.Solve.html#uncoverAnnotate"><span class="hs-identifier hs-var">uncoverAnnotate</span></a></span><span> </span><span class="annot"><span class="annottext">Set (NormalizedConstraints vt v loc)
+</span><a href="#local-6989586621680531629"><span class="hs-identifier hs-var">initialUncovered</span></a></span><span> </span><span class="annot"><span class="annottext">GrdTree (PmGrd vt v loc) loc
+</span><a href="#local-6989586621680531625"><span class="hs-identifier hs-var">grdtree0</span></a></span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; m () -&gt; m ()
+forall {a}. Pretty ColorText -&gt; a -&gt; a
+</span><a href="#local-6989586621680531626"><span class="hs-identifier hs-var">doDebug</span></a></span><span>
+</span><span id="line-70"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; [Pretty ColorText] -&gt; Pretty ColorText
+forall (f :: * -&gt; *) s.
+(Foldable f, IsString s) =&gt;
+Pretty s -&gt; f (Pretty s) -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.sep</span></span><span>
+</span><span id="line-71"></span><span>        </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;\n&quot;</span></span><span>
+</span><span id="line-72"></span><span>        </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall s.
+(ListLike s Char, IsString s) =&gt;
+Pretty s -&gt; Pretty s -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.hang</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText
+</span><a href="#local-6989586621680531628"><span class="hs-identifier hs-var">title</span></a></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;annotated:&quot;</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Set (NormalizedConstraints vt v loc) -&gt; Pretty ColorText)
+-&gt; ((Set (NormalizedConstraints vt v loc), loc)
+    -&gt; Pretty ColorText)
+-&gt; GrdTree
+     (Set (NormalizedConstraints vt v loc))
+     (Set (NormalizedConstraints vt v loc), loc)
+-&gt; Pretty ColorText
+forall n l s.
+(ListLike s Char, IsString s) =&gt;
+(n -&gt; Pretty s) -&gt; (l -&gt; Pretty s) -&gt; GrdTree n l -&gt; Pretty s
+</span><a href="Unison.PatternMatchCoverage.GrdTree.html#prettyGrdTree"><span class="hs-identifier hs-var">prettyGrdTree</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrettyPrintEnv
+-&gt; Set (NormalizedConstraints vt v loc) -&gt; Pretty ColorText
+forall v vt loc.
+(Var v, Var vt) =&gt;
+PrettyPrintEnv
+-&gt; Set (NormalizedConstraints vt v loc) -&gt; Pretty ColorText
+</span><a href="Unison.PatternMatchCoverage.NormalizedConstraints.html#prettyDnf"><span class="hs-identifier hs-var">NC.prettyDnf</span></a></span><span> </span><span class="annot"><span class="annottext">PrettyPrintEnv
+</span><a href="#local-6989586621680531621"><span class="hs-identifier hs-var">ppe</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrettyPrintEnv
+-&gt; Set (NormalizedConstraints vt v loc) -&gt; Pretty ColorText
+forall v vt loc.
+(Var v, Var vt) =&gt;
+PrettyPrintEnv
+-&gt; Set (NormalizedConstraints vt v loc) -&gt; Pretty ColorText
+</span><a href="Unison.PatternMatchCoverage.NormalizedConstraints.html#prettyDnf"><span class="hs-identifier hs-var">NC.prettyDnf</span></a></span><span> </span><span class="annot"><span class="annottext">PrettyPrintEnv
+</span><a href="#local-6989586621680531621"><span class="hs-identifier hs-var">ppe</span></a></span><span> </span><span class="annot"><span class="annottext">(Set (NormalizedConstraints vt v loc) -&gt; Pretty ColorText)
+-&gt; ((Set (NormalizedConstraints vt v loc), loc)
+    -&gt; Set (NormalizedConstraints vt v loc))
+-&gt; (Set (NormalizedConstraints vt v loc), loc)
+-&gt; Pretty ColorText
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Set (NormalizedConstraints vt v loc), loc)
+-&gt; Set (NormalizedConstraints vt v loc)
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">GrdTree
+  (Set (NormalizedConstraints vt v loc))
+  (Set (NormalizedConstraints vt v loc), loc)
+</span><a href="#local-6989586621680531636"><span class="hs-identifier hs-var">grdtree1</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-73"></span><span>          </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall s.
+(ListLike s Char, IsString s) =&gt;
+Pretty s -&gt; Pretty s -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.hang</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText
+</span><a href="#local-6989586621680531628"><span class="hs-identifier hs-var">title</span></a></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;uncovered:&quot;</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrettyPrintEnv
+-&gt; Set (NormalizedConstraints vt v loc) -&gt; Pretty ColorText
+forall v vt loc.
+(Var v, Var vt) =&gt;
+PrettyPrintEnv
+-&gt; Set (NormalizedConstraints vt v loc) -&gt; Pretty ColorText
+</span><a href="Unison.PatternMatchCoverage.NormalizedConstraints.html#prettyDnf"><span class="hs-identifier hs-var">NC.prettyDnf</span></a></span><span> </span><span class="annot"><span class="annottext">PrettyPrintEnv
+</span><a href="#local-6989586621680531621"><span class="hs-identifier hs-var">ppe</span></a></span><span> </span><span class="annot"><span class="annottext">Set (NormalizedConstraints vt v loc)
+</span><a href="#local-6989586621680531635"><span class="hs-identifier hs-var">uncovered</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span>        </span><span class="hs-special">]</span><span>
+</span><span id="line-75"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-76"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">() -&gt; m ()
+forall a. a -&gt; m a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>  </span><span id="local-6989586621680531641"><span class="annot"><span class="annottext">[NormalizedConstraints vt v loc]
+</span><a href="#local-6989586621680531641"><span class="hs-identifier hs-var">uncoveredExpanded</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[[NormalizedConstraints vt v loc]]
+-&gt; [NormalizedConstraints vt v loc]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">([[NormalizedConstraints vt v loc]]
+ -&gt; [NormalizedConstraints vt v loc])
+-&gt; ([Set (NormalizedConstraints vt v loc)]
+    -&gt; [[NormalizedConstraints vt v loc]])
+-&gt; [Set (NormalizedConstraints vt v loc)]
+-&gt; [NormalizedConstraints vt v loc]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Set (NormalizedConstraints vt v loc)
+ -&gt; [NormalizedConstraints vt v loc])
+-&gt; [Set (NormalizedConstraints vt v loc)]
+-&gt; [[NormalizedConstraints vt v loc]]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">Set (NormalizedConstraints vt v loc)
+-&gt; [NormalizedConstraints vt v loc]
+forall a. Set a -&gt; [a]
+</span><span class="hs-identifier hs-var">Set.toList</span></span><span> </span><span class="annot"><span class="annottext">([Set (NormalizedConstraints vt v loc)]
+ -&gt; [NormalizedConstraints vt v loc])
+-&gt; m [Set (NormalizedConstraints vt v loc)]
+-&gt; m [NormalizedConstraints vt v loc]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(NormalizedConstraints vt v loc
+ -&gt; m (Set (NormalizedConstraints vt v loc)))
+-&gt; [NormalizedConstraints vt v loc]
+-&gt; m [Set (NormalizedConstraints vt v loc)]
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+(a -&gt; f b) -&gt; t a -&gt; f (t b)
+forall (f :: * -&gt; *) a b.
+Applicative f =&gt;
+(a -&gt; f b) -&gt; [a] -&gt; f [b]
+</span><span class="hs-identifier hs-var">traverse</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">v
+-&gt; NormalizedConstraints vt v loc
+-&gt; m (Set (NormalizedConstraints vt v loc))
+forall vt v loc (m :: * -&gt; *).
+Pmc vt v loc m =&gt;
+v
+-&gt; NormalizedConstraints vt v loc
+-&gt; m (Set (NormalizedConstraints vt v loc))
+</span><a href="Unison.PatternMatchCoverage.Solve.html#expandSolution"><span class="hs-identifier hs-var">expandSolution</span></a></span><span> </span><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621680531623"><span class="hs-identifier hs-var">v0</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set (NormalizedConstraints vt v loc)
+-&gt; [NormalizedConstraints vt v loc]
+forall a. Set a -&gt; [a]
+</span><span class="hs-identifier hs-var">Set.toList</span></span><span> </span><span class="annot"><span class="annottext">Set (NormalizedConstraints vt v loc)
+</span><a href="#local-6989586621680531635"><span class="hs-identifier hs-var">uncovered</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-78"></span><span>  </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; m () -&gt; m ()
+forall {a}. Pretty ColorText -&gt; a -&gt; a
+</span><a href="#local-6989586621680531626"><span class="hs-identifier hs-var">doDebug</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText -&gt; Pretty ColorText
+forall s.
+(ListLike s Char, IsString s) =&gt;
+Pretty s -&gt; Pretty s -&gt; Pretty s
+</span><span class="hs-identifier hs-var">P.hang</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText
+</span><a href="#local-6989586621680531628"><span class="hs-identifier hs-var">title</span></a></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><span class="hs-string">&quot;uncovered expanded:&quot;</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrettyPrintEnv
+-&gt; Set (NormalizedConstraints vt v loc) -&gt; Pretty ColorText
+forall v vt loc.
+(Var v, Var vt) =&gt;
+PrettyPrintEnv
+-&gt; Set (NormalizedConstraints vt v loc) -&gt; Pretty ColorText
+</span><a href="Unison.PatternMatchCoverage.NormalizedConstraints.html#prettyDnf"><span class="hs-identifier hs-var">NC.prettyDnf</span></a></span><span> </span><span class="annot"><span class="annottext">PrettyPrintEnv
+</span><a href="#local-6989586621680531621"><span class="hs-identifier hs-var">ppe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[NormalizedConstraints vt v loc]
+-&gt; Set (NormalizedConstraints vt v loc)
+forall a. Ord a =&gt; [a] -&gt; Set a
+</span><span class="hs-identifier hs-var">Set.fromList</span></span><span> </span><span class="annot"><span class="annottext">[NormalizedConstraints vt v loc]
+</span><a href="#local-6989586621680531641"><span class="hs-identifier hs-var">uncoveredExpanded</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">() -&gt; m ()
+forall a. a -&gt; m a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-79"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680531647"><span class="annot"><span class="annottext">sols :: [Pattern ()]
+</span><a href="#local-6989586621680531647"><span class="hs-identifier hs-var hs-var">sols</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(NormalizedConstraints vt v loc -&gt; Pattern ())
+-&gt; [NormalizedConstraints vt v loc] -&gt; [Pattern ()]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">v -&gt; NormalizedConstraints vt v loc -&gt; Pattern ()
+forall vt v loc.
+Var v =&gt;
+v -&gt; NormalizedConstraints vt v loc -&gt; Pattern ()
+</span><a href="Unison.PatternMatchCoverage.Solve.html#generateInhabitants"><span class="hs-identifier hs-var">generateInhabitants</span></a></span><span> </span><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621680531623"><span class="hs-identifier hs-var">v0</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[NormalizedConstraints vt v loc]
+</span><a href="#local-6989586621680531641"><span class="hs-identifier hs-var">uncoveredExpanded</span></a></span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621680531648"><span class="annot"><span class="annottext">[loc]
+</span><a href="#local-6989586621680531648"><span class="hs-identifier hs-var">_accessible</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680531649"><span class="annot"><span class="annottext">[loc]
+</span><a href="#local-6989586621680531649"><span class="hs-identifier hs-var">inaccessible</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680531650"><span class="annot"><span class="annottext">[loc]
+</span><a href="#local-6989586621680531650"><span class="hs-identifier hs-var">redundant</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">GrdTree
+  (Set (NormalizedConstraints vt v loc))
+  (Set (NormalizedConstraints vt v loc), loc)
+-&gt; ([loc], [loc], [loc])
+forall vt v loc l.
+GrdTree
+  (Set (NormalizedConstraints vt v loc))
+  (Set (NormalizedConstraints vt v loc), l)
+-&gt; ([l], [l], [l])
+</span><a href="Unison.PatternMatchCoverage.Solve.html#classify"><span class="hs-identifier hs-var">classify</span></a></span><span> </span><span class="annot"><span class="annottext">GrdTree
+  (Set (NormalizedConstraints vt v loc))
+  (Set (NormalizedConstraints vt v loc), loc)
+</span><a href="#local-6989586621680531636"><span class="hs-identifier hs-var">grdtree1</span></a></span><span>
+</span><span id="line-81"></span><span>  </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[loc]
+</span><a href="#local-6989586621680531650"><span class="hs-identifier hs-var">redundant</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[loc]
+</span><a href="#local-6989586621680531649"><span class="hs-identifier hs-var">inaccessible</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Pattern ()]
+</span><a href="#local-6989586621680531647"><span class="hs-identifier hs-var">sols</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-83"></span><span>    </span><span id="local-6989586621680531628"><span class="annot"><span class="annottext">title :: Pretty ColorText -&gt; Pretty ColorText
+</span><a href="#local-6989586621680531628"><span class="hs-identifier hs-var hs-var">title</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Pretty ColorText -&gt; Pretty ColorText
+</span><span class="hs-identifier hs-var">P.bold</span></span><span>
+</span><span id="line-84"></span><span>    </span><span id="local-6989586621680531626"><span class="annot"><span class="annottext">doDebug :: Pretty ColorText -&gt; a -&gt; a
+</span><a href="#local-6989586621680531626"><span class="hs-identifier hs-var hs-var">doDebug</span></a></span></span><span> </span><span id="local-6989586621680531652"><span class="annot"><span class="annottext">Pretty ColorText
+</span><a href="#local-6989586621680531652"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">DebugFlag -&gt; Bool
+</span><span class="hs-identifier hs-var">shouldDebug</span></span><span> </span><span class="annot"><span class="annottext">DebugFlag
+</span><span class="hs-identifier hs-var">PatternCoverage</span></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-85"></span><span>      </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; a -&gt; a
+forall a. String -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">trace</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pretty ColorText -&gt; String
+</span><span class="hs-identifier hs-var">P.toAnsiUnbroken</span></span><span> </span><span class="annot"><span class="annottext">Pretty ColorText
+</span><a href="#local-6989586621680531652"><span class="hs-identifier hs-var">out</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span>      </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a -&gt; a
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span>
+</span><span id="line-87"></span></pre></body></html>

@@ -1,0 +1,505 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- Module         : Data.ByteString.Search.KarpRabin</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Copyright      : (c) 2010 Daniel Fischer</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Licence        : BSD3</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Maintainer     : Daniel Fischer &lt;daniel.is.fischer@googlemail.com&gt;</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- Stability      : Provisional</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Portability    : non-portable (BangPatterns)</span><span>
+</span><span id="line-9"></span><span class="hs-comment">--</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- Simultaneous search for multiple patterns in a strict 'S.ByteString'</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- using the Karp-Rabin algorithm.</span><span>
+</span><span id="line-12"></span><span class="hs-comment">--</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- A description of the algorithm for a single pattern can be found at</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- &lt;http://www-igm.univ-mlv.fr/~lecroq/string/node5.html#SECTION0050&gt;.</span><span>
+</span><span id="line-15"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.ByteString.Search.KarpRabin</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- * Overview</span></span><span>
+</span><span id="line-16"></span><span>                                          </span><span class="annot"><span class="hs-comment">-- $overview</span></span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span>                                          </span><span class="annot"><span class="hs-comment">-- ** Caution</span></span><span>
+</span><span id="line-19"></span><span>                                          </span><span class="annot"><span class="hs-comment">-- $caution</span></span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span>                                          </span><span class="annot"><span class="hs-comment">-- * Function</span></span><span>
+</span><span id="line-22"></span><span>                                          </span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#indicesOfAny"><span class="hs-identifier">indicesOfAny</span></a></span><span>
+</span><span id="line-23"></span><span>                                        </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Unsafe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unsafeIndex</span></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.IntMap</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">IM</span></span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Array</span></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Array.Base</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unsafeAt</span></span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bits</span></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">foldl'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- $overview</span><span>
+</span><span id="line-39"></span><span class="hs-comment">--</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- The Karp-Rabin algorithm works by calculating a hash of the pattern and</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- comparing that hash with the hash of a slice of the target string with</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- the same length as the pattern. If the hashes are equal, the slice of the</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- target is compared to the pattern byte for byte (since the hash</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- function generally isn't injective).</span><span>
+</span><span id="line-45"></span><span class="hs-comment">--</span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- For a single pattern, this tends to be more efficient than the na&amp;#239;ve</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- algorithm, but it cannot compete with algorithms like</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- Knuth-Morris-Pratt or Boyer-Moore.</span><span>
+</span><span id="line-49"></span><span class="hs-comment">--</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- However, the algorithm can be generalised to search for multiple patterns</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- simultaneously. If the shortest pattern has length @k@, hash the prefix of</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- length @k@ of all patterns and compare the hash of the target's slices of</span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- length @k@ to them. If there's a match, check whether the slice is part</span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- of an occurrence of the corresponding pattern.</span><span>
+</span><span id="line-55"></span><span class="hs-comment">--</span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- With a hash-function that</span><span>
+</span><span id="line-57"></span><span class="hs-comment">--</span><span>
+</span><span id="line-58"></span><span class="hs-comment">--   * allows to compute the hash of one slice in constant time from the hash</span><span>
+</span><span id="line-59"></span><span class="hs-comment">--     of the previous slice, the new and the dropped character, and</span><span>
+</span><span id="line-60"></span><span class="hs-comment">--</span><span>
+</span><span id="line-61"></span><span class="hs-comment">--   * produces few spurious matches,</span><span>
+</span><span id="line-62"></span><span class="hs-comment">--</span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- searching for occurrences of any of @n@ patterns has a best-case complexity</span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- of /O/(@targetLength@ * @lookup n@). The worst-case complexity is</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- /O/(@targetLength@ * @lookup n@ * @sum patternLengths@), the average is</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- not much worse than the best case.</span><span>
+</span><span id="line-67"></span><span class="hs-comment">--</span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- The functions in this module store the hashes of the patterns in an</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- 'IM.IntMap', so the lookup is /O/(@log n@). Re-hashing is done in constant</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- time and spurious matches of the hashes /should be/ sufficiently rare.</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- The maximal length of the prefixes to be hashed is 32.</span><span>
+</span><span id="line-72"></span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- $caution</span><span>
+</span><span id="line-74"></span><span class="hs-comment">--</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- Unfortunately, the constant factors are high, so these functions are slow.</span><span>
+</span><span id="line-76"></span><span class="hs-comment">-- Unless the number of patterns to search for is high (larger than 50 at</span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- least), repeated search for single patterns using Boyer-Moore or DFA and</span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- manual merging of the indices is faster. /Much/ faster for less than 40</span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- or so patterns.</span><span>
+</span><span id="line-80"></span><span class="hs-comment">--</span><span>
+</span><span id="line-81"></span><span class="hs-comment">-- In summary, this module is more of an interesting curiosity than anything</span><span>
+</span><span id="line-82"></span><span class="hs-comment">-- else.</span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- | @'indicesOfAny'@ finds all occurrences of any of several non-empty patterns</span><span>
+</span><span id="line-85"></span><span class="hs-comment">--   in a strict target string. If no non-empty patterns are given,</span><span>
+</span><span id="line-86"></span><span class="hs-comment">--   the result is an empty list. Otherwise the result list contains</span><span>
+</span><span id="line-87"></span><span class="hs-comment">--   the pairs of all indices where any of the (non-empty) patterns start</span><span>
+</span><span id="line-88"></span><span class="hs-comment">--   and the list of all patterns starting at that index, the patterns being</span><span>
+</span><span id="line-89"></span><span class="hs-comment">--   represented by their (zero-based) position in the pattern list.</span><span>
+</span><span id="line-90"></span><span class="hs-comment">--   Empty patterns are filtered out before processing begins.</span><span>
+</span><span id="line-91"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#indicesOfAny"><span class="hs-pragma hs-type">indicesOfAny</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-92"></span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#indicesOfAny"><span class="hs-identifier hs-type">indicesOfAny</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">S.ByteString</span></span><span class="hs-special">]</span><span>  </span><span class="annot"><span class="hs-comment">-- ^ List of non-empty patterns</span></span><span>
+</span><span id="line-93"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.ByteString</span></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ String to search</span></span><span>
+</span><span id="line-94"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">]</span><span>   </span><span class="annot"><span class="hs-comment">-- ^ List of matches</span></span><span>
+</span><span id="line-95"></span><span id="indicesOfAny"><span class="annot"><span class="annottext">indicesOfAny :: [ByteString] -&gt; ByteString -&gt; [(Int, [Int])]
+</span><a href="Data.ByteString.Search.KarpRabin.html#indicesOfAny"><span class="hs-identifier hs-var hs-var">indicesOfAny</span></a></span></span><span> </span><span id="local-6989586621679053773"><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679053773"><span class="hs-identifier hs-var">pats</span></a></span></span><span>
+</span><span id="line-96"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; Bool
+forall a. [a] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">null</span></span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679053775"><span class="hs-identifier hs-var">nepats</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(Int, [Int])] -&gt; ByteString -&gt; [(Int, [Int])]
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-97"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; ByteString -&gt; [(Int, [Int])]
+</span><a href="Data.ByteString.Search.KarpRabin.html#strictMatcher"><span class="hs-identifier hs-var">strictMatcher</span></a></span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679053775"><span class="hs-identifier hs-var">nepats</span></a></span><span>
+</span><span id="line-98"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-99"></span><span>        </span><span id="local-6989586621679053775"><span class="annot"><span class="annottext">nepats :: [ByteString]
+</span><a href="#local-6989586621679053775"><span class="hs-identifier hs-var hs-var">nepats</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Bool) -&gt; [ByteString] -&gt; [ByteString]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Bool) -&gt; (ByteString -&gt; Bool) -&gt; ByteString -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679053773"><span class="hs-identifier hs-var">pats</span></a></span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-103"></span><span class="hs-comment">--                                 Workers                                 --</span><span>
+</span><span id="line-104"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-105"></span><span>
+</span><span id="line-106"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#rehash1"><span class="hs-pragma hs-type">rehash1</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-107"></span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#rehash1"><span class="hs-identifier hs-type">rehash1</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-108"></span><span id="rehash1"><span class="annot"><span class="annottext">rehash1 :: Int -&gt; Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="Data.ByteString.Search.KarpRabin.html#rehash1"><span class="hs-identifier hs-var hs-var">rehash1</span></a></span></span><span> </span><span id="local-6989586621679053782"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053782"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span id="local-6989586621679053783"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053783"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679053784"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053784"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span id="local-6989586621679053785"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053785"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-109"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053783"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053784"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053782"><span class="hs-identifier hs-var">out</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053785"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#rehash2"><span class="hs-pragma hs-type">rehash2</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-112"></span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#rehash2"><span class="hs-identifier hs-type">rehash2</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-113"></span><span id="rehash2"><span class="annot"><span class="annottext">rehash2 :: Int -&gt; Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="Data.ByteString.Search.KarpRabin.html#rehash2"><span class="hs-identifier hs-var hs-var">rehash2</span></a></span></span><span> </span><span id="local-6989586621679053789"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053789"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span id="local-6989586621679053790"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053790"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679053791"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053791"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span id="local-6989586621679053792"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053792"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-114"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053790"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053791"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053789"><span class="hs-identifier hs-var">out</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053792"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-115"></span><span>
+</span><span id="line-116"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#rehash3"><span class="hs-pragma hs-type">rehash3</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-117"></span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#rehash3"><span class="hs-identifier hs-type">rehash3</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-118"></span><span id="rehash3"><span class="annot"><span class="annottext">rehash3 :: Int -&gt; Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="Data.ByteString.Search.KarpRabin.html#rehash3"><span class="hs-identifier hs-var hs-var">rehash3</span></a></span></span><span> </span><span id="local-6989586621679053794"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053794"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span id="local-6989586621679053795"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053795"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679053796"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053796"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span id="local-6989586621679053797"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053797"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-119"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053795"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053796"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053794"><span class="hs-identifier hs-var">out</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053797"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#rehash4"><span class="hs-pragma hs-type">rehash4</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-122"></span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#rehash4"><span class="hs-identifier hs-type">rehash4</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-123"></span><span id="rehash4"><span class="annot"><span class="annottext">rehash4 :: Int -&gt; Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="Data.ByteString.Search.KarpRabin.html#rehash4"><span class="hs-identifier hs-var hs-var">rehash4</span></a></span></span><span> </span><span id="local-6989586621679053799"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053799"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span id="local-6989586621679053800"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053800"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679053801"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053801"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span id="local-6989586621679053802"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053802"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-124"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053800"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053801"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053799"><span class="hs-identifier hs-var">out</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053802"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-125"></span><span>
+</span><span id="line-126"></span><span class="annot"><a href="Data.ByteString.Search.KarpRabin.html#strictMatcher"><span class="hs-identifier hs-type">strictMatcher</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">S.ByteString</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-127"></span><span id="strictMatcher"><span class="annot"><span class="annottext">strictMatcher :: [ByteString] -&gt; ByteString -&gt; [(Int, [Int])]
+</span><a href="Data.ByteString.Search.KarpRabin.html#strictMatcher"><span class="hs-identifier hs-var hs-var">strictMatcher</span></a></span></span><span> </span><span id="local-6989586621679053803"><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679053803"><span class="hs-identifier hs-var">pats</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [(Int, [Int])]
+</span><a href="#local-6989586621679053804"><span class="hs-identifier hs-var">search</span></a></span><span>
+</span><span id="line-128"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-129"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679053809"><span class="annot"><span class="annottext">hLen :: Int
+</span><a href="#local-6989586621679053809"><span class="hs-identifier hs-var hs-var">hLen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; Int
+forall a. Ord a =&gt; [a] -&gt; a
+forall (t :: * -&gt; *) a. (Foldable t, Ord a) =&gt; t a -&gt; a
+</span><span class="hs-identifier hs-var">minimum</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; [Int] -&gt; [Int]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; [ByteString] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">S.length</span></span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679053803"><span class="hs-identifier hs-var">pats</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-130"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679053818"><span class="annot"><span class="annottext">shDi :: Int
+</span><a href="#local-6989586621679053818"><span class="hs-identifier hs-var hs-var">shDi</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`quot`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053809"><span class="hs-identifier hs-var">hLen</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-131"></span><span>              </span><span id="local-6989586621679053820"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053820"><span class="hs-identifier hs-var">q</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053820"><span class="hs-identifier hs-var">q</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053820"><span class="hs-identifier hs-var">q</span></a></span><span>
+</span><span id="line-132"></span><span>                </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span>
+</span><span id="line-133"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679053823"><span class="annot"><span class="annottext">outS :: Int
+</span><a href="#local-6989586621679053823"><span class="hs-identifier hs-var hs-var">outS</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053818"><span class="hs-identifier hs-var">shDi</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053809"><span class="hs-identifier hs-var">hLen</span></a></span><span>
+</span><span id="line-134"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679053826"><span class="annot"><span class="annottext">patNum :: Int
+</span><a href="#local-6989586621679053826"><span class="hs-identifier hs-var hs-var">patNum</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; Int
+forall a. [a] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679053803"><span class="hs-identifier hs-var">pats</span></a></span><span>
+</span><span id="line-135"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679053833"><span class="annot"><span class="annottext">patArr :: Array Int ByteString
+</span><a href="#local-6989586621679053833"><span class="hs-identifier hs-var hs-var">patArr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Int, Int) -&gt; [ByteString] -&gt; Array Int ByteString
+forall i e. Ix i =&gt; (i, i) -&gt; [e] -&gt; Array i e
+</span><span class="hs-identifier hs-var">listArray</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053826"><span class="hs-identifier hs-var">patNum</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679053803"><span class="hs-identifier hs-var">pats</span></a></span><span>
+</span><span id="line-136"></span><span>    </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="#local-6989586621679053835"><span class="hs-pragma hs-type">rehash</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-137"></span><span>    </span><span class="annot"><a href="#local-6989586621679053835"><span class="hs-identifier hs-type">rehash</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-138"></span><span>    </span><span id="local-6989586621679053835"><span class="annot"><span class="annottext">rehash :: Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="#local-6989586621679053835"><span class="hs-identifier hs-var hs-var">rehash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053818"><span class="hs-identifier hs-var">shDi</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-139"></span><span>                </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="Data.ByteString.Search.KarpRabin.html#rehash1"><span class="hs-identifier hs-var">rehash1</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053809"><span class="hs-identifier hs-var">hLen</span></a></span><span>
+</span><span id="line-140"></span><span>                </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="Data.ByteString.Search.KarpRabin.html#rehash2"><span class="hs-identifier hs-var">rehash2</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053823"><span class="hs-identifier hs-var">outS</span></a></span><span>
+</span><span id="line-141"></span><span>                </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="Data.ByteString.Search.KarpRabin.html#rehash3"><span class="hs-identifier hs-var">rehash3</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053823"><span class="hs-identifier hs-var">outS</span></a></span><span>
+</span><span id="line-142"></span><span>                </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="Data.ByteString.Search.KarpRabin.html#rehash4"><span class="hs-identifier hs-var">rehash4</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053823"><span class="hs-identifier hs-var">outS</span></a></span><span>
+</span><span id="line-143"></span><span>    </span><span class="annot"><a href="#local-6989586621679053836"><span class="hs-identifier hs-type">hash</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-144"></span><span>    </span><span id="local-6989586621679053836"><span class="annot"><span class="annottext">hash :: ByteString -&gt; Int
+</span><a href="#local-6989586621679053836"><span class="hs-identifier hs-var hs-var">hash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Word8 -&gt; Int) -&gt; Int -&gt; ByteString -&gt; Int
+forall a. (a -&gt; Word8 -&gt; a) -&gt; a -&gt; ByteString -&gt; a
+</span><span class="hs-identifier hs-var">S.foldl'</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679053838"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053838"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679053839"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053839"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053838"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053818"><span class="hs-identifier hs-var">shDi</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053839"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Int)
+-&gt; (ByteString -&gt; ByteString) -&gt; ByteString -&gt; Int
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">S.take</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053809"><span class="hs-identifier hs-var">hLen</span></a></span><span>
+</span><span id="line-145"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679053844"><span class="annot"><span class="annottext">hashMap :: IntMap [Int]
+</span><a href="#local-6989586621679053844"><span class="hs-identifier hs-var hs-var">hashMap</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-146"></span><span>        </span><span class="annot"><span class="annottext">(IntMap [Int] -&gt; (Int, Int) -&gt; IntMap [Int])
+-&gt; IntMap [Int] -&gt; [(Int, Int)] -&gt; IntMap [Int]
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; [a] -&gt; b
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl'</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679053845"><span class="annot"><span class="annottext">IntMap [Int]
+</span><a href="#local-6989586621679053845"><span class="hs-identifier hs-var">mp</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679053846"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053846"><span class="hs-identifier hs-var">h</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679053847"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053847"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">([Int] -&gt; [Int] -&gt; [Int])
+-&gt; Int -&gt; [Int] -&gt; IntMap [Int] -&gt; IntMap [Int]
+forall a. (a -&gt; a -&gt; a) -&gt; Int -&gt; a -&gt; IntMap a -&gt; IntMap a
+</span><span class="hs-identifier hs-var">IM.insertWith</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">([Int] -&gt; [Int] -&gt; [Int]) -&gt; [Int] -&gt; [Int] -&gt; [Int]
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [Int] -&gt; [Int]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">(++)</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053846"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053847"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">IntMap [Int]
+</span><a href="#local-6989586621679053845"><span class="hs-identifier hs-var">mp</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">IntMap [Int]
+forall a. IntMap a
+</span><span class="hs-identifier hs-var">IM.empty</span></span><span> </span><span class="annot"><span class="annottext">([(Int, Int)] -&gt; IntMap [Int]) -&gt; [(Int, Int)] -&gt; IntMap [Int]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-147"></span><span>                                </span><span class="annot"><span class="annottext">[Int] -&gt; [Int] -&gt; [(Int, Int)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(ByteString -&gt; Int) -&gt; [ByteString] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="#local-6989586621679053836"><span class="hs-identifier hs-var">hash</span></a></span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679053803"><span class="hs-identifier hs-var">pats</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="hs-special">]</span><span>
+</span><span id="line-148"></span><span>    </span><span id="local-6989586621679053804"><span class="annot"><span class="annottext">search :: ByteString -&gt; [(Int, [Int])]
+</span><a href="#local-6989586621679053804"><span class="hs-identifier hs-var hs-var">search</span></a></span></span><span> </span><span id="local-6989586621679053852"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679053852"><span class="hs-identifier hs-var">str</span></a></span></span><span>
+</span><span id="line-149"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053853"><span class="hs-identifier hs-var">strLen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053809"><span class="hs-identifier hs-var">hLen</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-150"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; [(Int, [Int])]
+</span><a href="#local-6989586621679053854"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053855"><span class="hs-identifier hs-var">shash</span></a></span><span>
+</span><span id="line-151"></span><span>          </span><span class="hs-keyword">where</span><span>
+</span><span id="line-152"></span><span>            </span><span class="hs-glyph">!</span><span id="local-6989586621679053853"><span class="annot"><span class="annottext">strLen :: Int
+</span><a href="#local-6989586621679053853"><span class="hs-identifier hs-var hs-var">strLen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">S.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679053852"><span class="hs-identifier hs-var">str</span></a></span><span>
+</span><span id="line-153"></span><span>            </span><span class="hs-glyph">!</span><span id="local-6989586621679053857"><span class="annot"><span class="annottext">maxIdx :: Int
+</span><a href="#local-6989586621679053857"><span class="hs-identifier hs-var hs-var">maxIdx</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053853"><span class="hs-identifier hs-var">strLen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053809"><span class="hs-identifier hs-var">hLen</span></a></span><span>
+</span><span id="line-154"></span><span>            </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="#local-6989586621679053858"><span class="hs-pragma hs-type">strAt</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-155"></span><span>            </span><span id="local-6989586621679053858"><span class="annot"><span class="annottext">strAt :: Int -&gt; Word8
+</span><a href="#local-6989586621679053858"><span class="hs-identifier hs-var hs-var">strAt</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679053859"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053859"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int -&gt; Word8
+</span><span class="hs-identifier hs-var">unsafeIndex</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679053852"><span class="hs-identifier hs-var">str</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053859"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-156"></span><span>            </span><span class="hs-glyph">!</span><span id="local-6989586621679053855"><span class="annot"><span class="annottext">shash :: Int
+</span><a href="#local-6989586621679053855"><span class="hs-identifier hs-var hs-var">shash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><a href="#local-6989586621679053836"><span class="hs-identifier hs-var">hash</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679053852"><span class="hs-identifier hs-var">str</span></a></span><span>
+</span><span id="line-157"></span><span>            </span><span id="local-6989586621679053854"><span class="annot"><span class="annottext">go :: Int -&gt; Int -&gt; [(Int, [Int])]
+</span><a href="#local-6989586621679053854"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679053868"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679053869"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053869"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-158"></span><span>              </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IntMap [Int] -&gt; Maybe [Int]
+forall a. Int -&gt; IntMap a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">IM.lookup</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053869"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">IntMap [Int]
+</span><a href="#local-6989586621679053844"><span class="hs-identifier hs-var">hashMap</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-159"></span><span>                </span><span class="annot"><span class="annottext">Maybe [Int]
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-160"></span><span>                  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053857"><span class="hs-identifier hs-var">maxIdx</span></a></span><span>
+</span><span id="line-161"></span><span>                    </span><span class="hs-keyword">then</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-162"></span><span>                    </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; [(Int, [Int])]
+</span><a href="#local-6989586621679053854"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="#local-6989586621679053835"><span class="hs-identifier hs-var">rehash</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053869"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8
+</span><a href="#local-6989586621679053858"><span class="hs-identifier hs-var">strAt</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8
+</span><a href="#local-6989586621679053858"><span class="hs-identifier hs-var">strAt</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053809"><span class="hs-identifier hs-var">hLen</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-163"></span><span>                </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679053871"><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621679053871"><span class="hs-identifier hs-var">ps</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-164"></span><span>                  </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679053872"><span class="annot"><span class="annottext">rst :: ByteString
+</span><a href="#local-6989586621679053872"><span class="hs-identifier hs-var hs-var">rst</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">S.drop</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679053852"><span class="hs-identifier hs-var">str</span></a></span><span>
+</span><span id="line-165"></span><span>                      </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="#local-6989586621679053874"><span class="hs-pragma hs-type">hd</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-166"></span><span>                      </span><span id="local-6989586621679053874"><span class="annot"><span class="annottext">hd :: Word8
+</span><a href="#local-6989586621679053874"><span class="hs-identifier hs-var hs-var">hd</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word8
+</span><a href="#local-6989586621679053858"><span class="hs-identifier hs-var">strAt</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span><span>
+</span><span id="line-167"></span><span>                      </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="#local-6989586621679053875"><span class="hs-pragma hs-type">more</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-168"></span><span>                      </span><span id="local-6989586621679053875"><span class="annot"><span class="annottext">more :: [(Int, [Int])]
+</span><a href="#local-6989586621679053875"><span class="hs-identifier hs-var hs-var">more</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053857"><span class="hs-identifier hs-var">maxIdx</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-keyword">else</span><span>
+</span><span id="line-169"></span><span>                                </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; [(Int, [Int])]
+</span><a href="#local-6989586621679053854"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8 -&gt; Word8 -&gt; Int
+</span><a href="#local-6989586621679053835"><span class="hs-identifier hs-var">rehash</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053869"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679053874"><span class="hs-identifier hs-var">hd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word8
+</span><a href="#local-6989586621679053858"><span class="hs-identifier hs-var">strAt</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053809"><span class="hs-identifier hs-var">hLen</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-170"></span><span>                      </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="#local-6989586621679053880"><span class="hs-pragma hs-type">okay</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-171"></span><span>                      </span><span id="local-6989586621679053880"><span class="annot"><span class="annottext">okay :: ByteString -&gt; Bool
+</span><a href="#local-6989586621679053880"><span class="hs-identifier hs-var hs-var">okay</span></a></span></span><span> </span><span id="local-6989586621679053881"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679053881"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.isPrefixOf</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679053881"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679053872"><span class="hs-identifier hs-var">rst</span></a></span><span>
+</span><span id="line-172"></span><span>                  </span><span class="hs-keyword">in</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Bool) -&gt; [Int] -&gt; [Int]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="#local-6989586621679053880"><span class="hs-identifier hs-var">okay</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; Bool) -&gt; (Int -&gt; ByteString) -&gt; Int -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Array Int ByteString
+</span><a href="#local-6989586621679053833"><span class="hs-identifier hs-var">patArr</span></a></span><span> </span><span class="annot"><span class="annottext">Array Int ByteString -&gt; Int -&gt; ByteString
+forall i. Ix i =&gt; Array i ByteString -&gt; Int -&gt; ByteString
+forall (a :: * -&gt; * -&gt; *) e i.
+(IArray a e, Ix i) =&gt;
+a i e -&gt; Int -&gt; e
+</span><span class="hs-operator hs-var">`unsafeAt`</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621679053871"><span class="hs-identifier hs-var">ps</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-173"></span><span>                           </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[(Int, [Int])]
+</span><a href="#local-6989586621679053875"><span class="hs-identifier hs-var">more</span></a></span><span>
+</span><span id="line-174"></span><span>                           </span><span id="local-6989586621679053883"><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621679053883"><span class="hs-identifier hs-var">qs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [(Int, [Int])] -&gt; [(Int, [Int])]
+forall a b. a -&gt; b -&gt; b
+</span><span class="hs-identifier hs-var">seq</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Int] -&gt; Int
+forall a. [a] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621679053883"><span class="hs-identifier hs-var">qs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(Int, [Int])] -&gt; [(Int, [Int])])
+-&gt; [(Int, [Int])] -&gt; [(Int, [Int])]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-175"></span><span>                                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679053868"><span class="hs-identifier hs-var">sI</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621679053883"><span class="hs-identifier hs-var">qs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Int, [Int]) -&gt; [(Int, [Int])] -&gt; [(Int, [Int])]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[(Int, [Int])]
+</span><a href="#local-6989586621679053875"><span class="hs-identifier hs-var">more</span></a></span><span>
+</span><span id="line-176"></span></pre></body></html>
