@@ -172,6 +172,7 @@ synthesizeForce tl typeOfFunc = do
           { ambientAbilities = [DD.exceptionType External, Type.builtinIO External],
             typeLookup = mempty {TypeLookup.typeOfTerms = Map.singleton ref typeOfFunc} <> tl,
             termsByShortname = Map.empty,
+            freeNameToFuzzyTermsByShortName = Map.empty,
             topLevelComponents = Map.empty
           }
   case Result.runResultT

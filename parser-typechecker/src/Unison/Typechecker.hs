@@ -80,7 +80,7 @@ data NamedReference v loc = NamedReference
 data Env v loc = Env
   { ambientAbilities :: [Type v loc],
     typeLookup :: TL.TypeLookup v loc,
-    -- TDNR environment - maps short names like `+` to fully-qualified
+    -- | TDNR environment - maps short names like `+` to fully-qualified
     -- lists of named references whose full name matches the short name
     -- Example: `+` maps to [Nat.+, Float.+, Int.+]
     --
@@ -91,6 +91,12 @@ data Env v loc = Env
     -- - Right means a term/constructor in the namespace, or a constructor in the file (for which we do have a type
     --   before typechecking)
     termsByShortname :: Map Name.Name [Either Name.Name (NamedReference v loc)],
+    -- | This mapping is populated before typechecking with the top N fuzzy matches
+    -- to provide suggestions to the user for each free name that could not be resolved
+    -- with an exact match.
+    --
+    -- For each free name, a separate mapping with the same type as termsByShortname is provided.
+    freeNameToFuzzyTermsByShortName :: Map Name.Name (Map Name.Name [Either Name.Name (NamedReference v loc)]),
     topLevelComponents :: Map Name.Name (NamedReference v loc)
   }
   deriving stock (Generic)
@@ -253,6 +259,10 @@ typeDirectedNameResolution ppe oldNotes oldType env = do
         Var.MissingResult -> v
         _ -> Var.named name
 
+    dedupe :: [Context.Suggestion v loc] -> [Context.Suggestion v loc]
+    dedupe =
+      uniqueBy Context.suggestionReplacement
+
     extractSubstitution :: [Context.Suggestion v loc] -> Maybe (Context.Replacement v)
     extractSubstitution suggestions =
       let groupedByName :: [([Name.Name], Context.Replacement v)] =
@@ -301,20 +311,23 @@ typeDirectedNameResolution ppe oldNotes oldType env = do
       Context.InfoNote v loc ->
       Result (Notes v loc) (Maybe (Resolution v loc))
     resolveNote env = \case
-      Context.SolvedBlank (B.Resolve loc str) v it -> do
-        let shortname = Name.unsafeParseText (Text.pack str)
-            matches =
-              env.termsByShortname
-                & Map.findWithDefault [] shortname
-                & mapMaybe \case
-                  Left longname -> Map.lookup longname env.topLevelComponents
-                  Right namedRef -> Just namedRef
-        suggestions <- wither (resolve it) matches
+      Context.SolvedBlank (B.Resolve loc str) v inferredType -> do
+        let resolvedName = Text.pack str
+        let shortname = Name.unsafeParseText resolvedName
+
+        let matches = findExactMatches env shortname
+        suggestionsExact <- wither (resolveExact inferredType) matches
+
+        let fuzzyMatches = findFuzzyMatches env shortname
+        suggestionsFuzzy <- wither (resolveFuzzy inferredType) fuzzyMatches
+
+        let suggestions = suggestionsExact ++ suggestionsFuzzy
+
         pure $
           Just
             Resolution
-              { resolvedName = Text.pack str,
-                inferredType = it,
+              { resolvedName,
+                inferredType,
                 resolvedLoc = loc,
                 v,
                 suggestions
@@ -326,27 +339,51 @@ typeDirectedNameResolution ppe oldNotes oldType env = do
       note -> do
         btw note
         pure Nothing
+      where
+        findExactMatches :: Env v loc -> Name.Name -> [NamedReference v loc]
+        findExactMatches env name = do
+          env.termsByShortname
+            & Map.findWithDefault [] name
+            & lookupName
 
-    dedupe :: [Context.Suggestion v loc] -> [Context.Suggestion v loc]
-    dedupe =
-      uniqueBy Context.suggestionReplacement
+        findFuzzyMatches :: Env v loc -> Name.Name -> [NamedReference v loc]
+        findFuzzyMatches env name = do
+          env.freeNameToFuzzyTermsByShortName
+            & Map.findWithDefault Map.empty name
+            -- Keep only names that are not exact matches, assuming they are instead fuzzy matches.
+            & Map.filterWithKey (\key _ -> key /= name)
+            & Map.elems
+            & join
+            & lookupName
 
-    resolve ::
-      Context.Type v loc ->
-      NamedReference v loc ->
-      Result (Notes v loc) (Maybe (Context.Suggestion v loc))
-    resolve inferredType (NamedReference fqn foundType replace) =
-      -- We found a name that matches. See if the type matches too.
-      case Context.isSubtype (TypeVar.liftType foundType) (Context.relax inferredType) of
-        Left bug -> Nothing <$ compilerBug bug
-        -- Suggest the import if the type matches.
-        Right b ->
-          pure . Just $
-            Context.Suggestion
-              fqn
-              (TypeVar.liftType foundType)
-              replace
-              (if b then Context.Exact else Context.WrongType)
+        lookupName = mapMaybe \case
+          Left longname -> Map.lookup longname env.topLevelComponents
+          Right namedRef -> Just namedRef
+
+        resolveExact = resolve False
+        resolveFuzzy = resolve True
+
+        resolve ::
+          Bool ->
+          Context.Type v loc ->
+          NamedReference v loc ->
+          Result (Notes v loc) (Maybe (Context.Suggestion v loc))
+        resolve fuzzyNameMatch inferredType (NamedReference fqn foundType replace) =
+          -- We found a name that matches or is similar. Check the type matches too.
+          case Context.isSubtype (TypeVar.liftType foundType) (Context.relax inferredType) of
+            Left bug -> Nothing <$ compilerBug bug
+            -- Create a suggestion based on name and type similarity.
+            Right typeMatches ->
+              pure . Just $
+                Context.Suggestion
+                  fqn
+                  (TypeVar.liftType foundType)
+                  replace
+                  if not fuzzyNameMatch
+                    then
+                      if typeMatches then Context.Exact else Context.RightNameWrongType
+                    else
+                      if typeMatches then Context.SimilarNameRightType else Context.SimilarNameWrongType
 
 -- | Check whether a term matches a type, using a
 -- function to resolve the type of @Ref@ constructors

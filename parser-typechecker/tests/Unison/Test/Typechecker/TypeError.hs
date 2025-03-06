@@ -17,7 +17,7 @@ import Unison.Typechecker.TypeError qualified as Err
 
 test :: Test ()
 test =
-  scope "> extractor" . tests $
+  scope "extractor" . tests $
     [ y "> true && 3" Err.and,
       y "> true || 3" Err.or,
       y "> if 3 then 1 else 2" Err.cond,
@@ -54,7 +54,7 @@ noYieldsError s ex = not $ yieldsError s ex
 
 yieldsError :: forall a. String -> ErrorExtractor Symbol Ann a -> Bool
 yieldsError s ex =
-  case Common.parseAndSynthesizeAsFile [] "> test" s of
+  case Common.parseAndSynthesizeAsFile [] "> test_path" s of
     Result notes (Just _) ->
       let notes' :: [C.ErrorNote Symbol Ann]
           notes' = [n | Result.TypeError n <- toList notes]
